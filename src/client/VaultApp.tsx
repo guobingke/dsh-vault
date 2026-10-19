@@ -321,9 +321,9 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                         parts.push(m)
                       }
                       setNotice({ kind: failed ? 'error' : 'ok', text: parts.join(' · ') })
-                      if (failed) setError(parts.join(' · '))
                       setPreview(null)
-                      return refresh()
+                      // refresh() clears `error`, so raise the failure banner after it.
+                      return refresh().then(() => { if (failed) setError(parts.join(' · ')) })
                     })
                     .catch((err: unknown) => setError(errorText(err)))
                     .finally(() => setBusy(false))
