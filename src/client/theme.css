@@ -1930,6 +1930,11 @@ button.dv-list-item:hover {
 .dv-diff-table tr[data-change='add'] { background: color-mix(in srgb, var(--dv-add) 7%, transparent); }
 .dv-diff-table tr[data-change='change'] { background: color-mix(in srgb, var(--dv-change) 7%, transparent); }
 .dv-diff-table tr[data-change='remove'] { background: color-mix(in srgb, var(--dv-remove) 7%, transparent); }
+.dv-diff-table td.dv-td-right .dv-row {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
 
 .dv-conflict-list {
   display: flex;

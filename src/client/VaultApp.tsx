@@ -389,9 +389,15 @@ export function VaultApp({ api: apiProp, hostLocale }: VaultAppProps) {
                       setError(null)
                       setNotice(null)
                       setPreview(null)
-                      // Per-path conflict choices made in the UI are sent as the
-                      // coarse strategy the API accepts today (use-backup default).
-                      void api.previewRestore(input.targetId, input.snapshotId, input.password)
+                      // Send the global default plus per-path overrides so the
+                      // response annotates every item with its `resolution`.
+                      void api.previewRestore(
+                        input.targetId,
+                        input.snapshotId,
+                        input.password,
+                        input.conflict,
+                        input.conflicts,
+                      )
                         .then(setPreview)
                         .catch((err: unknown) => setError(errorText(err)))
                         .finally(() => setBusy(false))
@@ -405,6 +411,9 @@ export function VaultApp({ api: apiProp, hostLocale }: VaultAppProps) {
                         snapshotId: input.snapshotId,
                         password: input.password,
                         conflict: input.conflict,
+                        // Per-path overrides built by RestorePanel; unspecified
+                        // paths fall back to `conflict`.
+                        conflicts: input.conflicts,
                       })
                         .then((r) => {
                           const parts = [t('restore.successBody', { applied: r.applied.length, skipped: r.skipped.length })]

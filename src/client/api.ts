@@ -1,6 +1,7 @@
 import type {
   BackupCategory,
   BackupResult,
+  ConflictStrategy,
   KdfAlgorithm,
   RestorePreview,
   RestoreResult,
@@ -11,6 +12,9 @@ import type {
 } from '../core/types.js'
 
 const BASE = '/api/dsh-vault'
+
+/** Per-path overrides for the global conflict strategy (keys are snapshot-relative paths). */
+export type RestoreConflicts = Record<string, ConflictStrategy>
 
 export class VaultApiError extends Error {
   constructor(
@@ -45,6 +49,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new VaultApiError(msg, res.status)
   }
   return body as T
+}
+
+function hasConflicts(conflicts: RestoreConflicts | undefined): conflicts is RestoreConflicts {
+  return Boolean(conflicts) && Object.keys(conflicts!).length > 0
 }
 
 export interface VaultStatusResponse {
@@ -106,14 +114,36 @@ export class VaultApi {
     return request('/verify', { method: 'POST', body: JSON.stringify({ targetId, snapshotId, password }) })
   }
 
-  previewRestore(targetId: string, snapshotId: string, password?: string): Promise<RestorePreview> {
-    return request('/restore/preview', { method: 'POST', body: JSON.stringify({ targetId, snapshotId, password }) })
+  /**
+   * Preview a restore diff. When `conflict` is set, every item in the response
+   * carries a `resolution` for that path (global default + optional overrides).
+   */
+  previewRestore(
+    targetId: string,
+    snapshotId: string,
+    password?: string,
+    conflict?: ConflictStrategy,
+    conflicts?: RestoreConflicts,
+  ): Promise<RestorePreview> {
+    return request('/restore/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        targetId,
+        snapshotId,
+        password,
+        ...(conflict ? { conflict } : {}),
+        ...(hasConflicts(conflicts) ? { conflicts } : {}),
+      }),
+    })
   }
 
   restore(body: {
     targetId: string
     snapshotId: string
-    conflict: 'keep-current' | 'use-backup'
+    /** Global default for paths not listed in `conflicts`. */
+    conflict: ConflictStrategy
+    /** Optional per-path overrides; unspecified paths fall back to `conflict`. */
+    conflicts?: RestoreConflicts
     password?: string
     /** Additive optional fields already accepted by POST /restore. */
     createRollbackSnapshot?: boolean

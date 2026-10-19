@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useState } from 'react'
-import type { DiffItem, RestorePreview, SnapshotInfo, StorageTargetConfig } from '../../core/types.js'
+import type { ConflictStrategy, DiffItem, RestorePreview, SnapshotInfo, StorageTargetConfig } from '../../core/types.js'
 import { useT, type Translate } from '../i18n.js'
 import { formatBytes, formatDateTime, relativeLabel } from '../lib/targets.js'
 import {
@@ -50,14 +50,24 @@ export interface RestorePanelProps {
   busy: boolean
   message: string | null
   error: string | null
-  onPreview: (input: { targetId: string; snapshotId: string; password?: string; conflict?: 'keep-current' | 'use-backup' }) => void
+  /**
+   * `conflict` / `conflicts` annotate the preview so the diff list can show the
+   * per-item `resolution`.
+   */
+  onPreview: (input: {
+    targetId: string
+    snapshotId: string
+    password?: string
+    conflict?: ConflictStrategy
+    conflicts?: Record<string, ConflictStrategy>
+  }) => void
   onRestore: (input: {
     targetId: string
     snapshotId: string
     password?: string
-    conflict: 'keep-current' | 'use-backup'
-    /** Optional per-path decisions (UI-only, sent as the coarse strategy today). */
-    conflicts?: Record<string, 'keep-current' | 'use-backup'>
+    conflict: ConflictStrategy
+    /** Optional per-path decisions; unspecified paths fall back to `conflict`. */
+    conflicts?: Record<string, ConflictStrategy>
   }) => void
   /** Optional: loading state while the parent fetches snapshots. */
   loading?: boolean
@@ -67,10 +77,46 @@ export interface RestorePanelProps {
   onNavigateStorage?: () => void
 }
 
-type ConflictChoice = 'keep-current' | 'use-backup'
+type ConflictChoice = ConflictStrategy
 type DiffFilter = 'all' | DiffItem['change']
 
 const MAX_ROWS = 200
+/** Global default sent with preview/restore; per-path choices override it. */
+const DEFAULT_CONFLICT: ConflictChoice = 'use-backup'
+
+function sameConflicts(a: Record<string, ConflictStrategy>, b: Record<string, ConflictStrategy>): boolean {
+  const ka = Object.keys(a)
+  const kb = Object.keys(b)
+  return ka.length === kb.length && ka.every((k) => a[k] === b[k])
+}
+
+type Outcome = 'apply' | 'skip' | 'noop'
+
+/** How a diff row will be handled by restore, mirroring the backend rules. */
+function outcomeOf(item: DiffItem, strategy: ConflictChoice): Outcome {
+  if (item.change === 'add') return 'apply'
+  if (item.change === 'change') return strategy === 'use-backup' ? 'apply' : 'skip'
+  return 'noop'
+}
+
+function strategyLabel(tr: Translate, strategy: ConflictChoice): string {
+  return strategy === 'use-backup' ? tr('restore.conflictUseBackup') : tr('restore.conflictKeepCurrent')
+}
+
+function outcomeMeta(tr: Translate, item: DiffItem, strategy: ConflictChoice): { tone: 'ok' | 'warn' | 'neutral'; label: string; title: string } {
+  const outcome = outcomeOf(item, strategy)
+  if (outcome === 'apply') {
+    return { tone: 'ok', label: tr('restore.resolutionApply'), title: tr('restore.resolutionApplyTitle') }
+  }
+  if (outcome === 'skip') {
+    return { tone: 'warn', label: tr('restore.resolutionSkip'), title: tr('restore.resolutionSkipTitle') }
+  }
+  return {
+    tone: 'neutral',
+    label: tr('restore.resolutionNoop'),
+    title: item.change === 'remove' ? tr('restore.resolutionRemoveTitle') : tr('restore.resolutionNoopTitle'),
+  }
+}
 
 function changeMeta(tr: Translate, change: DiffItem['change']): { label: string; tone: 'add' | 'change' | 'remove' | 'neutral'; icon: ReactNode } {
   switch (change) {
@@ -163,7 +209,7 @@ export function RestorePanel({
     [preview],
   )
 
-  const choiceFor = (path: string): ConflictChoice => choices[path] ?? 'use-backup'
+  const choiceFor = (path: string): ConflictChoice => choices[path] ?? DEFAULT_CONFLICT
   const setChoice = (path: string, value: ConflictChoice) => setChoices((prev) => ({ ...prev, [path]: value }))
   const setAll = (value: ConflictChoice) => {
     const next: Record<string, ConflictChoice> = {}
@@ -174,6 +220,41 @@ export function RestorePanel({
   const keepCount = changes.filter((c) => choiceFor(c.path) === 'keep-current').length
   const useCount = changes.length - keepCount
   const allKeep = changes.length > 0 && keepCount === changes.length
+
+  // Effective decisions forwarded to the API: the per-path map plus the global
+  // default (used for any path not listed, e.g. removals / unchanged rows).
+  const requestedConflict: ConflictChoice = preview?.conflict ?? DEFAULT_CONFLICT
+  const requestedConflicts = useMemo(() => preview?.conflicts ?? {}, [preview])
+
+  /**
+   * Re-fetch the preview whenever a per-path decision differs from what the
+   * current preview was computed with, so `items[].resolution` (and the
+   * badges in the diff list) stay in sync with the conflict panel.
+   */
+  useEffect(() => {
+    if (!preview || busy) return
+    if (sameConflicts(choices, requestedConflicts)) return
+    const timer = setTimeout(() => {
+      onPreview({
+        targetId: selectedTarget?.id ?? selected?.targetId ?? '',
+        snapshotId: preview.snapshotId,
+        password: needsPassword ? password : undefined,
+        conflict: requestedConflict,
+        conflicts: choices,
+      })
+    }, 350)
+    return () => clearTimeout(timer)
+  }, [preview, busy, choices, requestedConflicts, onPreview, selectedTarget, selected, needsPassword, password, requestedConflict])
+
+  const resolutionCounts = useMemo(() => {
+    let apply = 0
+    let skip = 0
+    for (const item of changes) {
+      if (outcomeOf(item, item.resolution ?? choiceFor(item.path)) === 'apply') apply++
+      else skip++
+    }
+    return { apply, skip }
+  }, [changes, choices])
 
   const currentStep: 1 | 2 | 3 | 4 = !preview ? 1 : ack && confirmed ? 4 : 3
   const steps = [
@@ -209,7 +290,13 @@ export function RestorePanel({
       setShowPreviewPassword(true)
       return
     }
-    onPreview({ targetId: selected.targetId, snapshotId: selected.id, password: needsPassword ? password : undefined })
+    onPreview({
+      targetId: selected.targetId,
+      snapshotId: selected.id,
+      password: needsPassword ? password : undefined,
+      conflict: DEFAULT_CONFLICT,
+      conflicts: choices,
+    })
   }
 
   function submitRestore() {
@@ -220,7 +307,7 @@ export function RestorePanel({
       targetId: selectedTarget?.id ?? selected?.targetId ?? '',
       snapshotId: preview.snapshotId,
       password: needsPassword ? password : undefined,
-      conflict: 'use-backup',
+      conflict: requestedConflict,
       conflicts: choices,
     })
   }
@@ -427,11 +514,14 @@ export function RestorePanel({
                           <th>{tr('restore.path')}</th>
                           <th>{tr('restore.category')}</th>
                           <th className="dv-th-right">{tr('restore.change')}</th>
+                          <th className="dv-th-right">{tr('restore.resolution')}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {visibleItems.map((i) => {
                           const meta = changeMeta(tr, i.change)
+                          const strategy = i.resolution ?? choiceFor(i.path)
+                          const outcome = outcomeMeta(tr, i, strategy)
                           return (
                             <tr key={`${i.change}:${i.path}`} data-change={i.change}>
                               <td data-change={i.change} style={{ maxWidth: 420 }}>
@@ -440,6 +530,14 @@ export function RestorePanel({
                               <td><span className="dv-tag">{i.category}</span></td>
                               <td className="dv-td-right">
                                 <Badge tone={meta.tone}>{meta.icon}{meta.label}</Badge>
+                              </td>
+                              <td className="dv-td-right">
+                                <span className="dv-row dv-gap-1" style={{ justifyContent: 'flex-end' }}>
+                                  <Badge tone={strategy === 'use-backup' ? 'brand' : 'neutral'} title={tr('restore.resolutionHint')}>
+                                    {strategyLabel(tr, strategy)}
+                                  </Badge>
+                                  <Badge tone={outcome.tone} title={outcome.title}>{outcome.label}</Badge>
+                                </span>
                               </td>
                             </tr>
                           )
@@ -477,8 +575,8 @@ export function RestorePanel({
                 <div className="dv-row-between dv-small">
                   <span className="dv-hint">{tr('restore.onlyChanged')}</span>
                   <span className="dv-row dv-gap-2">
-                    <Badge tone="ok">{tr('restore.conflictUseBackup')} {useCount}</Badge>
-                    <Badge tone="warn">{tr('restore.conflictKeepCurrent')} {keepCount}</Badge>
+                    <Badge tone="ok">{tr('restore.resolutionApplyCount', { count: resolutionCounts.apply })}</Badge>
+                    <Badge tone="warn">{tr('restore.resolutionSkipCount', { count: resolutionCounts.skip })}</Badge>
                   </span>
                 </div>
                 <div className="dv-conflict-list" style={{ maxHeight: 360, overflow: 'auto' }}>

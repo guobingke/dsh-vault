@@ -129,7 +129,7 @@ WebDAV / S3 to their icon.
 |---|---|---|
 | Overview | `Dashboard` | Last backup + relative age, snapshot count & size, schedule and encryption KPIs; one-click gradient **Back up now**; per-target status cards (kind, location, snapshot count, last backup, encryption) with “Back up here”; recent snapshots; environment paths. |
 | Backup | `BackupPanel` | Scope tiles for all 10 `BackupCategory` values with select all/clear; target radio cards; encryption switch with strength meter (length + character-class heuristic), credentials switch locked until encryption is on; notes; summary card; stage progress bar; success/error banners. |
-| Restore | `RestorePanel` | Step indicator ①…④. Snapshot picker (target filter + search). **Diff preview** with add/change/remove/unchanged colours, counts and filters. **Per-path conflict** radio pairs (use backup / keep current) + bulk set. Plugin reinstall and manual-action notices. **Double confirmation**: two checkboxes (rollback note, risk acknowledgement) plus a confirm dialog. Encrypted snapshots ask for the password inline. |
+| Restore | `RestorePanel` | Step indicator ①…④. Snapshot picker (target filter + search). **Diff preview** with add/change/remove/unchanged colours, counts and filters; a **Resolution** column shows each item's strategy (Use backup / Keep current) plus its outcome (Will apply / Will skip / No change). **Per-path conflict** radio pairs (use backup / keep current) + bulk set; per-path choices are sent with the preview (`conflict` + `conflicts`) so `items[].resolution` refreshes, and are forwarded to `POST /restore`. Plugin reinstall and manual-action notices. **Double confirmation**: two checkboxes (rollback note, risk acknowledgement) plus a confirm dialog. Encrypted snapshots ask for the password inline. |
 | Storage | `StoragePanel` | Target cards for local plaintext / local encrypted / GitHub / WebDAV / S3 with location, snapshot count, last backup, stored-credential and default-encryption tags. **Test connection** lists a target's snapshots read-only (`GET /snapshots?targetId=`), shows found count or a redacted error. Editor with labelled fields per kind, masked secrets, default-encryption switch, delete confirmation. |
 | Snapshots | `SnapshotsPanel` | Totals, search, target filter and mode filter (all / encrypted / plaintext / with secrets). Verify per row (password dialog for encrypted snapshots), delete with confirmation, jump to Restore. Retention editor with a live “would prune ~N” preview. |
 | Settings | `SettingsPanel` | Schedule enable switch, interval presets + custom minutes (min 15), target picker, encrypt / include-secrets, last/next run, **Run now**. Retention + preset chips, default target, preferred KDF, language (zh / en), appearance (follow dsh / dark / light), About block with data dirs and the secrets policy. Save is explicit with an “unsaved changes” badge and discard. |
@@ -174,18 +174,20 @@ The UI only calls the routes in the contract via `VaultApi`:
 |---|---|
 | Load | `GET /status`, `GET /snapshots` |
 | Backup | `POST /backup` (`targetId`, `encrypt`, `password?`, `includeSecrets`, `notes?`) → `GET /status` + `/snapshots` |
-| Restore | `POST /restore/preview` → `POST /restore` (`conflict` strategy) → refresh |
+| Restore | `POST /restore/preview` (`conflict` + optional `conflicts` → per-item `resolution`) → `POST /restore` (`conflict` + `conflicts`) → refresh |
 | Storage | `POST /targets` (upsert), `POST /targets/delete`; test = `GET /snapshots?targetId=` |
 | Snapshots | `POST /verify`, `POST /snapshots/delete`; retention = `PUT /settings` |
 | Settings | `PUT /settings`, `POST /schedule/run` |
 
-**Known limitation:** `POST /restore` accepts one coarse `conflict` strategy.
-The per-path conflict choices are collected in the UI (and forwarded as an
-optional `conflicts` map in the panel callback) but are sent as the single
-strategy today. Applying them per path needs a backend addition (e.g.
-`conflictOverrides: Record<path, strategy>`); no backend code was changed in
-this pass. `GET /targets` is not used because `/status` already returns
-targets.
+**Per-path conflicts:** both `POST /restore` and `POST /restore/preview` accept
+`conflicts?: Record<path, 'keep-current' | 'use-backup'>` as a per-path override
+of the global `conflict`. The UI sends `conflict: 'use-backup'` as the global
+default plus the per-path map collected in the conflict panel; preview responses
+are annotated with `items[].resolution`, which drives the diff table's
+Resolution column (and its apply/skip counts). Changing a per-path choice
+re-requests the preview (debounced) so badges stay in sync with what
+`POST /restore` will do. `GET /targets` is not used because `/status` already
+returns targets.
 
 Secrets: backup passwords are never stored; the password is only used for the
 in-flight request and for preview/verify of the selected session. Error text
