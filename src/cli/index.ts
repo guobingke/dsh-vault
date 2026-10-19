@@ -2,6 +2,7 @@
 import { resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { VaultService } from '../core/vault-service.js'
+import { restoreExitCode, restoreFailureSummary } from './exit.js'
 import { resolveDshHome } from '../core/paths.js'
 import {
   DESKTOP_PROFILE,
@@ -20,6 +21,7 @@ Usage:
   dsh-vault setup [--profile web|desktop|all] [--package <spec>] [--home <path>] [--dry-run]
   dsh-vault backup [--target <id>] [--encrypt] [--password <pass>] [--secrets] [--home <path>]
   dsh-vault restore <snapshotId> [--target <id>] [--password <pass>] [--keep|--use-backup] [--home <path>]
+      (exits 2 when files were restored but a plugin failed to install)
   dsh-vault list [--target <id>] [--home <path>]
   dsh-vault verify <snapshotId> [--target <id>] [--password <pass>] [--home <path>]
   dsh-vault status [--home <path>]
@@ -224,7 +226,8 @@ async function main(argv: string[]): Promise<number> {
         password: getFlag(args, '--password'),
       })
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
-      return 0
+      process.stderr.write(restoreFailureSummary(result))
+      return restoreExitCode(result)
     }
 
     process.stderr.write(`Unknown command: ${cmd}\n\n${usage()}`)
