@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { VaultService } from '../src/core/vault-service.js'
@@ -150,16 +150,20 @@ describe('pax / UTF-8 tar names', () => {
     assert.deepEqual(back.map((e) => e.path), entries.map((e) => e.path))
     assert.equal(back[0]!.data.toString('utf8'), '\u4e2d\u6587\u5185\u5bb9\n')
 
+    // External readers: extract (not list — Windows tar prints names in the console
+    // code page) and check the Unicode paths on disk. Each tool is checked when present.
     const tmp = join(tmpdir(), `pax-${Date.now()}.tar.gz`)
-    const out = join(tmpdir(), `pax-out-${Date.now()}`)
     writeFileSync(tmp, archive)
-    mkdirSync(out)
-    const listed = execFileSync('tar', ['tzf', tmp], { encoding: 'utf8' })
-    assert.match(listed, /\u5199\u4f5c\u52a9\u624b/)
-    assert.match(listed, /\u6f14\u7ec3-01/)
-    execFileSync('bsdtar', ['xzf', tmp, '-C', out])
-    assert.ok(existsSync(join(out, 'files', 'agents-home', 'skills', '\u5199\u4f5c\u52a9\u624b', 'SKILL.md')))
-    assert.ok(existsSync(join(out, 'files', 'redteam', 'engagements', '\u6f14\u7ec3-01', '\u62a5\u544a v2.md')))
+    for (const tool of ['tar', 'bsdtar']) {
+      const probe = spawnSync(tool, ['--version'], { encoding: 'utf8' })
+      if (probe.error) continue // not installed here (e.g. no bsdtar on ubuntu-latest)
+      const out = join(tmpdir(), `pax-out-${tool}-${Date.now()}`)
+      mkdirSync(out)
+      execFileSync(tool, ['xzf', tmp, '-C', out])
+      assert.ok(existsSync(join(out, 'files', 'agents-home', 'skills', '\u5199\u4f5c\u52a9\u624b', 'SKILL.md')), tool)
+      assert.ok(existsSync(join(out, 'files', 'redteam', 'engagements', '\u6f14\u7ec3-01', '\u62a5\u544a v2.md')), tool)
+      assert.ok(existsSync(join(out, 'files', 'a'.repeat(80), 'b'.repeat(80), 'long.txt')), tool)
+    }
   })
 })
 

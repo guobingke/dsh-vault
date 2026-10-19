@@ -191,7 +191,11 @@ export async function registryStatuses(
     if (!v) continue
     jobs.push(lookup(p.name, v).then((s) => { out.set(key, s) }, () => {}))
   }
-  await Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, overallMs).unref?.())])
+  // A ref'd timer, cleared once the lookups settle: an unref'd one let the process
+  // (CLI, tests) exit mid-check when the lookups themselves hold nothing open.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([Promise.all(jobs), new Promise((r) => { timer = setTimeout(r, overallMs) })])
+  clearTimeout(timer)
   return new Map(out)
 }
 
