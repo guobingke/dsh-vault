@@ -71,7 +71,7 @@ export function RestoreSummary({
         </details>
       ) : null}
       {result.rollbackSnapshotId ? <div className="dv-hint">{tr('restore.rollbackCreated', { id: result.rollbackSnapshotId })}</div> : null}
-      {result.restartRequired || state !== 'failed' ? <div className="dv-hint">{tr('summary.restartDesktop')}</div> : null}
+      <p className="dv-restart-notice">{tr('summary.restartDsh')}</p>
       {detail ? <div className="dv-hint">{detail}</div> : null}
     </Banner>
   )

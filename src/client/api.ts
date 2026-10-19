@@ -96,7 +96,36 @@ export interface PluginListResponse {
   restoreOrder: VaultSettings['pluginRestoreOrder']
 }
 
+export interface JobView<R = unknown> {
+  id: string
+  kind: 'backup' | 'restore' | 'retry-plugins'
+  status: 'running' | 'done' | 'error'
+  progress: { stage: string; percent: number; current?: number; total?: number; item?: string; message: string }
+  startedAt: string
+  finishedAt?: string
+  elapsedMs: number
+  result?: R
+  error?: { message: string; code?: string; status?: number }
+}
+
 export class VaultApi {
+  startBackupJob(body: Parameters<VaultApi['backup']>[0]): Promise<JobView<BackupResult>> {
+    return request('/jobs/backup', { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  startRestoreJob(body: Parameters<VaultApi['restore']>[0]): Promise<JobView<RestoreResult>> {
+    return request('/jobs/restore', { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  startRetryPluginsJob(plugins?: Array<{ name: string; profile: string }>): Promise<JobView<RestoreResult>> {
+    return request('/jobs/retry-plugins', { method: 'POST', body: JSON.stringify(plugins ? { plugins } : {}) })
+  }
+
+  /** A job by id, or the running / most recent one. */
+  getJob(id?: string): Promise<{ job: JobView | null }> {
+    return request(id ? `/jobs?id=${encodeURIComponent(id)}` : '/jobs')
+  }
+
   listPlugins(checkRegistry = true): Promise<PluginListResponse> {
     return request(`/plugins?registry=${checkRegistry ? '1' : '0'}`)
   }

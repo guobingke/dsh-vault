@@ -118,6 +118,7 @@ export interface CollectOptions {
   bundleLocalPlugins?: boolean
   /** `profile:name` keys that get no saved copy (neither local source nor installed fallback). */
   pluginCopyExclude?: string[]
+  onProgress?: ProgressCallback
 }
 
 export interface BackupRequest {
@@ -313,11 +314,15 @@ export interface VaultSettings {
 }
 
 export interface ProgressEvent {
-  phase: 'collect' | 'pack' | 'encrypt' | 'upload' | 'download' | 'decrypt' | 'diff' | 'apply' | 'reinstall' | 'done' | 'error'
+  phase: 'prepare' | 'collect' | 'copies' | 'pack' | 'encrypt' | 'upload' | 'download' | 'decrypt' | 'diff' | 'rollback' | 'apply' | 'reinstall' | 'verify' | 'done' | 'error'
   message: string
   current?: number
   total?: number
   percent?: number
+  /** Fraction (0–1) of the current stage when there is no current/total. */
+  fraction?: number
+  /** Current file / plugin name. */
+  item?: string
 }
 
 export type ProgressCallback = (event: ProgressEvent) => void

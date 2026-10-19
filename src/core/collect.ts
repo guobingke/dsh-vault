@@ -173,10 +173,17 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   }
 
   // Everything under $DSH_HOME except the denylist (home-scope.ts).
-  for (const f of await walkHome(dshHome, { includeSecrets })) {
+  const progress = options.onProgress
+  const homeFiles = await walkHome(dshHome, { includeSecrets })
+  progress?.({ phase: 'collect', message: 'Collecting files', current: 0, total: homeFiles.length })
+  let n = 0
+  for (const f of homeFiles) {
+    n++
     const category = categoryForRelPath(f.rel)
-    if (!wants(category)) continue
-    await maybeAddFile(f.abs, f.rel, category, includeSecrets, files)
+    if (wants(category)) await maybeAddFile(f.abs, f.rel, category, includeSecrets, files)
+    if (progress && (n % 25 === 0 || n === homeFiles.length)) {
+      progress({ phase: 'collect', message: 'Collecting files', current: n, total: homeFiles.length, item: f.rel })
+    }
   }
   if (wanted.has('skills')) {
     await walkFiles(join(agentsHome, 'skills'), 'agents-home/skills', 'skills', includeSecrets, files)
@@ -233,6 +240,12 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   const bundleLocal = options.bundleLocalPlugins !== false
   const noCopy = new Set(options.pluginCopyExclude ?? [])
   const copyWanted = (p: PluginRecord) => !noCopy.has('*') && !noCopy.has(`${p.profile ?? 'web'}:${p.name}`)
+  const copyTotal = plugins.filter((p) => p.profile && !isBuiltinDshBundle(p.name)).length
+  let copyN = 0
+  const copyTick = (plugin: PluginRecord) => {
+    copyN++
+    progress?.({ phase: 'copies', message: 'Packing plugin copies', current: Math.min(copyN, copyTotal), total: copyTotal, item: plugin.name })
+  }
   if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {
     for (const plugin of plugins) {
       if (!plugin.profile) continue
@@ -293,6 +306,7 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     const locks = new Map<string, Record<string, string>>()
     for (const plugin of plugins) {
       if (!plugin.profile || isBuiltinDshBundle(plugin.name)) continue
+      copyTick(plugin)
       // Local file:/link: already have a primary bundledSource (or will fail with a clear reason).
       if (plugin.bundledSource) continue
       if (parseLocalSpec(plugin.version ?? plugin.source)?.kind === 'path') continue

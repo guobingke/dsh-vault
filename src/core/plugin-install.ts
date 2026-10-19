@@ -878,6 +878,8 @@ export interface ReinstallOptions {
   only?: Set<string>
   /** Plugins with a saved copy: `copy-first` installs the copy before trying the source. Default `source-first`. */
   restoreOrder?: 'source-first' | 'copy-first'
+  /** Per-plugin progress (k/K, current plugin name). */
+  onProgress?: (ev: { phase: 'reinstall' | 'verify'; message: string; current?: number; total?: number; item?: string; fraction?: number }) => void
 }
 
 /**
@@ -956,6 +958,7 @@ export async function reinstallMissingPlugins(
     }
 
     // 3) Materialize.
+    options.onProgress?.({ phase: 'reinstall', message: 'Installing profile dependencies', current: 0, total: actionable.length, item: `pnpm install (${profile})` })
     const mat = await materializeProfile(profileDir, deps, { frozen: invalid.length === 0 })
     if (!mat.ok) {
       const isolate: string[] = []
@@ -986,8 +989,11 @@ export async function reinstallMissingPlugins(
 
   const managerProfile = deps.pluginManager?.profile?.name ?? deps.activeProfile
   let restartRequired = false
+  let pluginIndex = 0
   for (const plugin of actionable) {
     const profile = profileOf(plugin)
+    pluginIndex++
+    options.onProgress?.({ phase: 'reinstall', message: 'Installing plugins', current: pluginIndex - 1, total: actionable.length, item: plugin.name })
     if (done.has(key(profile, plugin.name))) continue
     const profileDir = join(deps.dshHome, 'profiles', profile)
     // A failed add can leave its entry behind, which would break the next install too.
@@ -1152,6 +1158,7 @@ export async function reinstallMissingPlugins(
     }
   }
 
+  options.onProgress?.({ phase: 'verify', message: 'Verifying plugins', fraction: 0.2 })
   // Keep every manifest installable, and in the backup's bundle order.
   for (const profile of profiles) {
     const profileDir = join(deps.dshHome, 'profiles', profile)

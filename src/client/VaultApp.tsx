@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { VaultApi, VaultApiError, type VaultStatusResponse } from './api.js'
+import { VaultApi, VaultApiError, type JobView, type VaultStatusResponse } from './api.js'
 import { Overview } from './components/Dashboard.js'
 import { BackupPanel } from './components/BackupPanel.js'
+import { JobProgress } from './components/JobProgress.js'
 import { RestorePanel } from './components/RestorePanel.js'
 import { StoragePanel } from './components/StoragePanel.js'
 import { SnapshotsPanel, type VerifyResult } from './components/SnapshotsPanel.js'
@@ -96,33 +97,46 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
   const [notice, setNotice] = useState<Notice | null>(null)
   const [backupTargetId, setBackupTargetId] = useState<string | undefined>(undefined)
   const [restorePreset, setRestorePreset] = useState<{ targetId: string; snapshotId: string; nonce: number } | null>(null)
-  const [progress, setProgress] = useState<{ value: number; stage: string } | null>(null)
-  const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [job, setJob] = useState<JobView | null>(null)
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const restoreResultRef = useRef<RestoreResult | null>(null)
+  restoreResultRef.current = restoreResult
+  const jobDone = useRef<((job: JobView) => void | Promise<void>) | null>(null)
 
-  const stopProgress = useCallback(() => {
-    if (progressTimer.current) {
-      clearInterval(progressTimer.current)
-      progressTimer.current = null
+  /** Poll a server job until it settles; survives tab switches (state lives here). */
+  const followJob = useCallback((first: JobView, onDone: (job: JobView) => void | Promise<void>) => {
+    if (pollTimer.current) clearTimeout(pollTimer.current)
+    jobDone.current = onDone
+    setJob(first)
+    setBusy(true)
+    const tick = async (id: string) => {
+      try {
+        const { job: j } = await api.getJob(id)
+        if (!j) throw new Error('job lost')
+        setJob(j)
+        if (j.status === 'running') {
+          pollTimer.current = setTimeout(() => void tick(id), 500)
+          return
+        }
+        setBusy(false)
+        setRetrying(false)
+        setJob(null)
+        if (j.status === 'error') setError(j.error?.message ?? 'failed')
+        else await jobDone.current?.(j)
+      } catch (err) {
+        // Transient (e.g. host busy): keep polling a little slower.
+        pollTimer.current = setTimeout(() => void tick(id), 1500)
+        if (err instanceof Error && /not found/.test(err.message)) {
+          setBusy(false)
+          setRetrying(false)
+          setJob(null)
+          if (pollTimer.current) clearTimeout(pollTimer.current)
+        }
+      }
     }
-    setProgress(null)
-  }, [])
-
-  /**
-   * The HTTP API is request/response, so backup progress is optimistic: it
-   * advances asymptotically toward 92% through named stages while the request
-   * is in flight and completes when the promise settles.
-   */
-  const startProgress = useCallback((stages: string[], totalMs: number) => {
-    if (progressTimer.current) clearInterval(progressTimer.current)
-    const startedAt = Date.now()
-    setProgress({ value: 3, stage: stages[0] ?? 'collect' })
-    progressTimer.current = setInterval(() => {
-      const elapsed = Date.now() - startedAt
-      const ratio = Math.min(0.92, 0.92 * (1 - Math.exp(-elapsed / (totalMs * 0.55))))
-      const stageIdx = Math.min(stages.length - 1, Math.floor(ratio * stages.length))
-      setProgress({ value: Math.round(ratio * 100), stage: stages[stageIdx] ?? stages[0] ?? 'collect' })
-    }, 180)
-  }, [])
+    if (first.status === 'running') pollTimer.current = setTimeout(() => void tick(first.id), 400)
+    else void tick(first.id)
+  }, [api])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -183,7 +197,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api])
 
-  useEffect(() => () => { if (progressTimer.current) clearInterval(progressTimer.current) }, [])
+  useEffect(() => () => { if (pollTimer.current) clearTimeout(pollTimer.current) }, [])
 
   const run = useCallback(async <T,>(fn: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true)
@@ -214,24 +228,65 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
     [t],
   )
 
+  const showOutcomeRef = useRef(showRestoreOutcome)
+  showOutcomeRef.current = showRestoreOutcome
+
+  const finishBackup = useCallback(async (j: JobView) => {
+    setLastBackup(j.result as BackupResult)
+    await refresh()
+  }, [refresh])
+
+  const finishRestore = useCallback(async (j: JobView) => {
+    const r = j.result as RestoreResult
+    setRestoreResult(r)
+    setPreview(null)
+    await showOutcomeRef.current(r, false)
+  }, [])
+
+  const finishRetry = useCallback(async (j: JobView) => {
+    const r = j.result as RestoreResult
+    const prev = restoreResultRef.current
+    // Replace the retried rows in place; keep the rest of the original result.
+    const merged = new Map((prev?.pluginResults ?? []).map((row) => [`${row.profile}:${row.name}`, row]))
+    for (const row of r.pluginResults ?? []) merged.set(`${row.profile}:${row.name}`, row)
+    const rows = [...merged.values()]
+    const next: RestoreResult = {
+      ...(prev ?? r),
+      pluginResults: rows,
+      pluginsFailed: rows.filter((row) => row.status === 'failed').map((row) => row.name),
+      pluginsReinstalled: rows.filter((row) => row.status === 'installed' || row.status === 'installed-from-backup').map((row) => row.name),
+      restartRequired: Boolean(prev?.restartRequired || r.restartRequired),
+      ok: rows.every((row) => row.status !== 'failed'),
+      manualActions: r.manualActions,
+    }
+    setRestoreResult(next)
+    await showOutcomeRef.current(next, true)
+  }, [])
+
+  // Re-attach to a job still running on the server (page re-opened mid-backup/restore).
+  useEffect(() => {
+    let alive = true
+    api.getJob().then(({ job: j }) => {
+      if (!alive || !j || j.status !== 'running') return
+      if (j.kind === 'retry-plugins') setRetrying(true)
+      followJob(j, j.kind === 'backup' ? finishBackup : j.kind === 'restore' ? finishRestore : finishRetry)
+    }).catch(() => {})
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api])
+
   const backupTo = useCallback((input: BackupInput) => {
-    const stages = input.encrypt ? ['collect', 'pack', 'encrypt', 'upload'] : ['collect', 'pack', 'upload']
-    setBusy(true)
     setError(null)
     setNotice(null)
     setLastBackup(null)
-    startProgress(stages, 5000)
-    void api.backup(input)
-      .then((r) => {
-        setLastBackup(r)
-        return refresh()
-      })
-      .catch((err: unknown) => setError(errorText(err)))
-      .finally(() => {
-        stopProgress()
+    setBusy(true)
+    void api.startBackupJob(input)
+      .then((j) => followJob(j, finishBackup))
+      .catch((err: unknown) => {
         setBusy(false)
+        setError(errorText(err))
       })
-  }, [api, refresh, startProgress, stopProgress, t, targetLabel])
+  }, [api, followJob, finishBackup])
 
   const i18nValue = useMemo(() => ({ locale, t }), [locale, t])
 
@@ -243,6 +298,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
           <SectionTabs label={t('section.tabs')} value={tab} onChange={navigate} items={tabItems} />
           {/* No fixed id here: panels may mount their own regions with ids. */}
           <main tabIndex={-1} className="dv-section-body">
+            {job ? <JobProgress job={job} /> : null}
             {tab === 'overview' ? (
               <Overview
                 status={status}
@@ -278,8 +334,6 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                 busy={busy}
                 message={notice?.kind === 'ok' ? notice.text : null}
                 error={error}
-                progress={busy ? progress?.value : undefined}
-                stage={busy ? progress?.stage : undefined}
                 defaultTargetId={backupTargetId ?? settings?.defaultTargetId}
                 onBackup={backupTo}
                 onNavigateStorage={() => navigate('storage')}
@@ -323,33 +377,19 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                   setRetrying(true)
                   setError(null)
                   setNotice(null)
-                  void api.retryPlugins(failedRows.map((row) => ({ name: row.name, profile: row.profile })))
-                    .then((r) => {
-                      // Replace the retried rows in place; keep the rest of the original result.
-                      const merged = new Map((restoreResult?.pluginResults ?? []).map((row) => [`${row.profile}:${row.name}`, row]))
-                      for (const row of r.pluginResults ?? []) merged.set(`${row.profile}:${row.name}`, row)
-                      const rows = [...merged.values()]
-                      const next = {
-                        ...(restoreResult ?? r),
-                        pluginResults: rows,
-                        pluginsFailed: rows.filter((row) => row.status === 'failed').map((row) => row.name),
-                        pluginsReinstalled: rows.filter((row) => row.status === 'installed' || row.status === 'installed-from-backup').map((row) => row.name),
-                        restartRequired: Boolean(restoreResult?.restartRequired || r.restartRequired),
-                        ok: rows.every((row) => row.status !== 'failed'),
-                        manualActions: r.manualActions,
-                      }
-                      setRestoreResult(next)
-                      return showRestoreOutcome(next, true)
+                  void api.startRetryPluginsJob(failedRows.map((row) => ({ name: row.name, profile: row.profile })))
+                    .then((j) => followJob(j, finishRetry))
+                    .catch((err: unknown) => {
+                      setRetrying(false)
+                      setError(errorText(err))
                     })
-                    .catch((err: unknown) => setError(errorText(err)))
-                    .finally(() => setRetrying(false))
                 }}
                 onRestore={(input) => {
                   setRestoreResult(null)
                   setBusy(true)
                   setError(null)
                   setNotice(null)
-                  void api.restore({
+                  void api.startRestoreJob({
                     targetId: input.targetId,
                     snapshotId: input.snapshotId,
                     importPath: input.importPath,
@@ -359,13 +399,11 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                     reinstallPlugins: input.reinstallPlugins,
                     createRollbackSnapshot: input.createRollbackSnapshot,
                   })
-                    .then((r) => {
-                      setRestoreResult(r)
-                      setPreview(null)
-                      return showRestoreOutcome(r, false)
+                    .then((j) => followJob(j, finishRestore))
+                    .catch((err: unknown) => {
+                      setBusy(false)
+                      setError(errorText(err))
                     })
-                    .catch((err: unknown) => setError(errorText(err)))
-                    .finally(() => setBusy(false))
                 }}
                 fs={fsBrowser}
               />

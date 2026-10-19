@@ -1502,3 +1502,7 @@
 .dsh-vault-root .dv-diff-row[data-change="change"] .dv-diff-badge { color: var(--dv-warn); }
 .dsh-vault-root .dv-result-list { margin: 6px 0 0; padding-left: 18px; }
 .dsh-vault-root .dv-result-list li { overflow-wrap: anywhere; }
+
+/* Job progress (thin native bar) + restart notice */
+.dsh-vault-root .dv-job { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--dv-border-l1); border-radius: 8px; background: var(--dv-bg-layer-2); }
+.dsh-vault-root .dv-restart-notice { margin: 8px 0 0; font-weight: 500; color: var(--dv-text); }

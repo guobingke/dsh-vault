@@ -367,7 +367,6 @@ export function BackupPanel({
         } />
       </Rows>
 
-      {busy ? <ProgressBar value={progress} label={progressLabel} /> : null}
 
       <div className="dv-card-foot" style={{ justifyContent: 'space-between' }}>
         <span className="dv-hint" style={{ color: noScope ? 'var(--dv-danger)' : undefined }}>

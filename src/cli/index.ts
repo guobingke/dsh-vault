@@ -7,6 +7,8 @@ import { restoreExitCode, restoreFailureSummary } from './exit.js'
 import { resolveAgentsHome, resolveDshHome } from '../core/paths.js'
 import { diffHomes, formatHomeDiff } from '../core/home-diff.js'
 import { DOCUMENTED_EXCLUDES } from '../core/home-scope.js'
+import { ProgressTracker, type JobKind } from '../core/progress.js'
+import type { ProgressCallback } from '../core/types.js'
 import { bundledDshCandidates, desktopResourceRoots, findBundledPnpm, findDshCliEntry, findGit } from '../core/plugin-install.js'
 import {
   DESKTOP_PROFILE,
@@ -54,6 +56,28 @@ npm-global \`dsh\` refuses --profile desktop. Web: \`dsh plugin --profile web ad
 Works even when the dsh UI is broken. Secrets are excluded unless --secrets
 is combined with --encrypt.
 `
+}
+
+const STAGE_ZH: Record<string, string> = {
+  prepare: '准备', collect: '收集文件', copies: '打包插件副本', pack: '压缩', encrypt: '加密', upload: '上传/保存',
+  rollback: '创建回滚快照', apply: '写入文件', reinstall: '安装插件', verify: '校验', done: '完成',
+}
+
+/** Stage lines on stderr: "[ 42%] 安装插件 3/9 dsh-purge" (once per stage / item change). */
+function cliProgress(kind: JobKind): ProgressCallback | undefined {
+  if (process.env.DSH_VAULT_QUIET === '1') return undefined
+  const tracker = new ProgressTracker(kind)
+  let last = ''
+  return (ev) => {
+    const p = tracker.update(ev)
+    const coarse = p.stage === 'collect' || p.stage === 'apply' ? Math.floor((p.current ?? 0) / Math.max(1, Math.ceil((p.total ?? 1) / 10))) : p.item
+    const key = `${p.stage}:${coarse ?? ''}`
+    if (key === last) return
+    last = key
+    const count = p.total ? ` ${p.current ?? 0}/${p.total}` : ''
+    const item = p.item && p.stage !== 'collect' && p.stage !== 'apply' ? ` ${p.item}` : ''
+    process.stderr.write(`[${String(p.percent).padStart(3)}%] ${STAGE_ZH[p.stage] ?? p.stage}${count}${item}\n`)
+  }
 }
 
 function getFlags(args: string[], name: string): string[] {
@@ -284,7 +308,7 @@ async function main(argv: string[]): Promise<number> {
         includeSecrets,
         password,
         ...copyFlags(args),
-      })
+      }, cliProgress('backup'))
       if (has(args, '--save-copy-choice')) {
         const c = copyFlags(args)
         await service.updateSettings({ pluginCopies: { enabled: c.bundlePluginCopies ?? true, exclude: c.pluginCopyExclude ?? [] } })
@@ -360,7 +384,7 @@ async function main(argv: string[]): Promise<number> {
         reinstallPlugins: !has(args, '--no-plugins'),
         pluginProfiles,
         pluginRestoreOrder: restoreOrderFlag(args),
-      })
+      }, cliProgress('restore'))
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
       process.stderr.write(restoreFailureSummary(result))
       return restoreExitCode(result)
@@ -384,7 +408,7 @@ async function main(argv: string[]): Promise<number> {
         conflict,
         password: getFlag(args, '--password'),
         pluginRestoreOrder: restoreOrderFlag(args),
-      })
+      }, cliProgress('restore'))
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
       process.stderr.write(restoreFailureSummary(result))
       return restoreExitCode(result)

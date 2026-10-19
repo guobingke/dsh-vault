@@ -117,6 +117,44 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
     }),
   )
 
+  // Background jobs with real progress: start → poll GET /jobs?id= (or /jobs/latest after re-mount).
+  routes.push(
+    endpoint({ path: `${API_PREFIX}/jobs/backup`, methods: ['POST'] }, async (req, res) => {
+      const body = await readJsonBody<BackupRequest>(req)
+      if (!body.targetId && !body.directory && !body.exportFile) {
+        throw new ApiError('targetId, directory, or exportFile is required', 400)
+      }
+      writeJson(res, 202, startJob(() => service.startBackupJob(body)))
+    }),
+  )
+  routes.push(
+    endpoint({ path: `${API_PREFIX}/jobs/restore`, methods: ['POST'] }, async (req, res) => {
+      const body = await readJsonBody<RestoreRequest>(req)
+      if (body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
+        throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
+      }
+      if ((!body.targetId || !body.snapshotId) && !body.importPath) {
+        throw new ApiError('targetId+snapshotId or importPath is required', 400)
+      }
+      writeJson(res, 202, startJob(() => service.startRestoreJob(body)))
+    }),
+  )
+  routes.push(
+    endpoint({ path: `${API_PREFIX}/jobs/retry-plugins`, methods: ['POST'] }, async (req, res) => {
+      const body = await readJsonBody<{ plugins?: Array<{ name: string; profile: string }> }>(req)
+      writeJson(res, 202, startJob(() => service.startRetryPluginsJob(body)))
+    }),
+  )
+  routes.push(
+    endpoint({ path: `${API_PREFIX}/jobs`, methods: ['GET'] }, async (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const id = url.searchParams.get('id')
+      const job = id ? service.jobs.get(id) : service.jobs.latest()
+      if (id && !job) throw new ApiError('job not found', 404)
+      writeJson(res, 200, { job })
+    }),
+  )
+
   routes.push(
     endpoint({ path: `${API_PREFIX}/restore/retry-plugins`, methods: ['POST'] }, async (req, res) => {
       const body = await readJsonBody<{ plugins?: Array<{ name: string; profile: string }> }>(req)
@@ -184,6 +222,16 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
   )
 
   return routes
+}
+
+function startJob<T>(fn: () => T): T {
+  try {
+    return fn()
+  } catch (e) {
+    const err = e as { status?: number; message?: string }
+    if (err?.status === 409) throw new ApiError(err.message ?? 'another job is running', 409)
+    throw e
+  }
 }
 
 export function registerVaultRoutes(

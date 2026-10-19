@@ -2,6 +2,7 @@ import { chmod, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promis
 import { basename, dirname, join } from 'node:path'
 import { collectBackupFiles, extractPluginsFromProfilePackage } from './collect.js'
 import { listPluginDataEntries } from './home-scope.js'
+import { JobRegistry, type JobState } from './progress.js'
 import { listDetectedPlugins, npmRegistryLookup, pluginKey, registryStatuses, type DetectedPlugin, type RegistryLookup } from './plugin-copies.js'
 import { normalizeConflicts, resolveItemConflict, shouldApplyChange } from './conflict.js'
 import {
@@ -94,6 +95,8 @@ export class VaultService {
   /** Profile this Host process is running as (`web`, `desktop`, …). */
   readonly activeProfile: string
   private settings: VaultSettings = DEFAULT_SETTINGS
+  /** Background backup / restore jobs with real progress (polled by the UI). */
+  readonly jobs = new JobRegistry()
   private registry: StorageRegistry
   private rollbackAdapter: LocalStorageAdapter | null = null
   private scheduleTimer: NodeJS.Timeout | null = null
@@ -175,6 +178,18 @@ export class VaultService {
 
   getSettings(): VaultSettings {
     return this.settings
+  }
+
+  startBackupJob(req: BackupRequest): JobState<BackupResult> {
+    return this.jobs.start('backup', (onProgress) => this.backup(req, onProgress))
+  }
+
+  startRestoreJob(req: RestoreRequest): JobState<RestoreResult> {
+    return this.jobs.start('restore', (onProgress) => this.restore(req, onProgress))
+  }
+
+  startRetryPluginsJob(req: { plugins?: Array<{ name: string; profile: string }> } = {}): JobState<RestoreResult> {
+    return this.jobs.start('retry-plugins', (onProgress) => this.retryFailedPlugins(req, onProgress))
   }
 
   private registryLookup(): RegistryLookup | null {
@@ -284,12 +299,13 @@ export class VaultService {
       categories: req.categories,
       bundleLocalPlugins: req.bundleLocalPlugins,
       pluginCopyExclude: this.copyExcludeFor(req),
+      onProgress,
     })
     // Mark copies whose exact version the registry no longer has: restore installs those from the copy directly.
     const lookup = this.registryLookup()
     const withCopy = plugins.filter((p) => p.fallbackBundle)
     if (lookup && withCopy.length) {
-      onProgress?.({ phase: 'collect', message: 'Checking plugin versions on the registry', percent: 10 })
+      onProgress?.({ phase: 'copies', message: 'Checking plugin versions on the registry', item: 'registry' })
       const st = await registryStatuses(withCopy, lookup)
       for (const p of withCopy) if (st.get(pluginKey(p.profile, p.name)) === 'missing') p.registryMissing = true
     }
@@ -302,9 +318,14 @@ export class VaultService {
       kdf: req.kdf ?? this.settings.preferredKdf,
       dshVersion: req.dshVersion ?? this.dshVersion,
       notes: req.notes,
-      onProgress,
+      onProgress: onProgress
+        ? (ev) => {
+            if (ev.phase === 'done') return
+            onProgress({ ...ev, fraction: ev.phase === 'pack' ? (ev.percent ?? 0) / 70 : 0.5 })
+          }
+        : undefined,
     })
-    onProgress?.({ phase: 'upload', message: 'Saving snapshot', percent: 85 })
+    onProgress?.({ phase: 'upload', message: 'Saving snapshot', fraction: 0.1 })
 
     let targetId = req.targetId ?? (directory ? 'local-oneshot' : 'export-file')
     let remoteKey = packed.snapshotId
@@ -413,9 +434,18 @@ export class VaultService {
   }
 
   private async restoreInner(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
-    onProgress?.({ phase: 'download', message: 'Loading snapshot', percent: 5 })
+    onProgress?.({ phase: 'prepare', message: 'Loading snapshot', fraction: 0.1 })
     const resolved = await this.resolveSnapshotBytes(req)
-    const unpacked = await unpackSnapshot(resolved.bytes, req.password, onProgress)
+    const unpacked = await unpackSnapshot(resolved.bytes, req.password, (ev) => {
+      if (ev.phase !== 'done') onProgress?.({ ...ev, phase: 'prepare', fraction: (ev.percent ?? 0) / 100 })
+    })
+    const rollbackProgress: ProgressCallback | undefined = onProgress
+      ? (ev) => {
+          if (ev.phase === 'done') return
+          const frac = ev.phase === 'collect' && ev.total ? (ev.current ?? 0) / ev.total * 0.6 : 0.6 + 0.4 * ((ev.percent ?? 0) / 100)
+          onProgress({ phase: 'rollback', message: 'Creating pre-restore rollback snapshot', fraction: frac, item: ev.item })
+        }
+      : undefined
     const conflicts = normalizeConflicts(req.conflicts)
     const includeSecrets = req.includeSecrets ?? unpacked.manifest.includeSecrets
     const snapshotId = unpacked.manifest.id
@@ -429,7 +459,7 @@ export class VaultService {
         conflicts,
         includeSecrets,
       )
-      onProgress?.({ phase: 'pack', message: 'Creating pre-restore rollback snapshot', percent: 25 })
+      onProgress?.({ phase: 'rollback', message: 'Creating pre-restore rollback snapshot', fraction: 0 })
       if (willTouchSecrets) {
         if (!req.password) {
           throw new VaultUserError(
@@ -443,14 +473,14 @@ export class VaultService {
           encrypt: true,
           password: req.password,
           notes: `pre-restore rollback for ${snapshotId}`,
-          onProgress,
+          onProgress: rollbackProgress,
         })
       } else {
         rollbackSnapshotId = await this.createPrivateRollbackSnapshot({
           includeSecrets: false,
           encrypt: false,
           notes: `pre-restore rollback for ${snapshotId}`,
-          onProgress,
+          onProgress: rollbackProgress,
         })
       }
       rollbackTargetId = ROLLBACK_TARGET_ID
@@ -470,13 +500,14 @@ export class VaultService {
     result.rollbackTargetId = rollbackTargetId
 
     if (req.reinstallPlugins !== false) {
-      onProgress?.({ phase: 'reinstall', message: 'Installing plugins into profile', percent: 90 })
+      onProgress?.({ phase: 'reinstall', message: 'Installing plugins into profile', fraction: 0 })
       const records = req.pluginProfiles?.length
         ? unpacked.manifest.plugins.filter((p) => req.pluginProfiles!.includes(p.profile ?? this.activeProfile))
         : unpacked.manifest.plugins
-      await this.installPlugins(records, result, undefined, req.pluginRestoreOrder)
+      await this.installPlugins(records, result, undefined, req.pluginRestoreOrder, onProgress)
       await this.saveLastRestore({ snapshotId, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
     }
+    onProgress?.({ phase: 'verify', message: 'Verifying', fraction: 1 })
     this.finishPluginSummary(result)
 
     onProgress?.({ phase: 'done', message: result.ok ? 'Restore complete' : 'Restore incomplete (plugin failures)', percent: 100 })
@@ -500,9 +531,10 @@ export class VaultService {
     result: RestoreResult,
     only?: Set<string>,
     order?: VaultSettings['pluginRestoreOrder'],
+    onProgress?: ProgressCallback,
   ): Promise<void> {
     const restoreOrder = order ?? this.settings.pluginRestoreOrder ?? 'source-first'
-    const { results, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only, restoreOrder })
+    const { results, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only, restoreOrder, onProgress })
     result.pluginResults = results
     result.pluginsReinstalled = results.filter((r) => r.status === 'installed' || r.status === 'installed-from-backup').map((r) => r.name)
     result.pluginsFailed = results.filter((r) => r.status === 'failed').map((r) => r.name)
@@ -565,7 +597,7 @@ export class VaultService {
    * Also works after a restore made by an older dsh-vault: plugin records then come
    * from the profile manifests on disk.
    */
-  async retryFailedPlugins(req: { plugins?: Array<{ name: string; profile: string }> } = {}): Promise<RestoreResult> {
+  async retryFailedPlugins(req: { plugins?: Array<{ name: string; profile: string }> } = {}, onProgress?: ProgressCallback): Promise<RestoreResult> {
     const last = await this.loadLastRestore()
     const records: VaultManifest['plugins'] = [...(last?.plugins ?? [])]
     if (!records.length) {
@@ -591,7 +623,7 @@ export class VaultService {
       pluginsFailed: [],
       manualActions: [],
     }
-    await this.installPlugins(records, result, only)
+    await this.installPlugins(records, result, only, undefined, onProgress)
     if (last) {
       // Merge into the saved results so a second retry still knows what is left.
       const rows = new Map(last.pluginResults.map((r) => [`${r.profile}:${r.name}`, r]))
@@ -824,6 +856,7 @@ export class VaultService {
       agentsHome: this.agentsHome,
       includeSecrets: input.includeSecrets,
       bundleLocalPlugins: false,
+      onProgress: input.onProgress,
     })
     const packed = await packSnapshot({
       files,
