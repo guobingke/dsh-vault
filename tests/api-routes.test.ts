@@ -43,8 +43,16 @@ describe('HTTP API routes', () => {
       await withServer(service, async (base) => {
         const statusRes = await fetch(`${base}/api/dsh-vault/status`)
         assert.equal(statusRes.status, 200)
-        const status = await statusRes.json() as { targets: unknown[] }
+        const status = await statusRes.json() as {
+          targets: unknown[]
+          activeProfile: string
+          surface: string
+          installPlan: Array<{ profile: string; command: string }>
+        }
         assert.ok(status.targets.length >= 1)
+        assert.ok(typeof status.activeProfile === 'string' && status.activeProfile.length > 0)
+        assert.ok(['web', 'desktop', 'other'].includes(status.surface))
+        assert.ok(status.installPlan.some((p) => p.profile === 'desktop'))
 
         const backupRes = await fetch(`${base}/api/dsh-vault/backup`, {
           method: 'POST',

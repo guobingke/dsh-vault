@@ -19,6 +19,14 @@ import {
   vaultRollbackDir,
   vaultTempDir,
 } from './paths.js'
+import {
+  DESKTOP_PROFILE,
+  installCommandForProfile,
+  listInitializedGuiProfiles,
+  multiProfileInstallPlan,
+  resolveActiveProfile,
+  WEB_PROFILE,
+} from './profiles.js'
 import { snapshotsToDelete } from './retention.js'
 import { applyRestore } from './restore-apply.js'
 import { packSnapshot, unpackSnapshot } from './snapshot-io.js'
@@ -41,6 +49,8 @@ export interface VaultServiceOptions {
   agentsHome?: string
   dataDir?: string
   dshVersion?: string
+  /** Override active profile (defaults to $DSH_PROFILE / desktop|web). */
+  activeProfile?: string
   resolveSecret?: (ref: string) => Promise<string | undefined>
   /** Override plugin install command runner (for tests). */
   runPluginInstall?: (spec: string, profile: string) => Promise<{ ok: boolean; detail: string }>
@@ -50,6 +60,8 @@ export class VaultService {
   readonly dshHome: string
   readonly agentsHome: string
   readonly dataDir: string
+  /** Profile this Host process is running as (`web`, `desktop`, …). */
+  readonly activeProfile: string
   private settings: VaultSettings = DEFAULT_SETTINGS
   private registry: StorageRegistry
   private scheduleTimer: NodeJS.Timeout | null = null
@@ -60,6 +72,7 @@ export class VaultService {
     this.dshHome = options.dshHome ?? resolveDshHome()
     this.agentsHome = options.agentsHome ?? resolveAgentsHome()
     this.dataDir = vaultDataDir(this.dshHome, options.dataDir)
+    this.activeProfile = options.activeProfile ?? resolveActiveProfile()
     this.dshVersion = options.dshVersion
     this.registry = new StorageRegistry([], { resolveSecret: options.resolveSecret })
     this.runPluginInstall = options.runPluginInstall ?? defaultPluginInstall
@@ -238,16 +251,21 @@ export class VaultService {
           result.pluginsFailed.push(plugin.name)
           continue
         }
-        const profile = plugin.profile ?? 'web'
+        const profile = plugin.profile ?? this.activeProfile
         const spec = plugin.version ? `${plugin.name}@${plugin.version}` : plugin.name
         const install = await this.runPluginInstall(spec, profile)
         if (install.ok) result.pluginsReinstalled.push(plugin.name)
         else result.pluginsFailed.push(plugin.name)
       }
       if (result.pluginsFailed.length) {
+        const hintProfile = this.activeProfile === DESKTOP_PROFILE ? DESKTOP_PROFILE : WEB_PROFILE
+        const hint = installCommandForProfile(hintProfile, '<pkg>')
         result.manualActions.push(
-          `Manually reinstall plugins: ${result.pluginsFailed.join(', ')} (e.g. dsh plugin --profile web add <pkg>)`,
+          `Manually reinstall plugins: ${result.pluginsFailed.join(', ')} (e.g. ${hint.command})`,
         )
+        if (hintProfile === DESKTOP_PROFILE) {
+          result.manualActions.push(...hint.notes)
+        }
       }
     }
 
@@ -326,14 +344,28 @@ export class VaultService {
   async status(): Promise<{
     dshHome: string
     dataDir: string
+    activeProfile: string
+    guiProfiles: string[]
+    surface: 'desktop' | 'web' | 'other'
+    installPlan: Array<{ profile: string; command: string; notes: string[] }>
     targets: StorageTargetConfig[]
     settings: VaultSettings
     recentSnapshots: SnapshotInfo[]
   }> {
     const recentSnapshots = (await this.listSnapshots()).slice(0, 10)
+    const surface =
+      this.activeProfile === DESKTOP_PROFILE
+        ? 'desktop'
+        : this.activeProfile === WEB_PROFILE
+          ? 'web'
+          : 'other'
     return {
       dshHome: this.dshHome,
       dataDir: this.dataDir,
+      activeProfile: this.activeProfile,
+      guiProfiles: listInitializedGuiProfiles(this.dshHome),
+      surface,
+      installPlan: multiProfileInstallPlan('dsh-vault', this.dshHome),
       targets: this.listTargets(),
       settings: this.settings,
       recentSnapshots,
@@ -349,9 +381,11 @@ function ensureLocalRollbackTarget(service: VaultService): string {
 
 async function defaultPluginInstall(spec: string, profile: string): Promise<{ ok: boolean; detail: string }> {
   return new Promise((resolve) => {
+    // Prefer whatever `dsh` is on PATH (Desktop tray terminal = bundled carrier).
     const child = spawn('dsh', ['plugin', '--profile', profile, 'add', spec], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
+      shell: process.platform === 'win32',
     })
     let detail = ''
     child.stdout?.on('data', (c: Buffer) => {
@@ -361,7 +395,13 @@ async function defaultPluginInstall(spec: string, profile: string): Promise<{ ok
       detail += c.toString('utf8')
     })
     child.on('error', (err) => resolve({ ok: false, detail: err.message }))
-    child.on('close', (code) => resolve({ ok: code === 0, detail: detail.slice(0, 500) }))
+    child.on('close', (code) => {
+      let text = detail.slice(0, 800)
+      if (code !== 0 && profile === DESKTOP_PROFILE) {
+        text += '\n' + installCommandForProfile(DESKTOP_PROFILE, spec).notes.join('\n')
+      }
+      resolve({ ok: code === 0, detail: text })
+    })
   })
 }
 

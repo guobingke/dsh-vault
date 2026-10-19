@@ -20,6 +20,10 @@ export function buildVaultTools(service: VaultService): VaultToolDef[] {
         return redactForLog({
           dshHome: status.dshHome,
           dataDir: status.dataDir,
+          activeProfile: status.activeProfile,
+          surface: status.surface,
+          guiProfiles: status.guiProfiles,
+          installPlan: status.installPlan.map((p) => ({ profile: p.profile, command: p.command })),
           targetCount: status.targets.length,
           targets: status.targets.map((t) => ({ id: t.id, kind: t.kind, label: t.label })),
           schedule: {
