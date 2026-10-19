@@ -160,6 +160,13 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
 
   if (wanted.has('settings') || wanted.has('providers')) {
     await maybeAddFile(join(dshHome, 'settings.yaml'), 'settings.yaml', 'settings', includeSecrets, files)
+    // Home-wide patch layer: dsh-app-boot applies $DSH_HOME/cordis.patch.yml to every profile.
+    await maybeAddFile(join(dshHome, 'cordis.patch.yml'), 'cordis.patch.yml', 'settings', includeSecrets, files)
+  }
+  if (wanted.has('plugin-config')) {
+    // Plugin data written through dsh's storage root ($DSH_HOME/storages/<domain>/…),
+    // e.g. dsh-cost-meter's ledger. Caches are skipped by shouldSkipDir.
+    await walkFiles(join(dshHome, 'storages'), 'storages', 'plugin-config', includeSecrets, files)
   }
   if (wanted.has('credentials') && includeSecrets) {
     await maybeAddFile(join(dshHome, '.credentials.yaml'), '.credentials.yaml', 'credentials', true, files)
@@ -240,7 +247,8 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
 export function categoryForRelPath(rel: string): BackupCategory {
   const p = rel.replace(/\\/g, '/')
   if (isSecretRelPath(p)) return 'credentials'
-  if (p === 'settings.yaml') return 'settings'
+  if (p === 'settings.yaml' || p === 'cordis.patch.yml') return 'settings'
+  if (p.startsWith('storages/')) return 'plugin-config'
   if (p === 'mcp.json' || p.startsWith('mcp/')) return 'mcp'
   if (p.startsWith('skills/') || p.startsWith('agents-home/skills/')) return 'skills'
   if (p === 'AGENTS.md' || p === 'agents-home/AGENTS.md') return 'instructions'

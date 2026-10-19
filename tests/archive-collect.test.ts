@@ -34,6 +34,25 @@ describe('archive + collect', () => {
     }
   })
 
+  it('collects the home-wide cordis.patch.yml and plugin data under storages/ (not caches)', async () => {
+    const home = await makeTempHome()
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises')
+      const { join } = await import('node:path')
+      await writeFile(join(home.dshHome, 'cordis.patch.yml'), '- id: agent-instructions\n  config: { maxBytes: 1 }\n')
+      await mkdir(join(home.dshHome, 'storages', 'cost-meter'), { recursive: true })
+      await writeFile(join(home.dshHome, 'storages', 'cost-meter', 'ledger.json'), '{"total":1}')
+      await mkdir(join(home.dshHome, 'storages', 'session_projcache', 'sessions'), { recursive: true })
+      await writeFile(join(home.dshHome, 'storages', 'session_projcache', 'sessions', 'x.json'), '{}')
+      const { files } = await collectBackupFiles({ dshHome: home.dshHome, agentsHome: home.agentsHome })
+      assert.equal(files.find((f) => f.relPath === 'cordis.patch.yml')?.category, 'settings')
+      assert.equal(files.find((f) => f.relPath === 'storages/cost-meter/ledger.json')?.category, 'plugin-config')
+      assert.ok(!files.some((f) => f.relPath.includes('session_projcache')))
+    } finally {
+      await home.cleanup()
+    }
+  })
+
   it('includes secrets only when requested', async () => {
     const home = await makeTempHome()
     try {

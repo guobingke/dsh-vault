@@ -108,6 +108,8 @@ export const SKIP_DIR_NAMES = new Set([
   'config-backups',
   // dsh plugin-manager operation logs (profiles/*/.plugin-manager/logs) — noise, not config.
   '.plugin-manager',
+  // dsh session projection cache under $DSH_HOME/storages (rebuilt from sessions).
+  'session_projcache',
 ])
 
 export function shouldSkipDir(name: string): boolean {
