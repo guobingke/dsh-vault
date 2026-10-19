@@ -8,6 +8,7 @@
 import { createElement, type ReactNode } from 'react'
 import { VaultApp } from './VaultApp.js'
 import { VaultApi } from './api.js'
+import { dictionaries } from './i18n.js'
 
 export const name = 'dsh-vault-client'
 export const inject = ['slots', 'locale']
@@ -28,12 +29,16 @@ export interface ClientContext {
 
 const NS = 'dsh-vault'
 
-const zh: Record<string, string> = {
-  'section.label': 'dsh Vault',
-}
+/** Host-registered dictionary (section label + all panel strings). */
+const zh: Record<string, string> = { ...dictionaries.zh, 'section.label': 'dsh Vault' }
+const en: Record<string, string> = { ...dictionaries.en, 'section.label': 'dsh Vault' }
 
-const en: Record<string, string> = {
-  'section.label': 'dsh Vault',
+function currentLocale(ctx: ClientContext): string | undefined {
+  try {
+    return ctx.locale.getLocale?.().active
+  } catch {
+    return undefined
+  }
 }
 
 export function apply(ctx: ClientContext): void {
@@ -48,14 +53,21 @@ export function apply(ctx: ClientContext): void {
     label: () => t('section.label'),
     locale: NS,
     inject: () => ({ api }),
-  }, VaultSection))
+  }, createVaultSection(ctx)))
 }
 
 /** Settings section wrapper — receives injected `{ api }` from the host slot. */
-export function VaultSection(props: { api?: VaultApi; close?: () => void }): ReactNode {
-  return createElement(VaultApp, { api: props.api })
+export function VaultSection(props: { api?: VaultApi; close?: () => void; locale?: string }): ReactNode {
+  return createElement(VaultApp, { api: props.api, hostLocale: props.locale })
+}
+
+/** Build a VaultSection bound to the host locale at mount time. */
+export function createVaultSection(ctx: ClientContext): (props: { api?: VaultApi }) => ReactNode {
+  return (props) => createElement(VaultApp, { api: props.api, hostLocale: currentLocale(ctx) })
 }
 
 export { VaultApp } from './VaultApp.js'
 export { VaultApi } from './api.js'
+export { I18nContext, translate, dictionaries } from './i18n.js'
 export type { VaultTab } from './VaultApp.js'
+export type { Locale, MessageKey } from './i18n.js'

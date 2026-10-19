@@ -1,5 +1,7 @@
 import type {
+  BackupCategory,
   BackupResult,
+  KdfAlgorithm,
   RestorePreview,
   RestoreResult,
   ScheduleConfig,
@@ -84,6 +86,9 @@ export class VaultApi {
     password?: string
     includeSecrets?: boolean
     notes?: string
+    /** Additive optional fields already accepted by POST /backup. */
+    categories?: BackupCategory[]
+    kdf?: KdfAlgorithm
   }): Promise<BackupResult> {
     return request('/backup', { method: 'POST', body: JSON.stringify(body) })
   }
@@ -110,6 +115,10 @@ export class VaultApi {
     snapshotId: string
     conflict: 'keep-current' | 'use-backup'
     password?: string
+    /** Additive optional fields already accepted by POST /restore. */
+    createRollbackSnapshot?: boolean
+    reinstallPlugins?: boolean
+    includeSecrets?: boolean
   }): Promise<RestoreResult> {
     return request('/restore', { method: 'POST', body: JSON.stringify(body) })
   }
