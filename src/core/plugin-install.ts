@@ -349,6 +349,58 @@ async function installSpecFor(plugin: PluginRecord, dshHome: string): Promise<{ 
   return { spec: plugin.name, kind: 'other' }
 }
 
+interface ProfileManifest {
+  dependencies?: Record<string, string>
+  dsh?: { profile?: { bundles?: string[] } }
+}
+
+async function readManifest(profileDir: string): Promise<ProfileManifest | null> {
+  try {
+    return JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as ProfileManifest
+  } catch {
+    return null
+  }
+}
+
+async function writeManifest(profileDir: string, pkg: ProfileManifest): Promise<void> {
+  await writeFile(join(profileDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`, { mode: 0o644 })
+}
+
+/** Drop `names` from the profile manifest (dependencies and dsh.profile.bundles). */
+async function removeFromManifest(profileDir: string, names: string[]): Promise<void> {
+  const pkg = await readManifest(profileDir)
+  if (!pkg) return
+  let changed = false
+  for (const n of names) {
+    if (pkg.dependencies && n in pkg.dependencies) {
+      delete pkg.dependencies[n]
+      changed = true
+    }
+  }
+  const bundles = pkg.dsh?.profile?.bundles
+  if (bundles) {
+    const kept = bundles.filter((b) => !names.includes(b))
+    if (kept.length !== bundles.length) {
+      pkg.dsh!.profile!.bundles = kept
+      changed = true
+    }
+  }
+  if (changed) await writeManifest(profileDir, pkg)
+}
+
+/** Put bundles back into the backup's order after per-plugin installs appended them. */
+async function restoreBundleOrder(profileDir: string, original: string[]): Promise<void> {
+  const pkg = await readManifest(profileDir)
+  const bundles = pkg?.dsh?.profile?.bundles
+  if (!pkg || !bundles) return
+  const rank = new Map(original.map((b, i) => [b, i]))
+  const sorted = [...bundles].sort((a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9))
+  if (sorted.join('\0') !== bundles.join('\0')) {
+    pkg.dsh!.profile!.bundles = sorted
+    await writeManifest(profileDir, pkg)
+  }
+}
+
 /**
  * Reinstall missing plugins after files were restored.
  * Prefer in-process pluginManager + profile `pnpm install`, then Desktop bundled dsh.
@@ -369,14 +421,32 @@ export async function reinstallMissingPlugins(
   }
 
   // Group by profile and materialize from lockfile/manifest first.
+  const isolated = new Map<string, Set<string>>()
+  const originalBundles = new Map<string, string[]>()
   const profiles = [...new Set(actionable.map((p) => p.profile ?? deps.activeProfile))]
   for (const profile of profiles) {
     const profileDir = join(deps.dshHome, 'profiles', profile)
     if (!(await pathExists(join(profileDir, 'package.json')))) continue
     const mat = await materializeProfile(profileDir, deps)
     if (!mat.ok) {
-      // Not fatal yet — individual installs may still work.
-      void mat
+      // One unresolvable npm plugin (unpublished, private registry, typo) makes the whole
+      // profile install fail, and every later `dsh plugin add` re-resolves the same manifest.
+      // Take the not-yet-installed npm plugins out, materialize the rest, then add them one
+      // by one below so a bad one only fails itself.
+      const pkg = await readManifest(profileDir)
+      const isolate: string[] = []
+      for (const p of actionable) {
+        if ((p.profile ?? deps.activeProfile) !== profile) continue
+        if (presentBefore.has(`${profile}:${p.name}`)) continue
+        if ((await installSpecFor(p, deps.dshHome)).kind !== 'npm') continue
+        if (pkg?.dependencies && p.name in pkg.dependencies) isolate.push(p.name)
+      }
+      if (isolate.length) {
+        originalBundles.set(profile, [...(pkg?.dsh?.profile?.bundles ?? [])])
+        isolated.set(profile, new Set(isolate))
+        await removeFromManifest(profileDir, isolate)
+        await materializeProfile(profileDir, deps)
+      }
     }
   }
 
@@ -391,6 +461,12 @@ export async function reinstallMissingPlugins(
   let restartRequired = false
   for (const plugin of actionable) {
     const profile = plugin.profile ?? deps.activeProfile
+    const iso = isolated.get(profile)
+    if (iso) {
+      // A failed add can leave its entry behind, which would break the next add too.
+      const failedHere = results.filter((r) => r.profile === profile && r.status === 'failed' && iso.has(r.name))
+      if (failedHere.length) await removeFromManifest(join(deps.dshHome, 'profiles', profile), failedHere.map((r) => r.name))
+    }
     if (await pluginPackagePresent(deps.dshHome, profile, plugin.name)) {
       // Present is not enough: a package whose dependencies don't resolve fails to import in dsh.
       const pkgDir = join(deps.dshHome, 'profiles', profile, 'node_modules', ...plugin.name.split('/'))
@@ -514,6 +590,14 @@ export async function reinstallMissingPlugins(
         source: plugin.source,
       })
     }
+  }
+
+  for (const [profile, names] of isolated) {
+    const profileDir = join(deps.dshHome, 'profiles', profile)
+    const failed = results.filter((r) => r.profile === profile && r.status === 'failed' && names.has(r.name))
+    if (failed.length) await removeFromManifest(profileDir, failed.map((r) => r.name))
+    for (const r of failed) r.detail = `${r.detail}\n(left out of profiles/${profile}/package.json so the other plugins still install)`.slice(0, 1400)
+    await restoreBundleOrder(profileDir, originalBundles.get(profile) ?? [])
   }
 
   // Final check: never report success for a version other than machine 1's.
