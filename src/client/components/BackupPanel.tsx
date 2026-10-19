@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { BackupCategory, StorageTargetConfig } from '../../core/types.js'
+import type { BackupCategory, BackupResult, StorageTargetConfig } from '../../core/types.js'
 import { useT, type MessageKey, type Translate } from '../i18n.js'
 import { passwordStrength } from '../lib/format.js'
 import { targetKindLabel, targetLocation } from '../lib/targets.js'
@@ -21,6 +21,7 @@ import {
   TextInput,
 } from './ui.js'
 import { PathPicker, type FsBrowser } from './PathPicker.js'
+import { BackupSummary } from './ResultSummary.js'
 import { PluginCopiesCard, type PluginCopiesApi } from './PluginCopiesCard.js'
 
 export interface BackupPanelProps {
@@ -50,6 +51,9 @@ export interface BackupPanelProps {
   pluginDataEntries?: string[]
   /** Plugin copy selection (保存插件副本); hidden when absent. */
   copiesApi?: PluginCopiesApi
+  /** Last finished backup (completion summary). */
+  result?: BackupResult | null
+  resultLocation?: string
 }
 
 type DestMode = 'target' | 'directory' | 'file'
@@ -94,6 +98,8 @@ export function BackupPanel({
   fs,
   pluginDataEntries,
   copiesApi,
+  result,
+  resultLocation,
 }: BackupPanelProps) {
   const tr = useT()
   const [destMode, setDestMode] = useState<DestMode>(targets.length ? 'target' : 'directory')
@@ -165,6 +171,7 @@ export function BackupPanel({
     <>
       <p className="dv-section-desc">{tr('backup.desc')}</p>
       {error ? <Banner tone="error" title={tr('backup.failedTitle')}>{error}</Banner> : null}
+      {result ? <BackupSummary result={result} location={resultLocation ?? ''} /> : null}
       {message ? <Banner tone="ok">{message}</Banner> : null}
 
       <Card>

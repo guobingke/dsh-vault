@@ -5,6 +5,8 @@ import { formatBytes, formatDateTime, relativeLabel } from '../lib/format.js'
 import { newestFirst } from '../lib/targets.js'
 import { localizeNotice, pluginRawDetail, pluginReasonText } from '../notices.js'
 import { PathPicker, type FsBrowser } from './PathPicker.js'
+import { DiffGroups } from './DiffGroups.js'
+import { RestoreSummary } from './ResultSummary.js'
 import {
   Banner,
   Button,
@@ -235,22 +237,6 @@ export function RestorePanel({
 
   const applyCount = changes.filter((c) => outcomeOf(c, c.resolution ?? choiceFor(c.path)) === 'apply').length
 
-  const visibleItems = useMemo(() => {
-    if (!preview) return []
-    const base = diffFilter === 'all'
-      ? [...preview.items].sort((a, b) => {
-          const rank = { add: 0, change: 1, remove: 2, unchanged: 3 } as const
-          return rank[a.change] - rank[b.change]
-        })
-      : preview.items.filter((i) => i.change === diffFilter)
-    return base.slice(0, MAX_ROWS)
-  }, [preview, diffFilter])
-
-  const diffVisibleCount = useMemo(() => {
-    if (!preview) return 0
-    return diffFilter === 'all' ? preview.items.length : preview.items.filter((i) => i.change === diffFilter).length
-  }, [preview, diffFilter])
-
   function startPreview() {
     setAck(false)
     setShowPasswordError(false)
@@ -288,14 +274,20 @@ export function RestorePanel({
     <>
       <p className="dv-section-desc" ref={topRef}>{tr('restore.desc')}</p>
       {error ? <Banner tone="error" title={tr('restore.failedTitle')}>{error}</Banner> : null}
-      {message ? (
+      {result ? (
+        <RestoreSummary result={result} onRetry={onRetryFailed} retrying={retrying} />
+      ) : message ? (
         <Banner tone="ok" title={tr('restore.successTitle')}>
           <div>{message}</div>
           <div className="dv-hint">{tr('restore.restartHint')}</div>
         </Banner>
       ) : null}
 
-      {result?.pluginResults?.length ? <PluginResults result={result} onRetry={onRetryFailed} retrying={retrying} /> : null}
+      {result?.pluginResults?.length ? (
+        <Collapsible summary={tr('restore.resultTitle')} defaultOpen={false}>
+          <PluginResults result={result} />
+        </Collapsible>
+      ) : null}
 
       <Card>
         <CardHead title={tr('restore.sourceTitle')} sub={tr('restore.sourceDesc')} />
@@ -437,64 +429,25 @@ export function RestorePanel({
               removed: preview.removed,
               unchanged: preview.unchanged,
             })}
-            actions={
-              <Segmented
-                label={tr('restore.diffTitle')}
-                value={diffFilter}
-                onChange={setDiffFilter}
-                options={[
-                  { value: 'all', label: tr('restore.filter.all'), count: preview.items.length },
-                  { value: 'add', label: tr('restore.filter.add'), count: preview.added },
-                  { value: 'change', label: tr('restore.filter.change'), count: preview.changed },
-                  { value: 'remove', label: tr('restore.filter.remove'), count: preview.removed },
-                  { value: 'unchanged', label: tr('restore.filter.unchanged'), count: preview.unchanged },
-                ]}
-              />
-            }
           />
           <div className="dv-card-sep" aria-hidden="true" />
           <span className="dv-card-sub dv-mono">{preview.snapshotId}</span>
           {preview.items.length === 0 ? (
             <span className="dv-hint">{tr('restore.diffEmpty')}</span>
           ) : (
-            <>
-              <div className="dv-scroll">
-                <table className="dv-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">{tr('restore.path')}</th>
-                      <th scope="col">{tr('restore.category')}</th>
-                      <th scope="col">{tr('restore.change')}</th>
-                      <th scope="col">{tr('restore.resolution')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleItems.map((i) => {
-                      const strategy = i.resolution ?? choiceFor(i.path)
-                      const outcome = outcomeOf(i, strategy)
-                      return (
-                        <tr key={`${i.change}:${i.path}`}>
-                          <td><span className="dv-path dv-mono">{i.path}</span></td>
-                          <td className="dv-muted">{i.category}</td>
-                          <td className="dv-muted">{changeLabel(tr, i.change)}</td>
-                          <td>
-                            {i.change === 'add' || i.change === 'change'
-                              ? <span className={outcome === 'skip' ? 'dv-muted' : undefined}>
-                                  {strategyLabel(tr, strategy)} · {outcome === 'skip' ? tr('restore.willSkip') : tr('restore.willApply')}
-                                </span>
-                              : <span className="dv-muted">{tr('restore.noChange')}</span>}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <span className="dv-hint dv-num">
-                {visibleItems.length} / {diffVisibleCount}
-                {diffVisibleCount > MAX_ROWS ? ` · ${tr('restore.truncated', { shown: MAX_ROWS })}` : ''}
-              </span>
-            </>
+            <DiffGroups
+              items={preview.items}
+              renderOutcome={(i) => {
+                if (i.change !== 'add' && i.change !== 'change') return <span className="dv-muted">{tr('restore.noChange')}</span>
+                const strategy = i.resolution ?? choiceFor(i.path)
+                const outcome = outcomeOf(i, strategy)
+                return (
+                  <span className={outcome === 'skip' ? 'dv-muted' : undefined}>
+                    {strategyLabel(tr, strategy)} · {outcome === 'skip' ? tr('restore.willSkip') : tr('restore.willApply')}
+                  </span>
+                )
+              }}
+            />
           )}
           {preview.removed > 0 ? <span className="dv-hint">{tr('restore.removedNote')}</span> : null}
         </Card>

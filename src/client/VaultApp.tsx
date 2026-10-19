@@ -10,7 +10,7 @@ import { SectionHead, SectionTabs } from './components/ui.js'
 import type { FsBrowser } from './components/PathPicker.js'
 import { I18nContext, detectInitialLocale, normalizeLocale, translate, type Locale, type MessageKey } from './i18n.js'
 import { formatBytes } from './lib/format.js'
-import type { BackupCategory, RestorePreview, RestoreResult, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
+import type { BackupCategory, BackupResult, RestorePreview, RestoreResult, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
 import { failedPluginLabels, localizeNotice } from './notices.js'
 import './theme.css'
 
@@ -87,6 +87,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([])
   const [preview, setPreview] = useState<RestorePreview | null>(null)
   const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
+  const [lastBackup, setLastBackup] = useState<BackupResult | null>(null)
   const [retrying, setRetrying] = useState(false)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -172,7 +173,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
     setNotice({ kind: failed ? 'error' : 'ok', text })
     // refresh() clears `error`, so raise the failure banner after it.
     await refresh()
-    if (failed) setError(text)
+    // The failure is shown by the completion summary (RestoreSummary), not a second error banner.
   }
 
   // Load once on mount, keyed by the API instance: `refresh` is re-created on
@@ -218,13 +219,11 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
     setBusy(true)
     setError(null)
     setNotice(null)
+    setLastBackup(null)
     startProgress(stages, 5000)
     void api.backup(input)
       .then((r) => {
-        setNotice({
-          kind: 'ok',
-          text: `${t('backup.successTitle', { id: r.snapshotId })} · ${formatBytes(r.bytes)} · ${targetLabel(r.targetId)}`,
-        })
+        setLastBackup(r)
         return refresh()
       })
       .catch((err: unknown) => setError(errorText(err)))
@@ -287,6 +286,8 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                 fs={fsBrowser}
                 pluginDataEntries={status?.pluginDataEntries}
                 copiesApi={api}
+                result={lastBackup}
+                resultLocation={lastBackup ? lastBackup.exportPath ?? targetLabel(lastBackup.targetId) : ''}
               />
             ) : null}
 

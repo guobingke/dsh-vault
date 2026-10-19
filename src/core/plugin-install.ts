@@ -1,5 +1,6 @@
 import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { constants, existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import path, { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
@@ -455,6 +456,52 @@ async function ensureBundleListed(profileDir: string, name: string): Promise<voi
   await writeManifest(profileDir, pkg)
 }
 
+/**
+ * Same lookup dsh-app-boot uses for `dsh.profile.bundles` (resolveBundleDir, profile anchor):
+ * Node's node_modules search paths from <profile>/package.json, a directory holding package.json.
+ * When it fails, Desktop marks the plugin 异常 / 包不可用 ("cannot resolve profile bundle").
+ */
+export function bundleResolvesFromProfile(profileDir: string, name: string): boolean {
+  try {
+    for (const p of createRequire(join(profileDir, 'package.json')).resolve.paths(name) ?? []) {
+      if (existsSync(join(p, name, 'package.json'))) return true
+    }
+  } catch {
+    // fall through
+  }
+  return false
+}
+
+/**
+ * Keep `dsh.profile.bundles` loadable while plugins install: only list a restored plugin once
+ * its package resolves the way dsh resolves it, so a Desktop (re)start mid-restore never sees a
+ * bundle it cannot load. Returns the restored plugins that still do not resolve.
+ */
+async function syncResolvableBundles(profileDir: string, original: string[], ours: Set<string>, installedNow: Set<string> = new Set()): Promise<string[]> {
+  const pkg = await readManifest(profileDir)
+  const bundles = pkg?.dsh?.profile?.bundles
+  if (!pkg || !bundles) return []
+  const unresolved: string[] = []
+  const keep = bundles.filter((b) => {
+    const n = bundleName(b)
+    if (!ours.has(n) || isBuiltinDshBundle(n)) return true
+    if (bundleResolvesFromProfile(profileDir, n)) return true
+    unresolved.push(n)
+    return false
+  })
+  for (const n of [...original, ...ours]) {
+    if (!ours.has(n) || isBuiltinDshBundle(n) || keep.some((b) => bundleName(b) === n)) continue
+    if (!original.includes(n) && !installedNow.has(n)) continue
+    if (bundleResolvesFromProfile(profileDir, n)) keep.push(n)
+    else if (!unresolved.includes(n)) unresolved.push(n)
+  }
+  if (keep.map(bundleName).join('\0') !== bundles.map(bundleName).join('\0')) {
+    pkg.dsh!.profile!.bundles = keep
+    await writeManifest(profileDir, pkg)
+  }
+  return unresolved
+}
+
 /** Put bundles back into the backup's order after per-plugin installs appended them. */
 async function restoreBundleOrder(profileDir: string, original: string[]): Promise<void> {
   const pkg = await readManifest(profileDir)
@@ -879,12 +926,14 @@ export async function reinstallMissingPlugins(
   }
 
   const profiles = [...new Set(actionable.map(profileOf))]
+  const oursIn = (profile: string) => new Set(actionable.filter((p) => profileOf(p) === profile).map((p) => p.name))
   const originalBundles = new Map<string, string[]>()
   for (const profile of profiles) {
     const profileDir = join(deps.dshHome, 'profiles', profile)
     const pkg = await readManifest(profileDir)
     if (!pkg) continue
     originalBundles.set(profile, (pkg.dsh?.profile?.bundles ?? []).map(bundleName))
+    await syncResolvableBundles(profileDir, originalBundles.get(profile)!, oursIn(profile))
 
     // 2) Pre-validate. Unresolvable specs come out of this install run.
     const invalid = await findUnresolvableSpecs(profileDir)
@@ -1111,6 +1160,18 @@ export async function reinstallMissingPlugins(
     for (const r of results) {
       if (r.profile === profile && r.status === 'failed' && failed.includes(r.name) && !/left out of/.test(r.detail)) {
         r.log = `${r.log ? `${r.log}\n\n` : ''}(left out of profiles/${profile}/package.json so the other plugins still install; use “retry failed plugins” after fixing the cause)`
+      }
+    }
+    // Re-list every restored plugin that now resolves exactly as dsh will; flag the rest.
+    const installedNow = new Set(results.filter((r) => r.profile === profile && (r.status === 'installed' || r.status === 'installed-from-backup')).map((r) => r.name))
+    const unresolved = await syncResolvableBundles(profileDir, originalBundles.get(profile) ?? [], oursIn(profile), installedNow)
+    for (const name of unresolved) {
+      const row = results.find((r) => r.profile === profile && r.name === name)
+      if (row && row.status !== 'failed' && row.status !== 'skipped') {
+        row.status = 'failed'
+        row.reason = 'not-resolvable'
+        row.subject = name
+        row.detail = `installed, but dsh cannot resolve profile bundle ${name} from profiles/${profile}; left out of dsh.profile.bundles`
       }
     }
     await restoreBundleOrder(profileDir, originalBundles.get(profile) ?? [])

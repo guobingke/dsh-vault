@@ -250,6 +250,13 @@ export class VaultService {
   }
 
   async backup(req: BackupRequest, onProgress?: ProgressCallback): Promise<BackupResult> {
+    const started = Date.now()
+    const out = await this.backupInner(req, onProgress)
+    out.durationMs = Date.now() - started
+    return out
+  }
+
+  private async backupInner(req: BackupRequest, onProgress?: ProgressCallback): Promise<BackupResult> {
     if (req.targetId === ROLLBACK_TARGET_ID) {
       throw new VaultUserError('cannot backup to the private rollback folder; use a normal storage target', 400, 'BAD_CONFIG')
     }
@@ -399,6 +406,13 @@ export class VaultService {
   }
 
   async restore(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
+    const started = Date.now()
+    const out = await this.restoreInner(req, onProgress)
+    out.durationMs = Date.now() - started
+    return out
+  }
+
+  private async restoreInner(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
     onProgress?.({ phase: 'download', message: 'Loading snapshot', percent: 5 })
     const resolved = await this.resolveSnapshotBytes(req)
     const unpacked = await unpackSnapshot(resolved.bytes, req.password, onProgress)

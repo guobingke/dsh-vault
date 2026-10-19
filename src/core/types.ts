@@ -155,6 +155,7 @@ export interface BackupResult {
   manifest: VaultManifest
   /** Absolute path when exportFile/directory was used. */
   exportPath?: string
+  durationMs?: number
 }
 
 export interface DiffItem {
@@ -235,6 +236,7 @@ export type PluginFailureReasonCode =
   | 'git-missing'
   | 'git-unavailable'
   | 'no-backup-copy'
+  | 'not-resolvable'
   | 'unknown'
 
 export interface PluginInstallResultRow {
@@ -267,6 +269,8 @@ export interface RestoreResult {
   /** Plugins were installed into a running Desktop/web host; restart recommended. */
   restartRequired?: boolean
   manualActions: string[]
+  /** Wall time of the restore (or retry), for the completion summary. */
+  durationMs?: number
 }
 
 export interface SnapshotInfo {
