@@ -15,7 +15,7 @@
 #   dsh plugin --profile desktop add link:<absolute-path-to-this-repo>
 #
 # The browser half declares `dsh.client.platform: web`, which Desktop also
-# loads (Desktop embeds the shared Web UI). Settings → dsh Vault registers via
+# loads (Desktop embeds the shared Web UI). Settings → 大肥鱼备份 registers via
 # `settings.section`.
 - insert:
     - id: dsh-vault

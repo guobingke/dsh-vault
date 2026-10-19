@@ -21,7 +21,7 @@ Desktop owns the reserved profile `$DSH_HOME/profiles/desktop`. Plugin activatio
 dsh plugin --profile desktop add dsh-vault
 ```
 
-3. Reopen Desktop → **Settings → dsh Vault**.
+3. Reopen Desktop → **Settings → 大肥鱼备份**.
 
 Alternatively, while Desktop is running: **Plugins** → add `dsh-vault` (same Web Plugin Manager).
 
@@ -39,7 +39,7 @@ dsh plugin --profile web add dsh-vault
 dsh plugin --profile web add link:/absolute/path/to/dsh-vault
 ```
 
-Restart `dsh web`, then open **Settings → dsh Vault**.
+Restart `dsh web`, then open **Settings → 大肥鱼备份**.
 
 ### Both surfaces
 
@@ -99,7 +99,7 @@ Encryption can be toggled for remote targets too (`encryptByDefault` or per-back
 
 ### Settings UI (web + Desktop)
 
-**Settings → dsh Vault**: Dashboard / Backup / Restore / Storage / Snapshots / Settings.
+**Settings → 大肥鱼备份**: Dashboard / Backup / Restore / Storage / Snapshots / Settings.
 
 Desktop embeds the shared Web UI; the plugin’s browser half declares `dsh.client.platform: "web"` (required for Desktop as well).
 

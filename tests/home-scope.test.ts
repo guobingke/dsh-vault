@@ -88,7 +88,7 @@ describe('home scope (denylist)', () => {
     assert.equal(homeExcludeReason('backups/memory-bridge/x.json', false), null)
     assert.equal(homeExcludeReason('redteam/engagements/x.md', false), null)
     assert.equal(homeExcludeReason('storages/session_projcache.json', false), 'machine-state')
-    assert.equal(homeExcludeReason('storages/workspace.json', false), null)
+    assert.equal(homeExcludeReason('storages/workspace.json', false), 'workspace')
   })
 
   it('lists the detected plugin data entries for the UI', async () => {
@@ -238,7 +238,6 @@ describe('full-home backup + restore + diff', () => {
         'redteam/skills/\u7ea2\u961f\u6280\u80fd/SKILL.md',
         'skin-center/wallpapers/a.png',
         'skins/whale-fantasy/skin.json',
-        'storages/workspace.json',
         'prompt-inject.md',
         'settings.yaml.imported',
         'skin-center-active.json',
@@ -260,6 +259,7 @@ describe('full-home backup + restore + diff', () => {
       assert.ok(!existsSync(join(dsh2, 'dsh-purge', 'settle-restart.guard')))
       assert.ok(!existsSync(join(dsh2, '.anonymous-user-id')))
       assert.ok(!existsSync(join(dsh2, 'storages', 'session_projcache.json')))
+      assert.ok(!existsSync(join(dsh2, 'storages', 'workspace.json')), 'workspaces are not migrated')
       assert.ok(!existsSync(join(dsh2, 'profiles', 'desktop', 'node_modules', 'x')))
 
       const d = await diffHomes({ homeA: dsh1, homeB: dsh2, agentsA: agents1, agentsB: agents2 })

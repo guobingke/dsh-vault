@@ -1,7 +1,7 @@
 {
   "name": "dsh-vault",
   "version": "0.1.0",
-  "description": "Backup and restore your full DeepSeek Harness (dsh) setup for web and Desktop: plugins, MCP, skills, settings, presets, and profiles — with local, encrypted, GitHub, WebDAV, and S3 storage targets.",
+  "description": "大肥鱼备份 — Backup and restore your full DeepSeek Harness (dsh) setup for web and Desktop: plugins, MCP, skills, settings, presets, and profiles — with local, encrypted, GitHub, WebDAV, and S3 storage targets.",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.js",

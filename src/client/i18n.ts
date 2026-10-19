@@ -13,10 +13,10 @@ export type MessageKey = keyof typeof zh
 
 const zh = {
   // section
-  'section.label': 'dsh Vault',
-  'section.title': 'dsh Vault',
+  'section.label': '大肥鱼备份',
+  'section.title': '大肥鱼备份',
   'section.description': '备份并恢复 dsh 的插件、MCP、技能、设置与配置档案。',
-  'section.tabs': 'dsh Vault 分区',
+  'section.tabs': '大肥鱼备份 分区',
   'section.tab.overview': '概览',
   'section.tab.backup': '备份',
   'section.tab.restore': '恢复',
@@ -459,10 +459,10 @@ const zh = {
 }
 
 const en: Record<MessageKey, string> = {
-  'section.label': 'dsh Vault',
-  'section.title': 'dsh Vault',
+  'section.label': '大肥鱼备份',
+  'section.title': '大肥鱼备份',
   'section.description': 'Back up and restore dsh plugins, MCP servers, skills, settings and profiles.',
-  'section.tabs': 'dsh Vault sections',
+  'section.tabs': '大肥鱼备份 sections',
   'section.tab.overview': 'Overview',
   'section.tab.backup': 'Backup',
   'section.tab.restore': 'Restore',

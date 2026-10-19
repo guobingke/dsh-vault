@@ -34,8 +34,8 @@ export interface ClientContext {
 const NS = 'dsh-vault'
 
 /** Host-registered dictionary (section label + all panel strings). */
-const zh: Record<string, string> = { ...dictionaries.zh, 'section.label': 'dsh Vault' }
-const en: Record<string, string> = { ...dictionaries.en, 'section.label': 'dsh Vault' }
+const zh: Record<string, string> = { ...dictionaries.zh, 'section.label': '大肥鱼备份' }
+const en: Record<string, string> = { ...dictionaries.en, 'section.label': '大肥鱼备份' }
 
 function currentLocale(ctx: ClientContext): string | undefined {
   try {

@@ -4,7 +4,7 @@ The dsh-vault interface is **part of the dsh Settings modal**, not a standalone
 app. It registers one section (`settings.section`, id `dsh-vault`) and renders
 into the modal's right content column (≈450–520 px, on `dsh web` and
 DeepSeek Harness Desktop alike). The host owns the modal frame, the left
-navigation ("dsh Vault" is one entry there), the colors and the light/dark
+navigation ("大肥鱼备份" is one entry there), the colors and the light/dark
 theme; the section only supplies its own content.
 
 This document describes the design rules. It stays inside the boundary of
@@ -20,7 +20,7 @@ API call is unchanged.
    provider cards, switches — the same shapes and tokens as dsh's own
    General / Models pages. Nothing in this section should read as "a plugin's
    own little app".
-2. **No shell, no branding.** No sidebar, no logo, no "dsh Vault" brand block,
+2. **No shell, no branding.** No sidebar, no logo, no "大肥鱼备份" brand block,
    no hero banner, no gradient / glow / shadow, no KPI tile grid, no
    decorative icons before headings, no theme switch (the host theme applies),
    no marketing copy.
@@ -41,7 +41,7 @@ API call is unchanged.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ dsh Vault                                  16px, regular│
+│ 大肥鱼备份                                  16px, regular│
 │ Back up and restore dsh plugins, …          14px, secondary│
 │                                                          │
 │ [Overview] [Backup] [Restore] [Storage] [Snapshots] [Auto backup]

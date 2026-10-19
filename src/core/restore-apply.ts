@@ -1,3 +1,4 @@
+import { isWorkspaceStatePath } from './home-scope.js'
 import { mkdir, writeFile, unlink } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { ConflictMap } from './conflict.js'
@@ -47,6 +48,10 @@ export async function applyRestore(input: {
     }
     const meta = input.manifest.files.find((f) => f.path === item.path)
     if (meta?.secret && !input.includeSecrets && !input.manifest.includeSecrets) {
+      skipped.push(item.path)
+      continue
+    }
+    if (isWorkspaceStatePath(item.path)) {
       skipped.push(item.path)
       continue
     }

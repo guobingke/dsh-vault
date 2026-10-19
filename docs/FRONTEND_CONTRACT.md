@@ -34,7 +34,7 @@ src/client/
 
 Host mount: Settings → section id `dsh-vault` (slot `settings.section`).
 
-This registration works for **both** `dsh web` and DeepSeek Harness Desktop. Desktop embeds the shared Web UI and loads the same browser half (`dsh.client.platform: "web"`). The plugin must be installed into the profile that owns the running Host (`web` or `desktop`); activation is not shared across profiles. No separate Electron-native panel exists — Settings → dsh Vault is the desktop entry point.
+This registration works for **both** `dsh web` and DeepSeek Harness Desktop. Desktop embeds the shared Web UI and loads the same browser half (`dsh.client.platform: "web"`). The plugin must be installed into the profile that owns the running Host (`web` or `desktop`); activation is not shared across profiles. No separate Electron-native panel exists — Settings → 大肥鱼备份 is the desktop entry point.
 
 ## Tabs / IA
 

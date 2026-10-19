@@ -131,7 +131,7 @@ Encryption can be toggled per backup or via `encryptByDefault` on a target.
 ## Known dsh limitations / assumptions
 
 - Host services (`webServer`, `tools`, `commands`, `credentials`) are **optional**; the CLI works without them.
-- **Desktop ≠ web for plugins**: installing into `web` does not enable Settings → dsh Vault inside Desktop. Users must install into `desktop` separately (or use in-app Plugins).
+- **Desktop ≠ web for plugins**: installing into `web` does not enable Settings → 大肥鱼备份 inside Desktop. Users must install into `desktop` separately (or use in-app Plugins).
 - npm-global `dsh` **rejects** `--profile desktop`; only Desktop’s bundled carrier (with `manageDesktopProfile`) may mutate that profile from the CLI. In-app Plugins remains the easiest path while the app is open.
 - Plugin reinstall shells out to the `dsh` on `PATH` — if that binary is npm-global while restoring inside Desktop, desktop-profile reinstalls may fail; restore still applies files and lists failed plugins + Desktop notes as manual actions.
 - Settings UI registration uses `ctx.slots.inject('settings.section', …)` (current web / Desktop-embedded client contract). If a future dsh release renames the slot, only `src/client/index.ts` needs updating.

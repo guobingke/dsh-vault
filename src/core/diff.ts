@@ -1,3 +1,4 @@
+import { isWorkspaceStatePath } from './home-scope.js'
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import type { ConflictMap } from './conflict.js'
@@ -34,6 +35,8 @@ export async function previewRestoreDiff(input: {
   const annotate = input.conflict !== undefined
 
   for (const file of input.manifest.files) {
+    // Older snapshots may carry the source machine's workspace registry: never restore it.
+    if (isWorkspaceStatePath(file.path)) continue
     const abs = resolveLivePath(file.path, input.dshHome, input.agentsHome)
     const cur = await currentSha(abs)
     let change: DiffItem['change']

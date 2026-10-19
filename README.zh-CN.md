@@ -16,7 +16,7 @@ Desktop 独占 `%USERPROFILE%\.dsh\profiles\desktop`（即 `$DSH_HOME/profiles/d
 
 1. 先启动一次 Desktop（初始化 profile），再**完全退出**。
 2. 用 **Desktop 自带的** `dsh`（托盘 → 终端，或应用旁的 `dsh` / `dsh.cmd`）安装。npm 全局安装的 `dsh` 会拒绝 `--profile desktop`。
-3. 重新打开 Desktop → **设置 → dsh Vault**；也可在运行时打开 **插件** 页，用本地目录路径添加本插件。
+3. 重新打开 Desktop → **设置 → 大肥鱼备份**；也可在运行时打开 **插件** 页，用本地目录路径添加本插件。
 
 **Windows（cmd）** — 不要用 `~`（cmd 不会展开）；用完整路径或 `%USERPROFILE%`：
 
@@ -42,7 +42,7 @@ dsh plugin --profile web add dsh-vault
 dsh plugin --profile web add link:/absolute/path/to/dsh-vault
 ```
 
-重启 `dsh web` 后打开 **设置 → dsh Vault**。
+重启 `dsh web` 后打开 **设置 → 大肥鱼备份**。
 
 ### 两个界面都要用
 
@@ -87,7 +87,7 @@ dsh-vault status
 
 ### 设置页（web + Desktop）
 
-**设置 → dsh Vault**。Desktop 嵌入共享 Web UI；浏览器半声明 `dsh.client.platform: "web"`（Desktop 同样需要该值）。
+**设置 → 大肥鱼备份**。Desktop 嵌入共享 Web UI；浏览器半声明 `dsh.client.platform: "web"`（Desktop 同样需要该值）。
 
 #### 备份到任意位置 / 导出文件
 

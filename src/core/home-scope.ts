@@ -22,6 +22,7 @@ export type ExcludeReason =
   | 'machine-state'
   | 'restored-plugin-sources'
   | 'runtime'
+  | 'workspace'
 
 /** Root directories never backed up. */
 const ROOT_DIRS: Record<string, ExcludeReason> = {
@@ -71,6 +72,21 @@ const MACHINE_STATE_FILES = new Set([
   'storages/session_projcache.json',
 ])
 
+/**
+ * dsh's workspace registry (Desktop sidebar 工作区): the `workspace` storage domain
+ * (@deepseek-ai/dsh-workspace, defineDomain name "workspace") persisted by
+ * dsh-storage-json as $DSH_HOME/storages/workspace.json. It holds absolute local
+ * project paths (e.g. E:\\travel) and session ids; on another machine those paths do
+ * not exist and session creation fails with `failed to ensure project directory`.
+ * The file is dedicated to workspaces, so it is excluded whole on backup and never
+ * written on restore (the target's own registry is preserved untouched), including
+ * for older snapshots that still contain it.
+ */
+export function isWorkspaceStatePath(rel: string): boolean {
+  const p = rel.replace(/\\/g, '/').replace(/^\/+/, '')
+  return /^storages\/workspace\.json(\..*)?$/i.test(p) || /^storages\/workspace\//i.test(p)
+}
+
 export interface ScopeOptions {
   /** Include .credentials.yaml / .env* (only allowed for encrypted backups). */
   includeSecrets?: boolean
@@ -94,10 +110,12 @@ export function homeExcludeReason(rel: string, isDir: boolean, opts: ScopeOption
   for (let i = 0; i + 1 < dirSegs.length; i++) {
     if (dirSegs[i] === '.plugin-manager' && dirSegs[i + 1] === 'logs') return 'plugin-manager-logs'
   }
+  if (isDir && isWorkspaceStatePath(p + '/')) return 'workspace'
   if (isDir) return null
   const base = segs[segs.length - 1]!
   if (segs.length === 1 && ROOT_FILES[base]) return ROOT_FILES[base]!
   if (MACHINE_STATE_FILES.has(p)) return 'machine-state'
+  if (isWorkspaceStatePath(p)) return 'workspace'
   if (isSecretName(base) && !opts.includeSecrets) return 'secret'
   return null
 }
@@ -197,6 +215,7 @@ export const DOCUMENTED_EXCLUDES: Array<{ pattern: string; reason: ExcludeReason
   { pattern: '**/.plugin-manager/logs/', reason: 'plugin-manager-logs', why: 'plugin manager operation logs' },
   { pattern: '**/{cache,.cache,caches,tmp,.tmp,temp,session_projcache,config-backups}/', reason: 'cache', why: 'caches / temp / other backup tools' },
   { pattern: 'storages/session_projcache.json', reason: 'machine-state', why: 'session projection index (sessions are not backed up)' },
+  { pattern: 'storages/workspace.json', reason: 'workspace', why: '工作区（本机路径，不迁移）— Desktop sidebar workspaces hold local project paths; restore keeps the target machine\'s own' },
   { pattern: 'primary-runtime*/', reason: 'runtime', why: "Desktop's installed runtime payload" },
   { pattern: '.anonymous-user-id', reason: 'machine-id', why: 'per-install anonymous id' },
   { pattern: '.credentials.yaml, .env*', reason: 'secret', why: 'only in encrypted backups with secrets enabled' },
