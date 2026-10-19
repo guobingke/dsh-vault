@@ -1,6 +1,6 @@
-import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
-import { collectBackupFiles } from './collect.js'
+import { collectBackupFiles, extractPluginsFromProfilePackage } from './collect.js'
 import { normalizeConflicts, resolveItemConflict, shouldApplyChange } from './conflict.js'
 import {
   DEFAULT_SETTINGS,
@@ -32,6 +32,7 @@ import {
   reinstallMissingPlugins,
   type PluginInstallDeps,
   type PluginManagerLike,
+  type PnpmInvocationLike,
 } from './plugin-install.js'
 import { snapshotsToDelete } from './retention.js'
 import { applyRestore } from './restore-apply.js'
@@ -72,6 +73,8 @@ export interface VaultServiceOptions {
   pluginManager?: PluginManagerLike | null
   /** Preferred pnpm binary for profile materialization. */
   pnpmCommand?: string
+  /** Host package manager (dsh profileContext.packageManager — Desktop's bundled pnpm). */
+  pnpm?: PnpmInvocationLike
   /** Preferred npm registry (China mainland mirror by default when unset). */
   preferredRegistry?: string | null
   /** Native OS directory picker from host directoryPicker (optional). */
@@ -93,6 +96,7 @@ export class VaultService {
   private readonly dshVersion?: string
   private pluginManager: PluginManagerLike | null
   private readonly pnpmCommand?: string
+  private readonly pnpm?: PnpmInvocationLike
   private preferredRegistry: string | null | undefined
   private pickDirectoryFn?: PickDirectoryFn
   private readonly runCommand?: PluginInstallDeps['runCommand']
@@ -106,6 +110,7 @@ export class VaultService {
     this.registry = new StorageRegistry([], { resolveSecret: options.resolveSecret })
     this.pluginManager = options.pluginManager ?? null
     this.pnpmCommand = options.pnpmCommand
+    this.pnpm = options.pnpm
     this.preferredRegistry = options.preferredRegistry
     this.pickDirectoryFn = options.pickDirectory
     this.runCommand = options.runPluginInstall
@@ -411,36 +416,129 @@ export class VaultService {
 
     if (req.reinstallPlugins !== false) {
       onProgress?.({ phase: 'reinstall', message: 'Installing plugins into profile', percent: 90 })
-      const { results: pluginResults, restartRequired } = await reinstallMissingPlugins(unpacked.manifest.plugins, {
-        dshHome: this.dshHome,
-        activeProfile: this.activeProfile,
-        pluginManager: this.pluginManager,
-        pnpmCommand: this.pnpmCommand,
-        preferredRegistry: this.preferredRegistry,
-        runCommand: this.runCommand,
-      })
-      result.pluginResults = pluginResults
-      result.pluginsReinstalled = pluginResults.filter((r) => r.status === 'installed').map((r) => r.name)
-      result.pluginsFailed = pluginResults.filter((r) => r.status === 'failed').map((r) => r.name)
-      result.restartRequired = restartRequired || pluginResults.some((r) => r.status === 'installed')
-      for (const row of pluginResults.filter((r) => r.status === 'failed')) {
-        result.manualActions.push(`${row.name} (${row.profile}): ${row.detail}`)
-      }
-      if (result.restartRequired) {
-        result.manualActions.push(
-          this.activeProfile === DESKTOP_PROFILE
-            ? 'Restart DeepSeek Harness Desktop so newly installed plugins load.'
-            : 'Restart dsh web / the host so newly installed plugins load.',
-        )
-      }
+      await this.installPlugins(unpacked.manifest.plugins, result)
+      await this.saveLastRestore({ snapshotId, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
     }
+    this.finishPluginSummary(result)
 
+    onProgress?.({ phase: 'done', message: result.ok ? 'Restore complete' : 'Restore incomplete (plugin failures)', percent: 100 })
+    return result
+  }
+
+  private installDeps(): PluginInstallDeps {
+    return {
+      dshHome: this.dshHome,
+      activeProfile: this.activeProfile,
+      pluginManager: this.pluginManager,
+      pnpmCommand: this.pnpmCommand,
+      pnpm: this.pnpm,
+      preferredRegistry: this.preferredRegistry,
+      runCommand: this.runCommand,
+    }
+  }
+
+  private async installPlugins(
+    records: VaultManifest['plugins'],
+    result: RestoreResult,
+    only?: Set<string>,
+  ): Promise<void> {
+    const { results, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only })
+    result.pluginResults = results
+    result.pluginsReinstalled = results.filter((r) => r.status === 'installed').map((r) => r.name)
+    result.pluginsFailed = results.filter((r) => r.status === 'failed').map((r) => r.name)
+    result.restartRequired = restartRequired || results.some((r) => r.status === 'installed')
+  }
+
+  /** ok flag + the (deduplicated) manual actions that follow from plugin results. */
+  private finishPluginSummary(result: RestoreResult): void {
+    if (result.restartRequired) {
+      result.manualActions.push(
+        this.activeProfile === DESKTOP_PROFILE
+          ? 'Restart DeepSeek Harness Desktop so newly installed plugins load.'
+          : 'Restart dsh web / the host so newly installed plugins load.',
+      )
+    }
     result.ok = (result.pluginsFailed?.length ?? 0) === 0
     if (!result.ok) {
       result.manualActions.push('Restore finished with plugin failures — not a full success. Fix the failed plugins and retry or install them from Desktop → Plugins.')
     }
+    result.manualActions = [...new Set(result.manualActions)]
+  }
 
-    onProgress?.({ phase: 'done', message: result.ok ? 'Restore complete' : 'Restore incomplete (plugin failures)', percent: 100 })
+  private lastRestorePath(): string {
+    return join(this.dataDir, 'last-restore.json')
+  }
+
+  private async saveLastRestore(data: {
+    snapshotId: string
+    plugins: VaultManifest['plugins']
+    pluginResults: NonNullable<RestoreResult['pluginResults']>
+  }): Promise<void> {
+    try {
+      await mkdir(this.dataDir, { recursive: true })
+      // Logs can be long; a retry only needs the records and statuses.
+      const slim = data.pluginResults.map(({ log: _log, ...row }) => row)
+      await writeFile(
+        this.lastRestorePath(),
+        JSON.stringify({ ...data, pluginResults: slim, savedAt: new Date().toISOString() }, null, 2),
+        { mode: 0o600 },
+      )
+    } catch {
+      // best effort
+    }
+  }
+
+  private async loadLastRestore(): Promise<{
+    snapshotId?: string
+    plugins: VaultManifest['plugins']
+    pluginResults: NonNullable<RestoreResult['pluginResults']>
+  } | null> {
+    try {
+      return JSON.parse(await readFile(this.lastRestorePath(), 'utf8'))
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Re-attempt only the failed plugins of the last restore, without rewriting config.
+   * Also works after a restore made by an older dsh-vault: plugin records then come
+   * from the profile manifests on disk.
+   */
+  async retryFailedPlugins(req: { plugins?: Array<{ name: string; profile: string }> } = {}): Promise<RestoreResult> {
+    const last = await this.loadLastRestore()
+    const records: VaultManifest['plugins'] = [...(last?.plugins ?? [])]
+    if (!records.length) {
+      const profilesDir = join(this.dshHome, 'profiles')
+      for (const profile of await listProfiles(profilesDir)) {
+        try {
+          const text = await readFile(join(profilesDir, profile, 'package.json'), 'utf8')
+          records.push(...extractPluginsFromProfilePackage(text, profile))
+        } catch {
+          // no manifest
+        }
+      }
+    }
+    const wanted = req.plugins?.length
+      ? req.plugins
+      : (last?.pluginResults ?? []).filter((r) => r.status === 'failed').map((r) => ({ name: r.name, profile: r.profile }))
+    const only = wanted.length ? new Set(wanted.map((p) => `${p.profile}:${p.name}`)) : undefined
+    const result: RestoreResult = {
+      snapshotId: last?.snapshotId ?? '',
+      applied: [],
+      skipped: [],
+      pluginsReinstalled: [],
+      pluginsFailed: [],
+      manualActions: [],
+    }
+    await this.installPlugins(records, result, only)
+    if (last) {
+      // Merge into the saved results so a second retry still knows what is left.
+      const rows = new Map(last.pluginResults.map((r) => [`${r.profile}:${r.name}`, r]))
+      for (const r of result.pluginResults ?? []) rows.set(`${r.profile}:${r.name}`, r)
+      await this.saveLastRestore({ snapshotId: last.snapshotId ?? '', plugins: last.plugins, pluginResults: [...rows.values()] })
+    }
+    this.finishPluginSummary(result)
     return result
   }
 
@@ -724,3 +822,11 @@ export async function writeSidecarMeta(dir: string, snapshotId: string, meta: Re
 }
 
 export { isBuiltinDshBundle } from './diff.js'
+
+async function listProfiles(dir: string): Promise<string[]> {
+  try {
+    return (await readdir(dir, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name)
+  } catch {
+    return []
+  }
+}

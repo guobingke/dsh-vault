@@ -32,8 +32,8 @@ describe('one unresolvable npm plugin', () => {
           // Like pnpm/dsh: any install fails while the manifest still lists "bad".
           runCommand: async (cmd, args) => {
             const pkg = await readPkg()
-            if (cmd === 'pnpm') return 'bad' in pkg.dependencies ? fail('ERR_PNPM_FETCH_404 bad') : { ok: true, detail: '', code: 0 }
-            const spec = args[args.length - 1]!
+            if (cmd === 'pnpm' && args[0] !== 'add') return 'bad' in pkg.dependencies ? fail('ERR_PNPM_FETCH_404 bad') : { ok: true, detail: '', code: 0 }
+            const spec = args[0] === 'add' ? args[1]! : args[args.length - 1]!
             const name = spec.replace(/@[^@]*$/, '')
             pkg.dependencies[name] = spec.slice(name.length + 1)
             pkg.dsh.profile.bundles.push(name)

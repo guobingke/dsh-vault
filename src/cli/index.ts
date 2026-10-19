@@ -22,6 +22,8 @@ Usage:
   dsh-vault backup [--target <id>] [--encrypt] [--password <pass>] [--secrets] [--home <path>]
   dsh-vault restore <snapshotId> [--target <id>] [--password <pass>] [--keep|--use-backup] [--home <path>]
       (exits 2 when files were restored but a plugin failed to install)
+  dsh-vault retry-plugins [--home <path>]
+      (re-install only the plugins that failed in the last restore; config is not rewritten)
   dsh-vault list [--target <id>] [--home <path>]
   dsh-vault verify <snapshotId> [--target <id>] [--password <pass>] [--home <path>]
   dsh-vault status [--home <path>]
@@ -225,6 +227,13 @@ async function main(argv: string[]): Promise<number> {
         conflict,
         password: getFlag(args, '--password'),
       })
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+      process.stderr.write(restoreFailureSummary(result))
+      return restoreExitCode(result)
+    }
+
+    if (cmd === 'retry-plugins') {
+      const result = await service.retryFailedPlugins()
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
       process.stderr.write(restoreFailureSummary(result))
       return restoreExitCode(result)

@@ -111,6 +111,17 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
   )
 
   routes.push(
+    endpoint({ path: `${API_PREFIX}/restore/retry-plugins`, methods: ['POST'] }, async (req, res) => {
+      const body = await readJsonBody<{ plugins?: Array<{ name: string; profile: string }> }>(req)
+      if (body.plugins !== undefined && (!Array.isArray(body.plugins) || body.plugins.some((p) => !p || typeof p.name !== 'string' || typeof p.profile !== 'string'))) {
+        throw new ApiError('plugins must be [{ name, profile }]', 400)
+      }
+      const result = await service.retryFailedPlugins(body)
+      writeJson(res, result.ok === false ? 409 : 200, result)
+    }),
+  )
+
+  routes.push(
     endpoint({ path: `${API_PREFIX}/fs/list`, methods: ['GET', 'POST'] }, async (req, res) => {
       let path = ''
       if (req.method === 'GET') {

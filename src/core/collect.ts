@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
-import { access, readdir, readFile, stat } from 'node:fs/promises'
-import { constants } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { readdir, readFile, realpath, stat } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import {
   isSecretRelPath,
@@ -10,8 +9,8 @@ import {
   shouldSkipDir,
   toSafeRelPath,
 } from './paths.js'
-import { bundledSourceRel, localSourcePath } from './plugin-install.js'
-import { expandUserPath } from './win-paths.js'
+import { bundledSourceRel } from './plugin-install.js'
+import { parseLocalSpec, resolveLocalSpecPath } from './local-spec.js'
 import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord } from './types.js'
 
 async function fileShaAndData(abs: string): Promise<{ size: number; sha256: string; data: Buffer }> {
@@ -93,7 +92,8 @@ export function extractPluginsFromProfilePackage(
   const out: PluginRecord[] = []
   const deps = pkg.dependencies ?? {}
   for (const [name, version] of Object.entries(deps)) {
-    out.push({ name, version, source: version.startsWith('link:') || version.startsWith('file:') || version.startsWith('git') ? version : `npm:${name}@${version}`, profile: profileName })
+    const local = parseLocalSpec(version) !== null
+    out.push({ name, version, source: local || version.startsWith('git') ? version : `npm:${name}@${version}`, profile: profileName })
   }
   const bundles = pkg.dsh?.profile?.bundles ?? []
   for (const b of bundles) {
@@ -211,7 +211,7 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
 
   // Record the exact installed version so machine 2 gets the same one, not just the range.
   for (const plugin of plugins) {
-    if (!plugin.profile || localSourcePath(plugin.source) || (plugin.version && localSourcePath(plugin.version))) continue
+    if (!plugin.profile || parseLocalSpec(plugin.version ?? plugin.source)) continue
     try {
       const pkgPath = join(dshHome, 'profiles', plugin.profile, 'node_modules', ...plugin.name.split('/'), 'package.json')
       const v = (JSON.parse(await readFile(pkgPath, 'utf8')) as { version?: unknown }).version
@@ -221,25 +221,55 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     }
   }
 
-  // Bundle link:/file: plugin sources so machine-2 restore can re-link them.
+  // Bundle local plugin sources (link:/file:/portal: dirs, file: tarballs, workspace: specs)
+  // so machine 2 can install them from the snapshot instead of machine 1's paths.
   const bundleLocal = options.bundleLocalPlugins !== false
   if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {
     for (const plugin of plugins) {
-      const local = localSourcePath(plugin.source) ?? (plugin.version && localSourcePath(plugin.version))
-      if (!local || !plugin.profile) continue
-      const abs = resolve(expandUserPath(local))
-      try {
-        await access(abs, constants.F_OK)
-      } catch {
-        continue
-      }
+      if (!plugin.profile) continue
+      const spec = parseLocalSpec(plugin.version ?? plugin.source)
+      if (!spec) continue
+      const profileDir = join(dshHome, 'profiles', plugin.profile)
       const relPrefix = bundledSourceRel(plugin.profile, plugin.name)
-      plugin.originalSource = plugin.source.startsWith('link:') || plugin.source.startsWith('file:')
-        ? plugin.source
-        : `link:${local}`
-      plugin.bundledSource = relPrefix
-      plugin.source = `link:${relPrefix}`
-      await walkFiles(abs, relPrefix, 'plugins', includeSecrets, files)
+      const before = files.length
+      if (spec.kind === 'path') {
+        const abs = resolveLocalSpecPath(spec.path, profileDir)
+        plugin.originalSource = `${spec.protocol}:${abs}`
+        if (spec.tarball) {
+          if (await isFile(abs)) {
+            const rel = `${relPrefix}/${basename(abs.replace(/\\/g, '/'))}`
+            await maybeAddFile(abs, rel, 'plugins', true, files)
+            if (files.length > before) {
+              plugin.bundledSource = rel
+              plugin.bundledKind = 'tarball'
+              plugin.source = `file:${rel}`
+              continue
+            }
+          }
+        } else if (await isFile(join(abs, 'package.json'))) {
+          await walkFiles(abs, relPrefix, 'plugins', includeSecrets, files)
+          if (files.some((f, i) => i >= before && f.relPath === `${relPrefix}/package.json`)) {
+            plugin.bundledSource = relPrefix
+            plugin.bundledKind = 'dir'
+            plugin.source = `link:${relPrefix}`
+            continue
+          }
+        }
+      } else {
+        plugin.originalSource = spec.raw
+      }
+      // The source is gone (tarball deleted, workspace spec, …): bundle the installed copy instead.
+      const installed = await installedPackageDir(profileDir, plugin.name)
+      if (installed) {
+        files.length = before
+        await walkFiles(installed, relPrefix, 'plugins', includeSecrets, files)
+        if (files.some((f, i) => i >= before && f.relPath === `${relPrefix}/package.json`)) {
+          plugin.bundledSource = relPrefix
+          plugin.bundledKind = 'dir'
+          plugin.bundledFrom = 'installed'
+          plugin.source = `link:${relPrefix}`
+        }
+      }
     }
   }
 
@@ -253,6 +283,25 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   }
 
   return { files: deduped, plugins, dshHome, agentsHome }
+}
+
+async function isFile(p: string): Promise<boolean> {
+  try {
+    return (await stat(p)).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** Real directory of an installed package in a profile, if any. */
+async function installedPackageDir(profileDir: string, name: string): Promise<string | null> {
+  const dir = join(profileDir, 'node_modules', ...name.split('/'))
+  try {
+    const real = await realpath(dir)
+    return (await isFile(join(real, 'package.json'))) ? real : null
+  } catch {
+    return null
+  }
 }
 
 /** Category for a relative path (used by restore/diff). */

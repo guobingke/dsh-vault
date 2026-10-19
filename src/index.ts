@@ -13,7 +13,7 @@ import { VaultService } from './core/vault-service.js'
 import { registerVaultRoutes } from './api/routes.js'
 import { buildVaultTools } from './tools/register.js'
 import { buildVaultCommands } from './commands/register.js'
-import type { PluginManagerLike } from './core/plugin-install.js'
+import type { PluginManagerLike, PnpmInvocationLike } from './core/plugin-install.js'
 import type { VaultPluginConfig } from './core/types.js'
 
 export const name = 'dsh-vault'
@@ -45,7 +45,7 @@ export interface HostContext {
 
 function optionalService<T>(
   ctx: HostContext,
-  name: 'webServer' | 'tools' | 'commands' | 'credentials' | 'pluginManager' | 'directoryPicker',
+  name: 'webServer' | 'tools' | 'commands' | 'credentials' | 'pluginManager' | 'directoryPicker' | 'profileContext',
 ): T | undefined {
   if (typeof ctx.get === 'function') {
     try {
@@ -85,6 +85,8 @@ export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
   const commandsSvc = optionalService<HostContext['commands']>(ctx, 'commands')
   const pluginManagerSvc = optionalService<PluginManagerLike>(ctx, 'pluginManager')
   const directoryPickerSvc = optionalService<HostContext['directoryPicker']>(ctx, 'directoryPicker')
+  // dsh profile boot provides the running profile and, on Desktop, its bundled pnpm.
+  const profileContext = optionalService<{ name?: string; packageManager?: PnpmInvocationLike }>(ctx, 'profileContext')
   const resolveSecret = async (ref: string): Promise<string | undefined> => {
     try {
       const v = await credentials?.get?.(ref)
@@ -98,6 +100,8 @@ export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
     dataDir: config.dataDir,
     resolveSecret,
     pluginManager: pluginManagerSvc ?? null,
+    ...(profileContext?.name ? { activeProfile: profileContext.name } : {}),
+    ...(profileContext?.packageManager?.command ? { pnpm: profileContext.packageManager } : {}),
     pickDirectory: bindDirectoryPicker(directoryPickerSvc),
     // Match Desktop's China mainland install source; plugin-manager still falls back.
     preferredRegistry: 'https://registry.npmmirror.com/',

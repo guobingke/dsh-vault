@@ -31,9 +31,9 @@ describe('bundled link: plugins on machine 2', () => {
       const bundled = join(home.dshHome, 'plugin-sources', 'web', 'plug')
       await writePkg(bundled, { name: 'plug' })
       const rec = { name: 'plug', source: 'link:plugin-sources/web/plug', profile: 'web', bundledSource: 'plugin-sources/web/plug', originalSource: `link:${join(home.root, 'dev', 'plug')}` }
-      assert.deepEqual(await resolveLinkTarget(rec, home.dshHome), { abs: bundled, bundled: true })
+      assert.deepEqual(await resolveLinkTarget(rec, home.dshHome), { abs: bundled, bundled: true, kind: 'dir' })
       await writePkg(join(home.root, 'dev', 'plug'), { name: 'plug' })
-      assert.deepEqual(await resolveLinkTarget(rec, home.dshHome), { abs: join(home.root, 'dev', 'plug'), bundled: false })
+      assert.deepEqual(await resolveLinkTarget(rec, home.dshHome), { abs: join(home.root, 'dev', 'plug'), bundled: false, kind: 'dir' })
     } finally {
       await home.cleanup()
     }
@@ -96,7 +96,7 @@ describe('bundled link: plugins on machine 2', () => {
         dshHome: home.dshHome,
         activeProfile: 'web',
         runCommand: async (cmd, args) => {
-          if (cmd !== 'pnpm') adds.push(args.join(' '))
+          if (args.includes('add')) adds.push(args.join(' '))
           return { ok: true, detail: 'ok', code: 0 }
         },
       })

@@ -53,8 +53,12 @@ export interface PluginRecord {
   profile?: string
   /** Snapshot-relative directory when a link:/file: plugin tree was bundled into the archive. */
   bundledSource?: string
-  /** Original link:/file: source from the source machine (for diagnostics). */
+  /** Original local source on the source machine, resolved to an absolute path (`link:C:/…`, `file:/…/x.tgz`). */
   originalSource?: string
+  /** What `bundledSource` holds: a package directory or a packed tarball. Default `dir`. */
+  bundledKind?: 'dir' | 'tarball'
+  /** `installed` when the source was missing at backup time and the installed copy was bundled. */
+  bundledFrom?: 'source' | 'installed'
   /** Exact version found in the profile's node_modules at backup time (npm plugins). */
   installedVersion?: string
 }
@@ -193,12 +197,31 @@ export interface RestoreRequest {
 
 export type PluginInstallStatus = 'installed' | 'already-present' | 'failed' | 'skipped'
 
+export type PluginFailureReasonCode =
+  | 'local-source-missing'
+  | 'tarball-missing'
+  | 'unsupported-spec'
+  | 'blocked-by-other'
+  | 'registry-not-found'
+  | 'network'
+  | 'installer-missing'
+  | 'missing-deps'
+  | 'version-mismatch'
+  | 'incompatible'
+  | 'unknown'
+
 export interface PluginInstallResultRow {
   name: string
   profile: string
   status: PluginInstallStatus
+  /** One short line; raw installer output is in `log`. */
   detail: string
   source?: string
+  reason?: PluginFailureReasonCode
+  /** Path / spec / package the reason refers to. */
+  subject?: string
+  /** Raw pnpm / dsh output (shown collapsed). */
+  log?: string
 }
 
 export interface RestoreResult {

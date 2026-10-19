@@ -33,6 +33,12 @@ describe('plugin reinstall (e2e regressions)', () => {
             return { ok: true, detail: 'ok', code: 0 }
           }
           if (command === 'dsh' && args.includes('add')) {
+            // Real `dsh plugin add` leaves the package in the profile's node_modules.
+            const profile = args[args.indexOf('--profile') + 1]!
+            const name = args[args.length - 1]!.replace(/(.)@[^/]*$/, '$1')
+            const pkg = join(home.dshHome, 'profiles', profile, 'node_modules', ...name.split('/'))
+            await mkdir(pkg, { recursive: true })
+            await writeFile(join(pkg, 'package.json'), JSON.stringify({ name, version: '0.0.0' }))
             return { ok: true, detail: 'ok', code: 0 }
           }
           return { ok: true, detail: 'ok', code: 0 }
@@ -48,7 +54,7 @@ describe('plugin reinstall (e2e regressions)', () => {
       assert.ok(leftPad!.status === 'installed' || leftPad!.status === 'already-present')
       assert.ok(!result.pluginResults?.some((r) => r.name.startsWith('@deepseek-ai/')))
       assert.ok(!result.pluginsFailed.some((n) => n.startsWith('@deepseek-ai/')))
-      assert.equal(result.ok, true)
+      assert.equal(result.ok, true, JSON.stringify(result.pluginResults))
       service.stopSchedule()
     } finally {
       await home.cleanup()
@@ -71,7 +77,7 @@ describe('plugin reinstall (e2e regressions)', () => {
         dshHome: home.dshHome,
         agentsHome: home.agentsHome,
         runPluginInstall: async (command, args) => {
-          if (command === 'dsh' && args.includes('missing-pkg-xyz@1.0.0')) {
+          if ((command === 'dsh' || (command === 'pnpm' && args[0] === 'add')) && args.includes('missing-pkg-xyz@1.0.0')) {
             return { ok: false, detail: '404 Not Found', code: 1 }
           }
           return { ok: true, detail: 'ok', code: 0 }

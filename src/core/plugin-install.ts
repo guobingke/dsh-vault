@@ -1,8 +1,18 @@
-import { access, readFile, realpath, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import path, { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
 import { isBuiltinDshBundle } from './diff.js'
+import {
+  classifyInstallFailure,
+  decodeConsoleOutput,
+  isWindowsAbsPath,
+  parseLocalSpec,
+  resolveLocalSpecPath,
+  specPath,
+  type PluginFailureReason,
+} from './local-spec.js'
 import { DESKTOP_PROFILE, installCommandForProfile } from './profiles.js'
 import type { PluginRecord } from './types.js'
 import { expandUserPath } from './win-paths.js'
@@ -13,8 +23,15 @@ export interface PluginInstallResult {
   name: string
   profile: string
   status: PluginInstallStatus
+  /** One short line. Raw installer output, when any, is in `log`. */
   detail: string
   source?: string
+  /** Why it failed (UI shows one localized sentence per reason). */
+  reason?: PluginFailureReason
+  /** Path / spec / package the reason refers to. */
+  subject?: string
+  /** Raw pnpm / dsh output, for a collapsed 详情 section. */
+  log?: string
 }
 
 export interface PluginManagerLike {
@@ -27,6 +44,15 @@ export interface PluginManagerLike {
     error?: { code?: string; diagnostic?: string; message?: string }
     packageResult?: { kind?: string; output?: string }
   }>
+  /** dsh's PluginManager exposes these; used to pick the right pnpm and profile. */
+  pnpmCommand?: string
+  profile?: { name?: string; dir?: string; packageManager?: PnpmInvocationLike }
+}
+
+export interface PnpmInvocationLike {
+  command: string
+  args?: string[]
+  env?: Record<string, string | undefined>
 }
 
 export interface PluginInstallDeps {
@@ -35,8 +61,12 @@ export interface PluginInstallDeps {
   pluginManager?: PluginManagerLike | null
   /** Preferred pnpm binary (from pluginManager config when known). */
   pnpmCommand?: string
+  /** Host package manager (dsh profileContext.packageManager): command + leading args + env. */
+  pnpm?: PnpmInvocationLike
   /** Preferred registry URL (e.g. npmmirror) asked first. */
   preferredRegistry?: string | null
+  /** Environment used for installer discovery (tests). */
+  env?: NodeJS.ProcessEnv
   /** Override for tests. */
   runCommand?: (
     command: string,
@@ -52,10 +82,8 @@ export function sanitizePluginDirName(name: string): string {
 }
 
 export function localSourcePath(source: string): string | null {
-  if (source.startsWith('link:') || source.startsWith('file:')) {
-    return source.slice(source.indexOf(':') + 1)
-  }
-  return null
+  const spec = parseLocalSpec(source)
+  return spec?.kind === 'path' ? spec.path : null
 }
 
 export function bundledSourceRel(profile: string, name: string): string {
@@ -66,6 +94,14 @@ async function pathExists(p: string): Promise<boolean> {
   try {
     await access(p, constants.F_OK)
     return true
+  } catch {
+    return false
+  }
+}
+
+async function isFile(p: string): Promise<boolean> {
+  try {
+    return (await stat(p)).isFile()
   } catch {
     return false
   }
@@ -85,47 +121,140 @@ export async function pluginPackagePresent(dshHome: string, profile: string, nam
   return pathExists(join(dshHome, ...parts))
 }
 
+/**
+ * Spawn without a shell whenever possible: cmd.exe mangles quoting and prints GBK on
+ * Chinese Windows. `.cmd` / `.bat` shims still need it.
+ */
 function defaultRunCommand(
   command: string,
   args: string[],
   opts: { cwd?: string; env?: NodeJS.ProcessEnv },
 ): Promise<{ ok: boolean; detail: string; code: number | null }> {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: opts.cwd,
-      env: opts.env ?? process.env,
-      shell: process.platform === 'win32',
-      windowsHide: true,
+    const win = process.platform === 'win32'
+    const needsShell = win && (/\.(cmd|bat)$/i.test(command) || !/[\\/]/.test(command))
+    let child
+    try {
+      child = spawn(command, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: opts.cwd,
+        env: opts.env ?? process.env,
+        shell: needsShell,
+        windowsHide: true,
+      })
+    } catch (err) {
+      resolvePromise({ ok: false, detail: err instanceof Error ? err.message : String(err), code: null })
+      return
+    }
+    const chunks: Buffer[] = []
+    child.stdout?.on('data', (c: Buffer) => chunks.push(c))
+    child.stderr?.on('data', (c: Buffer) => chunks.push(c))
+    child.on('error', (err) => resolvePromise({ ok: false, detail: `spawn ${command} failed: ${err.message}`, code: null }))
+    child.on('close', (code) => {
+      const detail = decodeConsoleOutput(Buffer.concat(chunks))
+      resolvePromise({ ok: code === 0, detail: detail.slice(-6000), code })
     })
-    let detail = ''
-    child.stdout?.on('data', (c: Buffer) => {
-      detail += c.toString('utf8')
-    })
-    child.stderr?.on('data', (c: Buffer) => {
-      detail += c.toString('utf8')
-    })
-    child.on('error', (err) => resolvePromise({ ok: false, detail: err.message, code: null }))
-    child.on('close', (code) => resolvePromise({ ok: code === 0, detail: detail.slice(0, 2000), code }))
   })
 }
 
+/* --------------------------------------------------------------------------
+ * Installer discovery (Desktop ships its own node + pnpm + dsh; nothing is on PATH)
+ * ------------------------------------------------------------------------ */
+
+/** Candidate `resources` folders of an installed DeepSeek Harness Desktop. */
+export function desktopResourceRoots(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string[] {
+  const P = platform === 'win32' ? path.win32 : path.posix
+  const out: string[] = []
+  if (env.DSH_DESKTOP_RESOURCES?.trim()) out.push(env.DSH_DESKTOP_RESOURCES.trim())
+  const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+  if (resources) out.push(resources)
+  if (platform === 'win32') {
+    for (const base of [env.LOCALAPPDATA && P.join(env.LOCALAPPDATA, 'Programs'), env.ProgramFiles, env['ProgramFiles(x86)']]) {
+      if (base) out.push(P.join(base, 'DeepSeek Harness', 'resources'))
+    }
+  } else if (platform === 'darwin') {
+    out.push('/Applications/DeepSeek Harness.app/Contents/Resources')
+    if (env.HOME) out.push(P.join(env.HOME, 'Applications', 'DeepSeek Harness.app', 'Contents', 'Resources'))
+  } else {
+    out.push('/opt/DeepSeek Harness/resources')
+  }
+  return [...new Set(out)]
+}
+
+type Exists = (p: string) => Promise<boolean>
+
+/** Desktop's bundled node + pnpm (resources/runtime/primary-runtime/dependencies). */
+export async function findBundledPnpm(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  exists: Exists = isFile,
+): Promise<PnpmInvocationLike | null> {
+  const P = platform === 'win32' ? path.win32 : path.posix
+  const nodeExe = platform === 'win32' ? 'node.exe' : 'node'
+  for (const root of desktopResourceRoots(env, platform)) {
+    const deps = P.join(root, 'runtime', 'primary-runtime', 'dependencies')
+    let node: string | null = null
+    for (const c of [P.join(deps, 'node', 'bin', nodeExe), P.join(deps, 'node', nodeExe)]) {
+      if (await exists(c)) { node = c; break }
+    }
+    if (!node) continue
+    for (const c of ['bin/pnpm.mjs', 'dist/pnpm.mjs', 'bin/pnpm.cjs', 'dist/pnpm.cjs']) {
+      const script = P.join(deps, 'pnpm', ...c.split('/'))
+      if (await exists(script)) {
+        const delim = platform === 'win32' ? ';' : ':'
+        return { command: node, args: [script], env: { PATH: `${P.dirname(node)}${delim}${env.PATH ?? env.Path ?? ''}` } }
+      }
+    }
+  }
+  return null
+}
+
+function pnpmFromManager(manager: PluginManagerLike | null | undefined): PnpmInvocationLike | undefined {
+  const pm = manager?.profile?.packageManager
+  if (pm?.command) return pm
+  if (manager?.pnpmCommand && manager.pnpmCommand !== 'pnpm') return { command: manager.pnpmCommand }
+  return undefined
+}
+
+async function resolvePnpm(deps: PluginInstallDeps): Promise<PnpmInvocationLike> {
+  if (deps.pnpm?.command) return deps.pnpm
+  if (deps.pnpmCommand) return { command: deps.pnpmCommand }
+  const fromMgr = pnpmFromManager(deps.pluginManager)
+  if (fromMgr) return fromMgr
+  return (await findBundledPnpm(deps.env ?? process.env)) ?? { command: 'pnpm' }
+}
+
+/* --------------------------------------------------------------------------
+ * Local sources
+ * ------------------------------------------------------------------------ */
+
 /**
- * Where a bundled link:/file: plugin should point on this machine: the original
- * local path when it exists here (same layout as machine 1 — identical state),
- * otherwise the source copy restored under $DSH_HOME/plugin-sources.
+ * Where a bundled local plugin should point on this machine: the original path when
+ * it exists here (same layout as machine 1), else the copy restored under
+ * $DSH_HOME/plugin-sources.
  */
-export async function resolveLinkTarget(plugin: PluginRecord, dshHome: string): Promise<{ abs: string; bundled: boolean } | null> {
-  const original = plugin.originalSource ? localSourcePath(plugin.originalSource) : null
-  if (original) {
-    const abs = resolve(expandUserPath(original))
-    if (await pathExists(join(abs, 'package.json'))) return { abs, bundled: false }
+export async function resolveLinkTarget(
+  plugin: PluginRecord,
+  dshHome: string,
+): Promise<{ abs: string; bundled: boolean; kind: 'dir' | 'tarball' } | null> {
+  const profileDir = join(dshHome, 'profiles', plugin.profile ?? 'web')
+  const original = parseLocalSpec(plugin.originalSource)
+  if (original?.kind === 'path' && plugin.bundledFrom !== 'installed') {
+    const abs = resolveLocalSpecPath(original.path, profileDir)
+    if (original.tarball ? await isFile(abs) : await pathExists(join(abs, 'package.json'))) {
+      return { abs, bundled: false, kind: original.tarball ? 'tarball' : 'dir' }
+    }
   }
   if (plugin.bundledSource) {
     const abs = join(dshHome, ...plugin.bundledSource.split('/'))
-    if (await pathExists(abs)) return { abs, bundled: true }
+    const kind = plugin.bundledKind ?? 'dir'
+    if (kind === 'tarball' ? await isFile(abs) : await pathExists(abs)) return { abs, bundled: true, kind }
   }
   return null
+}
+
+function specForTarget(target: { abs: string; kind: 'dir' | 'tarball' }): string {
+  return `${target.kind === 'tarball' ? 'file' : 'link'}:${specPath(target.abs)}`
 }
 
 /** Names of a package's runtime `dependencies` that Node cannot find from its (real) directory. */
@@ -160,6 +289,17 @@ export async function missingRuntimeDependencies(pkgDir: string): Promise<string
   return missing
 }
 
+async function runPnpm(
+  deps: PluginInstallDeps,
+  pnpm: PnpmInvocationLike,
+  args: string[],
+  cwd: string,
+): Promise<{ ok: boolean; detail: string; code: number | null }> {
+  const run = deps.runCommand ?? defaultRunCommand
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(pnpm.env ?? {}), DSH_HOME: deps.dshHome }
+  return run(pnpm.command, [...(pnpm.args ?? []), ...args], { cwd, env })
+}
+
 /**
  * pnpm does not install the dependencies of a `link:` package, so a bundled
  * plugin source restored on machine 2 has no node_modules — and fails to
@@ -167,25 +307,88 @@ export async function missingRuntimeDependencies(pkgDir: string): Promise<string
  */
 export async function installBundledSourceDeps(dir: string, deps: PluginInstallDeps): Promise<{ ok: boolean; detail: string }> {
   if ((await missingRuntimeDependencies(dir)).length === 0) return { ok: true, detail: 'dependencies present' }
-  const run = deps.runCommand ?? defaultRunCommand
-  const pnpm = deps.pnpmCommand ?? 'pnpm'
-  const env = { ...process.env, DSH_HOME: deps.dshHome }
+  const pnpm = await resolvePnpm(deps)
   const args = ['install', '--prod', '--ignore-workspace', '--config.auto-install-peers=false', '--config.node-linker=hoisted']
   if (deps.preferredRegistry) args.push(`--config.registry=${deps.preferredRegistry}`)
-  let result = await run(pnpm, args, { cwd: dir, env })
+  let result = await runPnpm(deps, pnpm, args, dir)
   if (!result.ok && deps.preferredRegistry) {
-    result = await run(pnpm, args.filter((a) => !a.startsWith('--config.registry=')), { cwd: dir, env })
+    result = await runPnpm(deps, pnpm, args.filter((a) => !a.startsWith('--config.registry=')), dir)
   }
   const still = await missingRuntimeDependencies(dir)
-  if (still.length) return { ok: false, detail: `dependencies not installed in ${dir}: ${still.join(', ')}\n${result.detail}`.slice(0, 1200) }
+  if (still.length) return { ok: false, detail: `dependencies not installed in ${dir}: ${still.join(', ')}\n${result.detail}` }
   return { ok: true, detail: 'installed bundled source dependencies' }
 }
 
-/** Rewrite package.json link:/file: deps to restored bundled sources under DSH_HOME. */
-export async function rewriteBundledLinkDeps(
-  dshHome: string,
-  plugins: PluginRecord[],
-): Promise<string[]> {
+/* --------------------------------------------------------------------------
+ * Profile manifest helpers
+ * ------------------------------------------------------------------------ */
+
+interface ProfileManifest {
+  dependencies?: Record<string, string>
+  dsh?: { profile?: { bundles?: Array<string | { name?: string }> } }
+}
+
+async function readManifest(profileDir: string): Promise<ProfileManifest | null> {
+  try {
+    return JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as ProfileManifest
+  } catch {
+    return null
+  }
+}
+
+async function writeManifest(profileDir: string, pkg: ProfileManifest): Promise<void> {
+  await writeFile(join(profileDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`, { mode: 0o644 })
+}
+
+const bundleName = (b: string | { name?: string }) => (typeof b === 'string' ? b : b?.name ?? '')
+
+/** Drop `names` from the profile manifest (dependencies and dsh.profile.bundles). */
+async function removeFromManifest(profileDir: string, names: string[]): Promise<void> {
+  if (!names.length) return
+  const pkg = await readManifest(profileDir)
+  if (!pkg) return
+  let changed = false
+  for (const n of names) {
+    if (pkg.dependencies && n in pkg.dependencies) {
+      delete pkg.dependencies[n]
+      changed = true
+    }
+  }
+  const bundles = pkg.dsh?.profile?.bundles
+  if (bundles) {
+    const kept = bundles.filter((b) => !names.includes(bundleName(b)))
+    if (kept.length !== bundles.length) {
+      pkg.dsh!.profile!.bundles = kept
+      changed = true
+    }
+  }
+  if (changed) await writeManifest(profileDir, pkg)
+}
+
+/** Make sure an installed plugin is listed as a profile bundle (pnpm add only writes dependencies). */
+async function ensureBundleListed(profileDir: string, name: string): Promise<void> {
+  const pkg = await readManifest(profileDir)
+  const bundles = pkg?.dsh?.profile?.bundles
+  if (!pkg || !bundles || bundles.some((b) => bundleName(b) === name)) return
+  bundles.push(name)
+  await writeManifest(profileDir, pkg)
+}
+
+/** Put bundles back into the backup's order after per-plugin installs appended them. */
+async function restoreBundleOrder(profileDir: string, original: string[]): Promise<void> {
+  const pkg = await readManifest(profileDir)
+  const bundles = pkg?.dsh?.profile?.bundles
+  if (!pkg || !bundles || !original.length) return
+  const rank = new Map(original.map((b, i) => [b, i]))
+  const sorted = [...bundles].sort((a, b) => (rank.get(bundleName(a)) ?? 1e9) - (rank.get(bundleName(b)) ?? 1e9))
+  if (sorted.map(bundleName).join('\0') !== bundles.map(bundleName).join('\0')) {
+    pkg.dsh!.profile!.bundles = sorted
+    await writeManifest(profileDir, pkg)
+  }
+}
+
+/** Rewrite local deps to the restored bundled sources (or the original path when it exists here). */
+export async function rewriteBundledLinkDeps(dshHome: string, plugins: PluginRecord[]): Promise<string[]> {
   const touched: string[] = []
   const byProfile = new Map<string, PluginRecord[]>()
   for (const p of plugins) {
@@ -195,52 +398,70 @@ export async function rewriteBundledLinkDeps(
     byProfile.set(p.profile, list)
   }
   for (const [profile, list] of byProfile) {
-    const pkgPath = join(dshHome, 'profiles', profile, 'package.json')
-    let raw: string
-    try {
-      raw = await readFile(pkgPath, 'utf8')
-    } catch {
-      continue
-    }
-    let pkg: { dependencies?: Record<string, string> }
-    try {
-      pkg = JSON.parse(raw) as typeof pkg
-    } catch {
-      continue
-    }
-    if (!pkg.dependencies) continue
+    const profileDir = join(dshHome, 'profiles', profile)
+    const pkg = await readManifest(profileDir)
+    if (!pkg?.dependencies) continue
     let changed = false
     for (const plugin of list) {
+      if (!(plugin.name in pkg.dependencies)) continue
       const target = await resolveLinkTarget(plugin, dshHome)
       if (!target) continue
-      const linkSpec = `link:${target.abs}`
-      if (pkg.dependencies[plugin.name] !== linkSpec) {
-        pkg.dependencies[plugin.name] = linkSpec
+      const spec = specForTarget(target)
+      if (pkg.dependencies[plugin.name] !== spec) {
+        pkg.dependencies[plugin.name] = spec
         changed = true
       }
     }
     if (changed) {
-      await writeFile(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, { mode: 0o644 })
+      await writeManifest(profileDir, pkg)
       touched.push(profile)
     }
   }
   return touched
 }
 
+export interface InvalidSpec {
+  name: string
+  spec: string
+  reason: Extract<PluginFailureReason, 'local-source-missing' | 'tarball-missing' | 'unsupported-spec'>
+  /** The path that does not exist here (machine 1's), or the spec itself. */
+  subject: string
+}
+
+/**
+ * Every dependency spec in a profile manifest that cannot resolve on this machine
+ * (missing file:/link:/portal: path with no bundled copy, workspace:/catalog:).
+ * One such spec makes `pnpm install` fail for the whole profile.
+ */
+export async function findUnresolvableSpecs(profileDir: string): Promise<InvalidSpec[]> {
+  const pkg = await readManifest(profileDir)
+  const out: InvalidSpec[] = []
+  for (const [name, value] of Object.entries(pkg?.dependencies ?? {})) {
+    const spec = parseLocalSpec(value)
+    if (!spec) continue
+    if (spec.kind === 'unsupported') {
+      out.push({ name, spec: value, reason: 'unsupported-spec', subject: value })
+      continue
+    }
+    const abs = resolveLocalSpecPath(spec.path, profileDir)
+    const ok = spec.tarball ? await isFile(abs) : await pathExists(abs)
+    // Absolute specs name machine 1's path as is; relative ones are shown as written.
+    const absolute = isWindowsAbsPath(spec.path) || spec.path.startsWith('/') || spec.path.startsWith('~')
+    if (!ok) out.push({ name, spec: value, reason: spec.tarball ? 'tarball-missing' : 'local-source-missing', subject: absolute ? abs : spec.path })
+  }
+  return out
+}
+
 async function materializeProfile(
   profileDir: string,
   deps: PluginInstallDeps,
+  opts: { frozen?: boolean } = {},
 ): Promise<{ ok: boolean; detail: string }> {
-  const run = deps.runCommand ?? defaultRunCommand
-  const pnpm = deps.pnpmCommand ?? 'pnpm'
-  const env = { ...process.env, DSH_HOME: deps.dshHome }
-  // Prefer lockfile when present; otherwise ordinary install.
-  const hasLock = await pathExists(join(profileDir, 'pnpm-lock.yaml'))
+  const pnpm = await resolvePnpm(deps)
+  const hasLock = opts.frozen !== false && (await pathExists(join(profileDir, 'pnpm-lock.yaml')))
   const args = hasLock ? ['install', '--frozen-lockfile'] : ['install']
-  let result = await run(pnpm, args, { cwd: profileDir, env })
-  if (!result.ok && hasLock) {
-    result = await run(pnpm, ['install'], { cwd: profileDir, env })
-  }
+  let result = await runPnpm(deps, pnpm, args, profileDir)
+  if (!result.ok && hasLock) result = await runPnpm(deps, pnpm, ['install'], profileDir)
   return { ok: result.ok, detail: result.detail }
 }
 
@@ -259,12 +480,10 @@ async function installViaPluginManager(
       return { ok: true, detail: 'already-installed in profile manifest', already: true }
     }
     if (outcome.application === 'failed' || outcome.error) {
-      const detail = outcome.error?.diagnostic
-        ?? outcome.error?.message
-        ?? outcome.packageResult?.output
-        ?? outcome.error?.code
-        ?? 'installBundle failed'
-      return { ok: false, detail: String(detail).slice(0, 800) }
+      const detail = [outcome.error?.code, outcome.error?.message, outcome.error?.diagnostic, outcome.packageResult?.output]
+        .filter(Boolean)
+        .join('\n') || 'installBundle failed'
+      return { ok: false, detail: `pluginManager: ${detail}` }
     }
     return { ok: true, detail: outcome.application ?? 'installed' }
   } catch (err) {
@@ -272,34 +491,79 @@ async function installViaPluginManager(
     if (/already-installed/i.test(message)) {
       return { ok: true, detail: message, already: true }
     }
-    return { ok: false, detail: message.slice(0, 800) }
+    return { ok: false, detail: `pluginManager: ${message}` }
   }
 }
 
+/** `pnpm add` straight into a profile with the host's (or Desktop's bundled) pnpm. */
+async function installViaPnpm(
+  spec: string,
+  name: string,
+  kind: 'npm' | 'link' | 'git' | 'other',
+  profileDir: string,
+  deps: PluginInstallDeps,
+): Promise<{ ok: boolean; detail: string }> {
+  const pnpm = await resolvePnpm(deps)
+  const args = ['add', spec, ...(kind === 'npm' ? ['--save-exact'] : [])]
+  const registry = deps.preferredRegistry === undefined ? NPMMIRROR : deps.preferredRegistry
+  let result = await runPnpm(deps, pnpm, registry && kind === 'npm' ? [...args, `--config.registry=${registry}`] : args, profileDir)
+  if (!result.ok && registry && kind === 'npm') result = await runPnpm(deps, pnpm, args, profileDir)
+  if (result.ok) await ensureBundleListed(profileDir, name)
+  return { ok: result.ok, detail: result.ok ? `installed with ${path.basename(pnpm.args?.[0] ?? pnpm.command)}` : `pnpm: ${result.detail}` }
+}
+
 /** Candidate Desktop-bundled `dsh` carriers (npm-global `dsh` refuses --profile desktop). */
-export function bundledDshCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+export function bundledDshCandidates(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string[] {
   const out: string[] = []
-  const win = process.platform === 'win32'
-  const exe = win ? 'dsh.cmd' : 'dsh'
+  const win = platform === 'win32'
+  const P = win ? path.win32 : path.posix
+  const exes = win ? ['dsh.cmd', 'dsh.exe'] : ['dsh']
   if (env.DSH_DESKTOP_DSH_DIR?.trim()) {
-    out.push(join(expandUserPath(env.DSH_DESKTOP_DSH_DIR, env), exe))
+    for (const exe of exes) out.push(P.join(expandUserPath(env.DSH_DESKTOP_DSH_DIR, env), exe))
   }
   if (env.DSH_CLI?.trim()) out.push(expandUserPath(env.DSH_CLI, env))
-  // Electron host: resources next to the running binary
-  try {
-    const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
-    if (resources) {
-      out.push(join(resources, 'dsh', exe))
-      out.push(join(resources, 'app.asar.unpacked', 'dsh', exe))
-      out.push(join(dirname(process.execPath), exe))
+  for (const root of desktopResourceRoots(env, platform)) {
+    for (const exe of exes) {
+      out.push(P.join(root, 'dsh', exe))
+      out.push(P.join(root, 'bin', exe))
+      out.push(P.join(root, 'app.asar.unpacked', 'dsh', exe))
     }
-  } catch {
-    // ignore
+    out.push(P.join(P.dirname(root), exes[0]!))
   }
-  out.push(exe)
+  out.push(...exes)
   out.push('dsh')
   return [...new Set(out)]
 }
+
+/** Locate the dsh CLI package (`@deepseek-ai/dsh/lib/bin.js`) shipped inside Desktop's resources. */
+export async function findDshCliEntry(roots: string[], maxDepth = 6): Promise<string | null> {
+  const rel = join('node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+  const queue: Array<{ dir: string; depth: number }> = roots.map((dir) => ({ dir, depth: 0 }))
+  let visited = 0
+  while (queue.length && visited < 4000) {
+    const { dir, depth } = queue.shift()!
+    visited++
+    if (await isFile(join(dir, rel))) return join(dir, rel)
+    if (depth >= maxDepth) continue
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name === 'node_modules' || e.name.startsWith('.')) continue
+      queue.push({ dir: join(dir, e.name), depth: depth + 1 })
+    }
+  }
+  return null
+}
+
+const CARRIER = `import { pathToFileURL } from 'node:url'
+const pm = process.env.DSH_VAULT_PACKAGE_MANAGER ? JSON.parse(process.env.DSH_VAULT_PACKAGE_MANAGER) : undefined
+const m = await import(pathToFileURL(process.env.DSH_VAULT_DSH_BIN).href)
+await m.runCli({ manageDesktopProfile: true, ...(pm ? { packageManager: pm } : {}) })
+`
 
 async function installViaDshCli(
   spec: string,
@@ -308,31 +572,58 @@ async function installViaDshCli(
 ): Promise<{ ok: boolean; detail: string }> {
   const run = deps.runCommand ?? defaultRunCommand
   const env = { ...process.env, DSH_HOME: deps.dshHome }
-  const candidates = profile === DESKTOP_PROFILE ? bundledDshCandidates() : ['dsh']
-  let last = { ok: false, detail: 'no dsh carrier tried' }
+  const discoveryEnv = deps.env ?? process.env
+  const tried: string[] = []
+  let last = ''
+  // 1) Desktop's dsh package run by its own node — no PATH, no cmd.exe, no GBK.
+  const pnpm = await resolvePnpm(deps)
+  const entry = await findDshCliEntry(desktopResourceRoots(discoveryEnv))
+  const bundledPnpm = await findBundledPnpm(discoveryEnv)
+  const node = bundledPnpm?.command ?? (process.versions.electron ? process.execPath : process.execPath)
+  if (entry) {
+    const carrier = join(tmpdir(), 'dsh-vault-dsh-carrier.mjs')
+    await mkdir(dirname(carrier), { recursive: true })
+    await writeFile(carrier, CARRIER)
+    const result = await run(node, [carrier, 'plugin', '--profile', profile, 'add', spec], {
+      env: {
+        ...env,
+        ...(process.versions.electron && node === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+        DSH_VAULT_DSH_BIN: entry,
+        ...(pnpm.command !== 'pnpm' ? { DSH_VAULT_PACKAGE_MANAGER: JSON.stringify({ command: pnpm.command, args: pnpm.args ?? [] }) } : {}),
+      },
+    })
+    if (result.ok) return { ok: true, detail: `installed via ${entry}` }
+    tried.push(entry)
+    last = result.detail
+  }
+  // 2) dsh executables
+  const candidates = profile === DESKTOP_PROFILE ? bundledDshCandidates(discoveryEnv) : ['dsh']
   for (const cmd of candidates) {
+    if (/[\\/]/.test(cmd) && !(await isFile(cmd))) continue
     const result = await run(cmd, ['plugin', '--profile', profile, 'add', spec], { env })
+    tried.push(cmd)
     if (result.ok) return { ok: true, detail: `installed via ${cmd}` }
-    last = { ok: false, detail: `${cmd}: ${result.detail}`.slice(0, 800) }
-    // npm-global refusal — try next candidate
+    last = `${cmd}: ${result.detail}`
     if (/managed exclusively by the Electron|manageDesktopProfile|refuses/i.test(result.detail)) continue
   }
-  if (profile === DESKTOP_PROFILE) {
-    last.detail += '\n' + installCommandForProfile(DESKTOP_PROFILE, spec).notes.join('\n')
-  }
-  return last
+  let detail = `dsh: ${last || 'no dsh carrier found'} (tried: ${tried.join(', ') || 'none'})`
+  if (profile === DESKTOP_PROFILE) detail += '\n' + installCommandForProfile(DESKTOP_PROFILE, spec).notes.join('\n')
+  return { ok: false, detail }
 }
 
 async function installSpecFor(plugin: PluginRecord, dshHome: string): Promise<{ spec: string; kind: 'npm' | 'link' | 'git' | 'other' }> {
   if (plugin.bundledSource) {
     const target = await resolveLinkTarget(plugin, dshHome)
-    return { spec: `link:${target?.abs ?? join(dshHome, ...plugin.bundledSource.split('/'))}`, kind: 'link' }
+    if (target) return { spec: specForTarget(target), kind: 'link' }
+    const kind = plugin.bundledKind ?? 'dir'
+    return { spec: specForTarget({ abs: join(dshHome, ...plugin.bundledSource.split('/')), kind }), kind: 'link' }
   }
-  const local = localSourcePath(plugin.source)
-  if (local) {
-    const abs = resolve(expandUserPath(local))
-    return { spec: `link:${abs}`, kind: 'link' }
+  const local = parseLocalSpec(plugin.source) ?? parseLocalSpec(plugin.version)
+  if (local?.kind === 'path') {
+    const abs = resolveLocalSpecPath(local.path, join(dshHome, 'profiles', plugin.profile ?? 'web'))
+    return { spec: `${local.tarball ? 'file' : 'link'}:${specPath(abs)}`, kind: 'link' }
   }
+  if (local?.kind === 'unsupported') return { spec: local.raw, kind: 'other' }
   if (plugin.source.startsWith('git') || plugin.source.includes('github.com')) {
     return { spec: plugin.source.startsWith('npm:') ? plugin.name : plugin.source, kind: 'git' }
   }
@@ -340,7 +631,7 @@ async function installSpecFor(plugin: PluginRecord, dshHome: string): Promise<{ 
   if (plugin.installedVersion) {
     return { spec: `${plugin.name}@${plugin.installedVersion}`, kind: 'npm' }
   }
-  if (plugin.version && !plugin.version.startsWith('link:') && !plugin.version.startsWith('file:')) {
+  if (plugin.version && !parseLocalSpec(plugin.version)) {
     return { spec: `${plugin.name}@${plugin.version}`, kind: 'npm' }
   }
   if (plugin.source.startsWith('npm:')) {
@@ -349,103 +640,149 @@ async function installSpecFor(plugin: PluginRecord, dshHome: string): Promise<{ 
   return { spec: plugin.name, kind: 'other' }
 }
 
-interface ProfileManifest {
-  dependencies?: Record<string, string>
-  dsh?: { profile?: { bundles?: string[] } }
+/** A local install spec whose file/folder is missing here, or a workspace-only spec. */
+async function unusableLocalSpec(
+  plugin: PluginRecord,
+  spec: string,
+  kind: string,
+): Promise<{ reason: PluginFailureReason; subject: string } | null> {
+  const parsed = parseLocalSpec(spec)
+  if (parsed?.kind === 'unsupported') return { reason: 'unsupported-spec', subject: parsed.raw }
+  if (kind !== 'link' || parsed?.kind !== 'path') return null
+  const present = parsed.tarball ? await isFile(parsed.path) : await pathExists(join(parsed.path, 'package.json'))
+  if (present) return null
+  // Name the path as machine 1 wrote it, so the owner can find it there.
+  const original = parseLocalSpec(plugin.originalSource) ?? parseLocalSpec(plugin.source) ?? parsed
+  const subject = original.kind === 'path' ? original.path : parsed.path
+  const tarball = original.kind === 'path' ? original.tarball : parsed.tarball
+  return { reason: tarball ? 'tarball-missing' : 'local-source-missing', subject }
 }
 
-async function readManifest(profileDir: string): Promise<ProfileManifest | null> {
-  try {
-    return JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8')) as ProfileManifest
-  } catch {
-    return null
+function ownPathsOf(plugin: PluginRecord, dshHome: string): string[] {
+  const out: string[] = []
+  const profileDir = join(dshHome, 'profiles', plugin.profile ?? 'web')
+  for (const s of [plugin.originalSource, plugin.source, plugin.version]) {
+    const spec = parseLocalSpec(s)
+    if (spec?.kind === 'path') out.push(resolveLocalSpecPath(spec.path, profileDir))
+  }
+  if (plugin.bundledSource) out.push(join(dshHome, ...plugin.bundledSource.split('/')))
+  return out
+}
+
+/** Short English line for a reason (UI localizes by `reason`). */
+function reasonLine(reason: PluginFailureReason, subject?: string): string {
+  switch (reason) {
+    case 'tarball-missing':
+      return `local package file not found on this machine: ${subject}; re-run the backup on the original machine with the current dsh-vault`
+    case 'local-source-missing':
+      return `local plugin folder not found on this machine: ${subject}; re-run the backup on the original machine with the current dsh-vault`
+    case 'unsupported-spec':
+      return `dependency spec only resolves inside the original workspace: ${subject}`
+    case 'blocked-by-other':
+      return `blocked by another dependency that cannot be resolved here: ${subject}`
+    case 'registry-not-found':
+      return `not found in the npm registry${subject ? `: ${subject}` : ''}`
+    case 'network':
+      return 'network error while contacting the npm registry'
+    case 'installer-missing':
+      return 'no pnpm / dsh installer found on this machine'
+    default:
+      return subject ?? 'install failed'
   }
 }
 
-async function writeManifest(profileDir: string, pkg: ProfileManifest): Promise<void> {
-  await writeFile(join(profileDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`, { mode: 0o644 })
-}
-
-/** Drop `names` from the profile manifest (dependencies and dsh.profile.bundles). */
-async function removeFromManifest(profileDir: string, names: string[]): Promise<void> {
-  const pkg = await readManifest(profileDir)
-  if (!pkg) return
-  let changed = false
-  for (const n of names) {
-    if (pkg.dependencies && n in pkg.dependencies) {
-      delete pkg.dependencies[n]
-      changed = true
-    }
-  }
-  const bundles = pkg.dsh?.profile?.bundles
-  if (bundles) {
-    const kept = bundles.filter((b) => !names.includes(b))
-    if (kept.length !== bundles.length) {
-      pkg.dsh!.profile!.bundles = kept
-      changed = true
-    }
-  }
-  if (changed) await writeManifest(profileDir, pkg)
-}
-
-/** Put bundles back into the backup's order after per-plugin installs appended them. */
-async function restoreBundleOrder(profileDir: string, original: string[]): Promise<void> {
-  const pkg = await readManifest(profileDir)
-  const bundles = pkg?.dsh?.profile?.bundles
-  if (!pkg || !bundles) return
-  const rank = new Map(original.map((b, i) => [b, i]))
-  const sorted = [...bundles].sort((a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9))
-  if (sorted.join('\0') !== bundles.join('\0')) {
-    pkg.dsh!.profile!.bundles = sorted
-    await writeManifest(profileDir, pkg)
-  }
+export interface ReinstallOptions {
+  /** Only these `profile:name` keys (retry). Others are left alone. */
+  only?: Set<string>
 }
 
 /**
  * Reinstall missing plugins after files were restored.
- * Prefer in-process pluginManager + profile `pnpm install`, then Desktop bundled dsh.
+ *
+ * 1. Point local deps at the restored bundled sources.
+ * 2. Pre-validate every spec in each profile manifest; take unresolvable ones out so
+ *    they cannot poison the install of the rest, and report them with one reason.
+ * 3. Materialize each profile (pnpm install); if that still fails, isolate the
+ *    not-yet-installed npm plugins and add them one at a time.
+ * 4. Install what is still missing: host pluginManager (own profile only) → pnpm add
+ *    in the profile dir → dsh CLI carrier.
  */
 export async function reinstallMissingPlugins(
   plugins: PluginRecord[],
   deps: PluginInstallDeps,
+  options: ReinstallOptions = {},
 ): Promise<{ results: PluginInstallResult[]; restartRequired: boolean }> {
   const results: PluginInstallResult[] = []
-  const actionable = plugins.filter((p) => !isBuiltinDshBundle(p.name))
-  await rewriteBundledLinkDeps(deps.dshHome, actionable)
-
-  // Remember what was already there, so packages added by the profile install count as installed (restart needed).
-  const presentBefore = new Set<string>()
-  for (const p of actionable) {
-    const profile = p.profile ?? deps.activeProfile
-    if (await pluginPackagePresent(deps.dshHome, profile, p.name)) presentBefore.add(`${profile}:${p.name}`)
+  const key = (profile: string, name: string) => `${profile}:${name}`
+  const profileOf = (p: PluginRecord) => p.profile ?? deps.activeProfile
+  // One record per profile:name (a plugin can legitimately be in two profiles).
+  const seen = new Set<string>()
+  const actionable = plugins.filter((p) => {
+    if (isBuiltinDshBundle(p.name)) return false
+    const k = key(profileOf(p), p.name)
+    if (seen.has(k) || (options.only && !options.only.has(k))) return false
+    seen.add(k)
+    return true
+  })
+  const done = new Set<string>()
+  const failedIn = new Map<string, Set<string>>()
+  const fail = (row: PluginInstallResult) => {
+    results.push(row)
+    done.add(key(row.profile, row.name))
+    const set = failedIn.get(row.profile) ?? new Set<string>()
+    set.add(row.name)
+    failedIn.set(row.profile, set)
   }
 
-  // Group by profile and materialize from lockfile/manifest first.
-  const isolated = new Map<string, Set<string>>()
+  await rewriteBundledLinkDeps(deps.dshHome, actionable)
+
+  const presentBefore = new Set<string>()
+  for (const p of actionable) {
+    if (await pluginPackagePresent(deps.dshHome, profileOf(p), p.name)) presentBefore.add(key(profileOf(p), p.name))
+  }
+
+  const profiles = [...new Set(actionable.map(profileOf))]
   const originalBundles = new Map<string, string[]>()
-  const profiles = [...new Set(actionable.map((p) => p.profile ?? deps.activeProfile))]
   for (const profile of profiles) {
     const profileDir = join(deps.dshHome, 'profiles', profile)
-    if (!(await pathExists(join(profileDir, 'package.json')))) continue
-    const mat = await materializeProfile(profileDir, deps)
+    const pkg = await readManifest(profileDir)
+    if (!pkg) continue
+    originalBundles.set(profile, (pkg.dsh?.profile?.bundles ?? []).map(bundleName))
+
+    // 2) Pre-validate. Unresolvable specs come out of this install run.
+    const invalid = await findUnresolvableSpecs(profileDir)
+    if (invalid.length) {
+      await removeFromManifest(profileDir, invalid.map((i) => i.name))
+      for (const bad of invalid) {
+        const rec = actionable.find((p) => p.name === bad.name && profileOf(p) === profile)
+        const subject = rec?.originalSource ? (parseLocalSpec(rec.originalSource) as { path?: string } | null)?.path ?? bad.subject : bad.subject
+        if (options.only && !options.only.has(key(profile, bad.name))) continue
+        fail({
+          name: bad.name,
+          profile,
+          status: 'failed',
+          reason: bad.reason,
+          subject,
+          detail: reasonLine(bad.reason, subject),
+          source: rec?.originalSource ?? bad.spec,
+        })
+      }
+    }
+
+    // 3) Materialize.
+    const mat = await materializeProfile(profileDir, deps, { frozen: invalid.length === 0 })
     if (!mat.ok) {
-      // One unresolvable npm plugin (unpublished, private registry, typo) makes the whole
-      // profile install fail, and every later `dsh plugin add` re-resolves the same manifest.
-      // Take the not-yet-installed npm plugins out, materialize the rest, then add them one
-      // by one below so a bad one only fails itself.
-      const pkg = await readManifest(profileDir)
       const isolate: string[] = []
+      const current = await readManifest(profileDir)
       for (const p of actionable) {
-        if ((p.profile ?? deps.activeProfile) !== profile) continue
-        if (presentBefore.has(`${profile}:${p.name}`)) continue
+        if (profileOf(p) !== profile || done.has(key(profile, p.name))) continue
+        if (presentBefore.has(key(profile, p.name))) continue
         if ((await installSpecFor(p, deps.dshHome)).kind !== 'npm') continue
-        if (pkg?.dependencies && p.name in pkg.dependencies) isolate.push(p.name)
+        if (current?.dependencies && p.name in current.dependencies) isolate.push(p.name)
       }
       if (isolate.length) {
-        originalBundles.set(profile, [...(pkg?.dsh?.profile?.bundles ?? [])])
-        isolated.set(profile, new Set(isolate))
         await removeFromManifest(profileDir, isolate)
-        await materializeProfile(profileDir, deps)
+        await materializeProfile(profileDir, deps, { frozen: false })
       }
     }
   }
@@ -453,162 +790,157 @@ export async function reinstallMissingPlugins(
   // Bundled link: sources need their own runtime deps (pnpm skips them for link:).
   const bundledDeps = new Map<string, { ok: boolean; detail: string }>()
   for (const plugin of actionable) {
+    if (done.has(key(profileOf(plugin), plugin.name))) continue
     const target = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome) : null
-    if (!target?.bundled || bundledDeps.has(target.abs)) continue
+    if (!target?.bundled || target.kind !== 'dir' || bundledDeps.has(target.abs)) continue
     bundledDeps.set(target.abs, await installBundledSourceDeps(target.abs, deps))
   }
 
+  const managerProfile = deps.pluginManager?.profile?.name ?? deps.activeProfile
   let restartRequired = false
   for (const plugin of actionable) {
-    const profile = plugin.profile ?? deps.activeProfile
-    const iso = isolated.get(profile)
-    if (iso) {
-      // A failed add can leave its entry behind, which would break the next add too.
-      const failedHere = results.filter((r) => r.profile === profile && r.status === 'failed' && iso.has(r.name))
-      if (failedHere.length) await removeFromManifest(join(deps.dshHome, 'profiles', profile), failedHere.map((r) => r.name))
-    }
+    const profile = profileOf(plugin)
+    if (done.has(key(profile, plugin.name))) continue
+    const profileDir = join(deps.dshHome, 'profiles', profile)
+    // A failed add can leave its entry behind, which would break the next install too.
+    await removeFromManifest(profileDir, [...(failedIn.get(profile) ?? [])])
+
     if (await pluginPackagePresent(deps.dshHome, profile, plugin.name)) {
       // Present is not enough: a package whose dependencies don't resolve fails to import in dsh.
-      const pkgDir = join(deps.dshHome, 'profiles', profile, 'node_modules', ...plugin.name.split('/'))
+      const pkgDir = join(profileDir, 'node_modules', ...plugin.name.split('/'))
       const missing = await missingRuntimeDependencies(pkgDir)
       if (missing.length) {
         const target = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome) : null
         const bundledDetail = target ? bundledDeps.get(target.abs)?.detail : undefined
-        results.push({
+        fail({
           name: plugin.name,
           profile,
           status: 'failed',
-          detail: `installed but cannot load: missing dependencies ${missing.join(', ')}${bundledDetail ? `\n${bundledDetail}` : ''}`.slice(0, 1200),
+          reason: 'missing-deps',
+          subject: missing.join(', '),
+          detail: `installed but cannot load: missing dependencies ${missing.join(', ')}`,
+          log: bundledDetail,
           source: plugin.originalSource ?? plugin.source,
         })
         continue
       }
       const version = await installedPackageVersion(pkgDir)
-      if (plugin.installedVersion && version && version !== plugin.installedVersion) {
-        // Wrong version (lockfile missing/ignored): fall through and install the exact one.
-      } else {
-      const linked = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome) : null
-      const isNew = !presentBefore.has(`${profile}:${plugin.name}`)
-      if (isNew) restartRequired = true
-      results.push({
-        name: plugin.name,
-        profile,
-        status: isNew ? 'installed' : 'already-present',
-        detail: linked
-          ? `linked ${linked.bundled ? 'bundled source' : 'local source'} ${linked.abs}`
-          : `${isNew ? 'installed by profile install' : 'already installed'}${version ? ` @${version}` : ''}`,
-        source: plugin.source,
-      })
-      continue
+      if (!(plugin.installedVersion && version && version !== plugin.installedVersion)) {
+        const linked = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome) : null
+        const isNew = !presentBefore.has(key(profile, plugin.name))
+        if (isNew) restartRequired = true
+        results.push({
+          name: plugin.name,
+          profile,
+          status: isNew ? 'installed' : 'already-present',
+          detail: linked
+            ? `linked ${linked.bundled ? 'bundled source' : 'local source'} ${linked.abs}`
+            : `${isNew ? 'installed by profile install' : 'already installed'}${version ? ` @${version}` : ''}`,
+          source: plugin.source,
+        })
+        done.add(key(profile, plugin.name))
+        continue
       }
+      // Wrong version (lockfile missing/ignored): fall through and install the exact one.
     }
 
     const { spec, kind } = await installSpecFor(plugin, deps.dshHome)
-    if (kind === 'link') {
-      const local = localSourcePath(spec)
-      if (local && !(await pathExists(local))) {
-        results.push({
-          name: plugin.name,
-          profile,
-          status: 'failed',
-          detail: `local plugin source missing on this machine: ${local}. Re-backup with the plugin folder present, or copy it and retry.`,
-          source: plugin.originalSource ?? plugin.source,
-        })
-        continue
-      }
-    }
-
-    // 1) Host plugin manager (works while Desktop is running)
-    if (deps.pluginManager) {
-      const viaMgr = await installViaPluginManager(deps.pluginManager, spec, deps)
-      if (viaMgr.already) {
-        // Manifest lists it but node_modules may still be empty — rematerialize.
-        await materializeProfile(join(deps.dshHome, 'profiles', profile), deps)
-        if (await pluginPackagePresent(deps.dshHome, profile, plugin.name)) {
-          results.push({
-            name: plugin.name,
-            profile,
-            status: 'installed',
-            detail: 'materialized via pnpm after already-installed',
-            source: plugin.source,
-          })
-          restartRequired = true
-          continue
-        }
-      } else if (viaMgr.ok) {
-        results.push({
-          name: plugin.name,
-          profile,
-          status: 'installed',
-          detail: viaMgr.detail,
-          source: plugin.source,
-        })
-        restartRequired = true
-        continue
-      } else {
-        // Fall through to CLI with manager error as detail seed
-        const viaCli = await installViaDshCli(spec, profile, deps)
-        if (viaCli.ok || (await pluginPackagePresent(deps.dshHome, profile, plugin.name))) {
-          results.push({
-            name: plugin.name,
-            profile,
-            status: 'installed',
-            detail: viaCli.ok ? viaCli.detail : 'present after CLI attempt',
-            source: plugin.source,
-          })
-          restartRequired = true
-        } else {
-          results.push({
-            name: plugin.name,
-            profile,
-            status: 'failed',
-            detail: `${viaMgr.detail}\n${viaCli.detail}`.slice(0, 1200),
-            source: plugin.source,
-          })
-        }
-        continue
-      }
-    }
-
-    // 2) CLI fallback
-    const viaCli = await installViaDshCli(spec, profile, deps)
-    if (viaCli.ok || (await pluginPackagePresent(deps.dshHome, profile, plugin.name))) {
-      results.push({
-        name: plugin.name,
-        profile,
-        status: 'installed',
-        detail: viaCli.detail,
-        source: plugin.source,
-      })
-      restartRequired = true
-    } else {
-      results.push({
+    // Never hand pnpm a local path that isn't here: it would fail (or link a dangling dir).
+    const unusable = await unusableLocalSpec(plugin, spec, kind)
+    if (unusable) {
+      fail({
         name: plugin.name,
         profile,
         status: 'failed',
-        detail: viaCli.detail,
+        reason: unusable.reason,
+        subject: unusable.subject,
+        detail: reasonLine(unusable.reason, unusable.subject),
+        source: plugin.originalSource ?? plugin.source,
+      })
+      continue
+    }
+    const manifestBefore = await readManifest(profileDir)
+    const logs: string[] = []
+    let ok = false
+    let how = ''
+
+    // a) Host pluginManager — only for the profile it manages.
+    if (deps.pluginManager && profile === managerProfile) {
+      const viaMgr = await installViaPluginManager(deps.pluginManager, spec, deps)
+      if (viaMgr.already) {
+        await materializeProfile(profileDir, deps)
+        ok = await pluginPackagePresent(deps.dshHome, profile, plugin.name)
+        how = 'materialized via pnpm after already-installed'
+        if (!ok) logs.push(viaMgr.detail)
+      } else if (viaMgr.ok) {
+        ok = true
+        how = viaMgr.detail
+      } else {
+        logs.push(viaMgr.detail)
+      }
+    }
+    // b) pnpm in the profile dir (any profile; host / Desktop-bundled pnpm).
+    if (!ok) {
+      const viaPnpm = await installViaPnpm(spec, plugin.name, kind, profileDir, deps)
+      // Trust the files, not the exit code.
+      ok = await pluginPackagePresent(deps.dshHome, profile, plugin.name)
+      if (ok) how = viaPnpm.ok ? viaPnpm.detail : 'present after pnpm add'
+      else logs.push(viaPnpm.ok ? 'pnpm add exited 0 but the package is not in node_modules' : viaPnpm.detail)
+    }
+    // c) dsh CLI (Desktop-bundled carrier first).
+    if (!ok) {
+      const viaCli = await installViaDshCli(spec, profile, deps)
+      ok = await pluginPackagePresent(deps.dshHome, profile, plugin.name)
+      if (ok) how = viaCli.ok ? viaCli.detail : 'present after CLI attempt'
+      else logs.push(viaCli.ok ? 'dsh plugin add exited 0 but the package is not in node_modules' : viaCli.detail)
+    }
+    // A failed attempt must not leave stray entries (e.g. a link named after a folder).
+    if (!ok && manifestBefore) await writeManifest(profileDir, manifestBefore)
+
+    if (ok) {
+      results.push({ name: plugin.name, profile, status: 'installed', detail: how, source: plugin.source })
+      done.add(key(profile, plugin.name))
+      restartRequired = true
+    } else {
+      const log = logs.join('\n\n')
+      const c = classifyInstallFailure(log, ownPathsOf(plugin, deps.dshHome), plugin.name)
+      fail({
+        name: plugin.name,
+        profile,
+        status: 'failed',
+        reason: c.reason,
+        subject: c.subject,
+        detail: c.reason === 'unknown' ? c.summary : reasonLine(c.reason, c.subject),
+        log,
         source: plugin.source,
       })
     }
   }
 
-  for (const [profile, names] of isolated) {
+  // Keep every manifest installable, and in the backup's bundle order.
+  for (const profile of profiles) {
     const profileDir = join(deps.dshHome, 'profiles', profile)
-    const failed = results.filter((r) => r.profile === profile && r.status === 'failed' && names.has(r.name))
-    if (failed.length) await removeFromManifest(profileDir, failed.map((r) => r.name))
-    for (const r of failed) r.detail = `${r.detail}\n(left out of profiles/${profile}/package.json so the other plugins still install)`.slice(0, 1400)
+    const failed = [...(failedIn.get(profile) ?? [])].filter((n) => !presentBefore.has(key(profile, n)))
+    await removeFromManifest(profileDir, failed)
+    for (const r of results) {
+      if (r.profile === profile && r.status === 'failed' && failed.includes(r.name) && !/left out of/.test(r.detail)) {
+        r.log = `${r.log ? `${r.log}\n\n` : ''}(left out of profiles/${profile}/package.json so the other plugins still install; use “retry failed plugins” after fixing the cause)`
+      }
+    }
     await restoreBundleOrder(profileDir, originalBundles.get(profile) ?? [])
   }
 
   // Final check: never report success for a version other than machine 1's.
   for (const row of results) {
     if (row.status === 'failed' || row.status === 'skipped') continue
-    const plugin = actionable.find((p) => p.name === row.name && (p.profile ?? deps.activeProfile) === row.profile)
+    const plugin = actionable.find((p) => p.name === row.name && profileOf(p) === row.profile)
     if (!plugin?.installedVersion) continue
     const pkgDir = join(deps.dshHome, 'profiles', row.profile, 'node_modules', ...row.name.split('/'))
     const now = await installedPackageVersion(pkgDir)
     if (now && now !== plugin.installedVersion) {
       row.status = 'failed'
+      row.reason = 'version-mismatch'
+      row.subject = `${now} ≠ ${plugin.installedVersion}`
       row.detail = `installed ${now}, but the backup had ${plugin.installedVersion}`
     } else if (now && !row.detail.includes(now)) {
       row.detail = `${row.detail} (@${now})`
