@@ -314,7 +314,12 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                         if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
                       }
                       if (r.restartRequired) parts.push(t('restore.restartRequired'))
-                      for (const m of r.manualActions) if (!r.pluginResults?.length || !r.pluginResults.some((row) => m.startsWith(`${row.name} (`))) parts.push(m)
+                      for (const m of r.manualActions) {
+                        // Plugin failures are listed per row; the restart hint is already localized above.
+                        if (r.pluginResults?.some((row) => m.startsWith(`${row.name} (`))) continue
+                        if (r.restartRequired && /^Restart /.test(m)) continue
+                        parts.push(m)
+                      }
                       setNotice({ kind: failed ? 'error' : 'ok', text: parts.join(' · ') })
                       if (failed) setError(parts.join(' · '))
                       setPreview(null)
@@ -329,6 +334,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
 
             {tab === 'storage' ? (
               <StoragePanel
+                fs={fsBrowser}
                 targets={targets}
                 busy={busy}
                 error={error}

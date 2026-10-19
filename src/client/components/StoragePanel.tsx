@@ -22,6 +22,7 @@ import {
   Tag,
   TextInput,
 } from './ui.js'
+import { PathPicker, type FsBrowser } from './PathPicker.js'
 
 export interface StoragePanelProps {
   targets: StorageTargetConfig[]
@@ -34,6 +35,8 @@ export interface StoragePanelProps {
   loading?: boolean
   /** Read-only connection probe (GET /snapshots?targetId=). Must never throw raw secrets. */
   testConnection?: (target: StorageTargetConfig) => Promise<{ ok: boolean; count?: number; error?: string }>
+  /** Filesystem access for the local-directory Browse… dialog. */
+  fs?: FsBrowser
 }
 
 type TestState =
@@ -247,7 +250,8 @@ function redactError(message: string, target: StorageTargetConfig): string {
   return out.length > 300 ? `${out.slice(0, 300)}…` : out
 }
 
-export function StoragePanel({ targets, busy, error, message, onUpsert, onDelete, snapshots, loading, testConnection }: StoragePanelProps) {
+export function StoragePanel({ targets, busy, error, message, onUpsert, onDelete, snapshots, loading, testConnection, fs }: StoragePanelProps) {
+  const [pickerOpen, setPickerOpen] = useState(false)
   const tr = useT()
   const ids = useId()
   const [form, setForm] = useState<FormState | null>(null)
@@ -435,14 +439,27 @@ export function StoragePanel({ targets, busy, error, message, onUpsert, onDelete
 
             {form.kind === 'local' ? (
               <Field label={tr('storage.directory')} htmlFor={`${ids}-dir`} hint={tr('storage.directoryHint')}>
-                <TextInput
-                  id={`${ids}-dir`}
-                  mono
-                  value={form.directory}
-                  placeholder="~/dsh-vault-backups"
-                  onChange={(e) => patch({ directory: e.target.value })}
-                  invalid={touched && !form.directory.trim()}
-                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <TextInput
+                    id={`${ids}-dir`}
+                    mono
+                    value={form.directory}
+                    placeholder="~/dsh-vault-backups"
+                    onChange={(e) => patch({ directory: e.target.value })}
+                    invalid={touched && !form.directory.trim()}
+                  />
+                  {fs ? <Button variant="quiet" onClick={() => setPickerOpen(true)}>{tr('backup.browse')}</Button> : null}
+                </div>
+                {fs ? (
+                  <PathPicker
+                    open={pickerOpen}
+                    mode="directory"
+                    fs={fs}
+                    initialPath={form.directory}
+                    onClose={() => setPickerOpen(false)}
+                    onSelect={(p) => { patch({ directory: p }); setPickerOpen(false) }}
+                  />
+                ) : null}
               </Field>
             ) : null}
 
