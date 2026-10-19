@@ -143,6 +143,35 @@ export function npmRegistryLookup(preferred?: string | null, timeoutMs = 4000): 
   }
 }
 
+/**
+ * `dist.integrity` of `name@version` from the registries (preferred, npmmirror, npmjs).
+ * string = integrity, null = that version does not exist, undefined = unknown (offline).
+ */
+export function npmRegistryIntegrity(preferred?: string | null, timeoutMs = 4000): (name: string, version: string) => Promise<string | null | undefined> {
+  const urls = [...new Set([preferred, 'https://registry.npmmirror.com', 'https://registry.npmjs.org'].filter((u): u is string => Boolean(u)).map((u) => u.replace(/\/+$/, '')))]
+  const one = async (base: string, name: string, version: string): Promise<string | null | undefined> => {
+    const ac = new AbortController()
+    const t = setTimeout(() => ac.abort(), timeoutMs)
+    try {
+      const res = await fetch(`${base}/${name.replace('/', '%2f')}/${encodeURIComponent(version)}`, { signal: ac.signal, headers: { accept: 'application/json' } })
+      if (res.status === 404) return null
+      if (!res.ok) return undefined
+      const doc = (await res.json()) as { dist?: { integrity?: string } }
+      return doc.dist?.integrity ?? undefined
+    } catch {
+      return undefined
+    } finally {
+      clearTimeout(t)
+    }
+  }
+  return async (name, version) => {
+    const all = await Promise.all(urls.map((u) => one(u, name, version)))
+    const found = all.find((x): x is string => typeof x === 'string')
+    if (found) return found
+    return all.includes(null) ? null : undefined
+  }
+}
+
 /** Registry status per plugin key, bounded by `overallMs` so backup / the UI never hang. */
 export async function registryStatuses(
   plugins: Array<Pick<PluginRecord, 'name' | 'profile' | 'source' | 'version' | 'installedVersion' | 'originalSource'>>,

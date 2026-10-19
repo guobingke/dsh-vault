@@ -97,6 +97,9 @@ export type PluginFailureReason =
   | 'git-unavailable'
   | 'no-backup-copy'
   | 'not-resolvable'
+  | 'no-recorded-source'
+  | 'integrity-mismatch'
+  | 'self'
   | 'unknown'
 
 export interface ClassifiedFailure {

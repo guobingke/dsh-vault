@@ -72,6 +72,17 @@ export interface PluginRecord {
   installedVersion?: string
   /** Backup-time registry check: this exact version is not on the registry (restore uses the copy directly). */
   registryMissing?: boolean
+  /**
+   * Where the install source was recorded on the source machine:
+   * `dependency` (package.json spec), `lockfile` (pnpm-lock entry), `installed`
+   * (node_modules/<name>/package.json), or `name-only` (just a bundle / cordis name; no
+   * source — never installed from the registry by name). Absent in older snapshots.
+   */
+  recordedFrom?: 'dependency' | 'lockfile' | 'installed' | 'name-only'
+  /** Integrity (sha512-…) of the installed package at backup time, from the lockfile or package.json. */
+  integrity?: string
+  /** Resolved tarball URL at backup time, when known. */
+  resolved?: string
 }
 
 export interface VaultManifest {
@@ -238,6 +249,9 @@ export type PluginFailureReasonCode =
   | 'git-unavailable'
   | 'no-backup-copy'
   | 'not-resolvable'
+  | 'no-recorded-source'
+  | 'integrity-mismatch'
+  | 'self'
   | 'unknown'
 
 export interface PluginInstallResultRow {

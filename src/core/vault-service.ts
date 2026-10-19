@@ -3,7 +3,7 @@ import { basename, dirname, join } from 'node:path'
 import { collectBackupFiles, extractPluginsFromProfilePackage } from './collect.js'
 import { listPluginDataEntries } from './home-scope.js'
 import { JobRegistry, type JobState } from './progress.js'
-import { listDetectedPlugins, npmRegistryLookup, pluginKey, registryStatuses, type DetectedPlugin, type RegistryLookup } from './plugin-copies.js'
+import { listDetectedPlugins, npmRegistryIntegrity, npmRegistryLookup, pluginKey, registryStatuses, type DetectedPlugin, type RegistryLookup } from './plugin-copies.js'
 import { normalizeConflicts, resolveItemConflict, shouldApplyChange } from './conflict.js'
 import {
   DEFAULT_SETTINGS,
@@ -39,6 +39,7 @@ import {
 } from './plugin-install.js'
 import { snapshotsToDelete } from './retention.js'
 import { applyRestore } from './restore-apply.js'
+import { captureSelfEntries, reapplySelfEntries } from './self-entry.js'
 import { packSnapshot, unpackSnapshot } from './snapshot-io.js'
 import { maskTargetSecrets, mergeTargetSecrets } from './target-secrets.js'
 import { expandUserPath } from './win-paths.js'
@@ -86,6 +87,8 @@ export interface VaultServiceOptions {
   runPluginInstall?: PluginInstallDeps['runCommand']
   /** Registry version check (tests inject; default queries npm registries with a timeout; null disables). */
   registryLookup?: RegistryLookup | null
+  /** Registry integrity lookup for restore (tests); null disables the check. */
+  registryIntegrity?: PluginInstallDeps['registryIntegrity']
 }
 
 export class VaultService {
@@ -498,6 +501,7 @@ export class VaultService {
       rollbackTargetId = ROLLBACK_TARGET_ID
     }
 
+    const selfBefore = await captureSelfEntries(this.dshHome)
     const result = await applyRestore({
       manifest: unpacked.manifest,
       files: unpacked.files,
@@ -510,6 +514,8 @@ export class VaultService {
       onProgress,
     })
     result.rollbackTargetId = rollbackTargetId
+    // Keep this machine's own dsh-vault entry (its link: path), never machine 1's.
+    await reapplySelfEntries(this.dshHome, selfBefore)
 
     if (req.reinstallPlugins !== false) {
       onProgress?.({ phase: 'reinstall', message: 'Installing plugins into profile', fraction: 0 })
@@ -534,8 +540,15 @@ export class VaultService {
       pnpmCommand: this.pnpmCommand,
       pnpm: this.pnpm,
       preferredRegistry: this.preferredRegistry,
+      registryIntegrity: this.registryIntegrity(),
       runCommand: this.runCommand,
     }
+  }
+
+  private registryIntegrity(): PluginInstallDeps['registryIntegrity'] {
+    if (this.options.registryIntegrity !== undefined) return this.options.registryIntegrity
+    if (process.env.DSH_VAULT_NO_REGISTRY_CHECK === '1') return null
+    return npmRegistryIntegrity(this.preferredRegistry)
   }
 
   private async installPlugins(

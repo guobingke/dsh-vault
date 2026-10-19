@@ -182,6 +182,12 @@ Some plugins apply their settings only when you press **应用** in their own pa
 **GitHub targets or `github:` plugins time out in mainland China.**
 Configure a proxy, e.g. `git config --global http.proxy http://127.0.0.1:7897`, or set `HTTPS_PROXY` before starting dsh. A saved plugin copy also lets the restore skip GitHub entirely.
 
+**A plugin was skipped: "no recorded install source".**
+The backup only saw the plugin's name (in the bundle list or `cordis.patch.yml`), not where it was installed from, and had no saved copy. dsh-vault won't install a plugin from npm by name alone, because a different package with the same name could be installed instead. Install it by hand, or back up again with plugin copies turned on.
+
+**Does a restore update dsh-vault itself?**
+No. The restore skips dsh-vault and keeps this machine's own installation, including its `link:` path. Update it with `git pull` and `npm run build`.
+
 **Can I restore onto a machine that already has a dsh setup?**
 Yes. The diff preview shows what will change, you choose per conflict, and a rollback snapshot is taken first.
 

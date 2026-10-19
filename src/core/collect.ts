@@ -10,6 +10,7 @@ import {
   toSafeRelPath,
 } from './paths.js'
 import { bundledSourceRel } from './plugin-install.js'
+import { isSelfPlugin } from './self-entry.js'
 import { isRemoteNonRegistrySpec, parseLocalSpec, resolveLocalSpecPath } from './local-spec.js'
 import { homeExcludeReason, isPluginDataRoot, isSecretPath, walkHome } from './home-scope.js'
 import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord } from './types.js'
@@ -98,15 +99,15 @@ export function extractPluginsFromProfilePackage(
   const deps = pkg.dependencies ?? {}
   for (const [name, version] of Object.entries(deps)) {
     const local = parseLocalSpec(version) !== null
-    out.push({ name, version, source: local || version.startsWith('git') || isRemoteNonRegistrySpec(version) ? version : `npm:${name}@${version}`, profile: profileName })
+    out.push({ name, version, source: local || version.startsWith('git') || isRemoteNonRegistrySpec(version) ? version : `npm:${name}@${version}`, profile: profileName, recordedFrom: 'dependency' })
   }
   const bundles = pkg.dsh?.profile?.bundles ?? []
   for (const b of bundles) {
     if (typeof b === 'string') {
-      if (!out.some((p) => p.name === b)) out.push({ name: b, source: b, profile: profileName })
+      if (!out.some((p) => p.name === b)) out.push({ name: b, source: b, profile: profileName, recordedFrom: 'name-only' })
     } else if (b?.name) {
       if (!out.some((p) => p.name === b.name)) {
-        out.push({ name: b.name, version: b.version, source: b.name, profile: profileName })
+        out.push({ name: b.name, version: b.version, source: b.name, profile: profileName, recordedFrom: 'name-only' })
       }
     }
   }
@@ -126,7 +127,7 @@ export function extractPluginsFromPatchYaml(patchText: string, profileName: stri
         if (!item || typeof item !== 'object') continue
         const name = (item as { name?: string }).name
         if (typeof name === 'string' && name && !name.endsWith('.ts') && !name.startsWith('/')) {
-          out.push({ name, source: name, profile: profileName })
+          out.push({ name, source: name, profile: profileName, recordedFrom: 'name-only' })
         }
       }
     }
@@ -210,6 +211,18 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     }
   }
 
+  // One record per profile:name; a recorded source (package.json dependency) beats a bare
+  // bundle / cordis name, whichever file was read first.
+  {
+    const best = new Map<string, PluginRecord>()
+    for (const p of plugins) {
+      const k = `${p.profile ?? ''}:${p.name}`
+      const cur = best.get(k)
+      if (!cur || (cur.recordedFrom === 'name-only' && p.recordedFrom !== 'name-only')) best.set(k, p)
+    }
+    plugins.splice(0, plugins.length, ...best.values())
+  }
+
   // Also pick up plugins that are installed / referenced only in cordis (e.g. dsh-vscode-bridge
   // in cordis.patch.yml but not in package.json dependencies).
   const profileNames = new Set<string>()
@@ -223,13 +236,30 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     }
   }
 
-  // Record the exact installed version so machine 2 gets the same one, not just the range.
+  // Record the exact installed version (and integrity) so machine 2 gets the same package,
+  // not just the range. A name-only record (bundle / cordis entry) becomes installable from
+  // the registry only when the real installed package told us its name + version here.
+  const lockMeta = new Map<string, Map<string, LockedPackage>>()
   for (const plugin of plugins) {
-    if (!plugin.profile || parseLocalSpec(plugin.version ?? plugin.source)) continue
+    if (!plugin.profile || isSelfPlugin(plugin.name) || parseLocalSpec(plugin.version ?? plugin.source)) continue
+    const profileDir = join(dshHome, 'profiles', plugin.profile)
     try {
-      const pkgPath = join(dshHome, 'profiles', plugin.profile, 'node_modules', ...plugin.name.split('/'), 'package.json')
-      const v = (JSON.parse(await readFile(pkgPath, 'utf8')) as { version?: unknown }).version
-      if (typeof v === 'string' && v) plugin.installedVersion = v
+      const pkgPath = join(profileDir, 'node_modules', ...plugin.name.split('/'), 'package.json')
+      const pkg = JSON.parse(await readFile(pkgPath, 'utf8')) as { name?: unknown; version?: unknown; _integrity?: unknown; _resolved?: unknown }
+      const v = pkg.version
+      if (typeof v !== 'string' || !v || (typeof pkg.name === 'string' && pkg.name !== plugin.name)) continue
+      plugin.installedVersion = v
+      if (!lockMeta.has(plugin.profile)) lockMeta.set(plugin.profile, await lockedPackages(profileDir))
+      const locked = lockMeta.get(plugin.profile)!.get(`${plugin.name}@${v}`)
+      const integrity = locked?.integrity ?? (typeof pkg._integrity === 'string' ? pkg._integrity : undefined)
+      const resolved = locked?.tarball ?? (typeof pkg._resolved === 'string' ? pkg._resolved : undefined)
+      if (integrity) plugin.integrity = integrity
+      if (resolved) plugin.resolved = resolved
+      if (plugin.recordedFrom === 'name-only' && !isRemoteNonRegistrySpec(plugin.version ?? '')) {
+        plugin.recordedFrom = 'installed'
+        plugin.version = v
+        plugin.source = `npm:${plugin.name}@${v}`
+      }
     } catch {
       // not installed on this machine (or a dsh built-in) — keep the manifest range
     }
@@ -240,7 +270,7 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   const bundleLocal = options.bundleLocalPlugins !== false
   const noCopy = new Set(options.pluginCopyExclude ?? [])
   const copyWanted = (p: PluginRecord) => !noCopy.has('*') && !noCopy.has(`${p.profile ?? 'web'}:${p.name}`)
-  const copyTotal = plugins.filter((p) => p.profile && !isBuiltinDshBundle(p.name)).length
+  const copyTotal = plugins.filter((p) => p.profile && !isBuiltinDshBundle(p.name) && !isSelfPlugin(p.name)).length
   let copyN = 0
   const copyTick = (plugin: PluginRecord) => {
     copyN++
@@ -248,7 +278,7 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   }
   if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {
     for (const plugin of plugins) {
-      if (!plugin.profile) continue
+      if (!plugin.profile || isSelfPlugin(plugin.name)) continue
       const spec = parseLocalSpec(plugin.version ?? plugin.source)
       if (!spec) continue
       if (!copyWanted(plugin)) {
@@ -305,7 +335,7 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {
     const locks = new Map<string, Record<string, string>>()
     for (const plugin of plugins) {
-      if (!plugin.profile || isBuiltinDshBundle(plugin.name)) continue
+      if (!plugin.profile || isBuiltinDshBundle(plugin.name) || isSelfPlugin(plugin.name)) continue
       copyTick(plugin)
       // Local file:/link: already have a primary bundledSource (or will fail with a clear reason).
       if (plugin.bundledSource) continue
@@ -381,6 +411,35 @@ async function lockedVersions(profileDir: string): Promise<Record<string, string
   }
 }
 
+export interface LockedPackage {
+  integrity?: string
+  tarball?: string
+}
+
+/** `name@version` → integrity / tarball from a profile's pnpm-lock.yaml `packages` (v5–v9 keys). */
+export async function lockedPackages(profileDir: string): Promise<Map<string, LockedPackage>> {
+  const out = new Map<string, LockedPackage>()
+  try {
+    const lock = parseYaml(await readFile(join(profileDir, 'pnpm-lock.yaml'), 'utf8')) as {
+      packages?: Record<string, { resolution?: { integrity?: string; tarball?: string } }>
+    }
+    for (const [rawKey, v] of Object.entries(lock?.packages ?? {})) {
+      // v9: "name@1.2.3", v6: "/name@1.2.3(peer)", v5: "/name/1.2.3"
+      let k = rawKey.replace(/^\//, '').replace(/\(.*$/, '')
+      const at = k.lastIndexOf('@')
+      if (at <= 0) {
+        const slash = k.lastIndexOf('/')
+        if (slash > 0) k = `${k.slice(0, slash)}@${k.slice(slash + 1)}`
+      }
+      const r = v?.resolution
+      if (r && (r.integrity || r.tarball)) out.set(k, { integrity: r.integrity, tarball: r.tarball })
+    }
+  } catch {
+    // no lockfile
+  }
+  return out
+}
+
 async function isFile(p: string): Promise<boolean> {
   try {
     return (await stat(p)).isFile()
@@ -442,6 +501,7 @@ export async function extractPluginsFromNodeModules(
         source: typeof pkg.version === 'string' ? `npm:${name}@${pkg.version}` : name,
         profile: profileName,
         installedVersion: typeof pkg.version === 'string' ? pkg.version : undefined,
+        recordedFrom: typeof pkg.version === 'string' ? 'installed' : 'name-only',
       })
     } catch {
       // not a package

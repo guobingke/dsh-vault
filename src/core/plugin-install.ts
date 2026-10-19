@@ -18,6 +18,7 @@ import {
 import { DESKTOP_PROFILE, installCommandForProfile } from './profiles.js'
 import type { PluginRecord } from './types.js'
 import { expandUserPath } from './win-paths.js'
+import { isSelfPlugin } from './self-entry.js'
 
 export type PluginInstallStatus = 'installed' | 'installed-from-backup' | 'already-present' | 'failed' | 'skipped'
 
@@ -71,6 +72,11 @@ export interface PluginInstallDeps {
   env?: NodeJS.ProcessEnv
   /** Directory holding git for github:/git specs (null = none; undefined = discover). */
   gitDir?: string | null
+  /**
+   * Registry integrity of `name@version` (dist.integrity), `null` when the registry has no
+   * such version, `undefined` when unknown (offline). Omit / null to skip integrity checks.
+   */
+  registryIntegrity?: ((name: string, version: string) => Promise<string | null | undefined>) | null
   /** Override for tests. */
   runCommand?: (
     command: string,
@@ -866,11 +872,28 @@ function reasonLine(reason: PluginFailureReason, subject?: string): string {
       return `git is needed to install ${subject ?? 'this plugin'} from GitHub, and it is not installed`
     case 'git-unavailable':
       return `the git repository cannot be reached: ${subject}`
+    case 'no-recorded-source':
+      return `the backup has no recorded install source for ${subject ?? 'this plugin'} and no saved copy; skipped (installing by name could pull an unrelated npm package with the same name)`
+    case 'integrity-mismatch':
+      return `the registry's ${subject ?? 'package'} is a different package than the one backed up (integrity differs), and this backup has no copy of it`
+    case 'self':
+      return 'dsh-vault itself is never reinstalled by a restore; this machine keeps its own installation'
     case 'no-backup-copy':
       return `${subject ?? 'this plugin'} is not on the registry at that version, and this backup has no saved copy of it; back up again on the original machine with the current 大肥鱼备份 (dsh-vault)`
     default:
       return subject ?? 'install failed'
   }
+}
+
+/**
+ * True when the backup only knew this plugin's name (a bundle / cordis entry) and never
+ * recorded where it came from. Such a plugin is never installed from the registry by name.
+ */
+export function hasNoRecordedSource(p: PluginRecord): boolean {
+  if (p.recordedFrom) return p.recordedFrom === 'name-only'
+  // Older snapshots: a bare name with no spec, version or installed version.
+  return p.source === p.name && !p.installedVersion && !p.bundledSource && !p.lockedTarball &&
+    !(p.version && (parseLocalSpec(p.version) || isRemoteNonRegistrySpec(p.version)))
 }
 
 export interface ReinstallOptions {
@@ -920,6 +943,52 @@ export async function reinstallMissingPlugins(
     failedIn.set(row.profile, set)
   }
 
+  // dsh-vault itself: never reinstalled or rewritten (it is the running plugin, usually a
+  // link: install of this machine's checkout). The target keeps its own entry.
+  for (let i = actionable.length - 1; i >= 0; i--) {
+    const p = actionable[i]!
+    if (!isSelfPlugin(p.name)) continue
+    actionable.splice(i, 1)
+    results.unshift({ name: p.name, profile: profileOf(p), status: 'skipped', reason: 'self', detail: reasonLine('self'), source: p.originalSource ?? p.source })
+  }
+
+  // Only the bundle/cordis name was recorded: copy only, never the registry by name.
+  const copyOnly = new Map<string, string>()
+  for (let i = actionable.length - 1; i >= 0; i--) {
+    const p = actionable[i]!
+    if (!hasNoRecordedSource(p)) continue
+    const k = key(profileOf(p), p.name)
+    if (await pluginPackagePresent(deps.dshHome, profileOf(p), p.name)) continue
+    if (p.fallbackBundle || p.lockedTarball) {
+      copyOnly.set(k, 'no recorded install source; installed the saved copy instead of the registry')
+      continue
+    }
+    actionable.splice(i, 1)
+    results.push({ name: p.name, profile: profileOf(p), status: 'skipped', reason: 'no-recorded-source', subject: p.name, detail: reasonLine('no-recorded-source', p.name), source: p.source })
+  }
+
+  // Same name + version on the registry but a different package (integrity differs): prefer the copy.
+  const mismatched = new Set<string>()
+  if (deps.registryIntegrity) {
+    const check = actionable.filter((p) => p.integrity && p.installedVersion && !p.bundledSource && !copyOnly.has(key(profileOf(p), p.name)))
+    await Promise.all(check.map(async (p) => {
+      let reg: string | null | undefined
+      try {
+        reg = await deps.registryIntegrity!(p.name, p.installedVersion!)
+      } catch {
+        reg = undefined
+      }
+      if (typeof reg === 'string' && reg && reg !== p.integrity) mismatched.add(key(profileOf(p), p.name))
+    }))
+    for (const p of actionable) {
+      const k = key(profileOf(p), p.name)
+      if (!mismatched.has(k)) continue
+      if (p.fallbackBundle || p.lockedTarball) {
+        copyOnly.set(k, `registry ${p.name}@${p.installedVersion} has a different integrity than the backed-up package; installed the saved copy`)
+      }
+    }
+  }
+
   await rewriteBundledLinkDeps(deps.dshHome, actionable)
 
   const presentBefore = new Set<string>()
@@ -936,6 +1005,14 @@ export async function reinstallMissingPlugins(
     if (!pkg) continue
     originalBundles.set(profile, (pkg.dsh?.profile?.bundles ?? []).map(bundleName))
     await syncResolvableBundles(profileDir, originalBundles.get(profile)!, oursIn(profile))
+
+    // Never let pnpm fetch a package we will not take from the registry.
+    const keepOut = actionable.filter((p) => profileOf(p) === profile && (copyOnly.has(key(profile, p.name)) || mismatched.has(key(profile, p.name))))
+    if (keepOut.length) await removeFromManifest(profileDir, keepOut.map((p) => p.name))
+    for (const p of keepOut) {
+      if (copyOnly.has(key(profile, p.name))) continue
+      fail({ name: p.name, profile, status: 'failed', reason: 'integrity-mismatch', subject: `${p.name}@${p.installedVersion}`, detail: reasonLine('integrity-mismatch', `${p.name}@${p.installedVersion}`), source: p.source })
+    }
 
     // 2) Pre-validate. Unresolvable specs come out of this install run.
     const invalid = await findUnresolvableSpecs(profileDir)
@@ -1038,7 +1115,30 @@ export async function reinstallMissingPlugins(
       // Wrong version (lockfile missing/ignored): fall through and install the exact one.
     }
 
+    const onlyCopy = copyOnly.get(key(profile, plugin.name))
+    if (onlyCopy !== undefined) {
+      const manifestBefore = await readManifest(profileDir)
+      const fb = await installFromBackupFallback(plugin, profileDir, deps)
+      if (fb.ok || (await pluginPackagePresent(deps.dshHome, profile, plugin.name))) {
+        results.push({ name: plugin.name, profile, status: 'installed-from-backup', detail: `${onlyCopy} (${fb.detail})`, source: plugin.source })
+        done.add(key(profile, plugin.name))
+        restartRequired = true
+      } else {
+        if (manifestBefore) await writeManifest(profileDir, manifestBefore)
+        const reason: PluginFailureReason = mismatched.has(key(profile, plugin.name)) ? 'integrity-mismatch' : 'no-recorded-source'
+        const subject = reason === 'integrity-mismatch' ? `${plugin.name}@${plugin.installedVersion}` : plugin.name
+        fail({ name: plugin.name, profile, status: 'failed', reason, subject, detail: reasonLine(reason, subject), log: fb.detail, source: plugin.source })
+      }
+      continue
+    }
+
     const { spec, kind } = await installSpecFor(plugin, deps.dshHome)
+    // A bare name is a guess: never resolve it against the registry.
+    if (kind === 'other' && spec === plugin.name) {
+      results.push({ name: plugin.name, profile, status: 'skipped', reason: 'no-recorded-source', subject: plugin.name, detail: reasonLine('no-recorded-source', plugin.name), source: plugin.source })
+      done.add(key(profile, plugin.name))
+      continue
+    }
     // Never hand pnpm a local path that isn't here: it would fail (or link a dangling dir).
     const unusable = await unusableLocalSpec(plugin, spec, kind)
     if (unusable) {
