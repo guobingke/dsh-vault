@@ -2,6 +2,7 @@ import type { BackupResult, RestoreResult } from '../../core/types.js'
 import { useT } from '../i18n.js'
 import { formatBytes } from '../lib/format.js'
 import { pluginReasonText } from '../notices.js'
+import { restartNotice } from '../restart-notice.js'
 import { Banner, Button } from './ui.js'
 
 export function formatDuration(ms: number | undefined): string {
@@ -47,6 +48,7 @@ export function RestoreSummary({
   const tr = useT()
   const state = restoreState(result)
   const failedRows = (result.pluginResults ?? []).filter((r) => r.status === 'failed')
+  const notice = restartNotice(result)
   return (
     <Banner
       tone={state === 'ok' ? 'ok' : state === 'partial' ? 'warn' : 'error'}
@@ -71,7 +73,7 @@ export function RestoreSummary({
         </details>
       ) : null}
       {result.rollbackSnapshotId ? <div className="dv-hint">{tr('restore.rollbackCreated', { id: result.rollbackSnapshotId })}</div> : null}
-      <p className="dv-restart-notice">{tr('summary.restartDsh')}</p>
+      {notice ? <p className="dv-restart-notice">{tr(notice.key, notice.vars)}</p> : null}
       {detail ? <div className="dv-hint">{detail}</div> : null}
     </Banner>
   )

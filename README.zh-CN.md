@@ -47,7 +47,7 @@ dsh-vault 把这件事变成三步：旧电脑上备份，新电脑上恢复，�
 | **恢复完成** | **内置文件夹浏览器** |
 | <img src="docs/screenshots/restore-complete.png" alt="恢复结果和重启提示"> | <img src="docs/screenshots/folder-browser.png" alt="文件夹浏览器"> |
 
-浅色主题跟随 dsh：[overview-light.png](docs/screenshots/overview-light.png)。
+如果有插件安装失败，结果会写明失败个数并提供重试：[restore-partial.png](docs/screenshots/restore-partial.png)。浅色主题跟随 dsh：[overview-light.png](docs/screenshots/overview-light.png)。
 
 ## 安装
 
@@ -105,9 +105,9 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-vault
 2. 按上面的方法安装 dsh-vault。
 3. 设置 → 大肥鱼备份 → **恢复**。选择快照，或指向拷过来的文件夹/文件。
 4. 点 **预览差异**，确认变更后点 **恢复**。
-5. 看到「恢复已全部完成」后，完全退出 Desktop 再重新打开。
+5. 按结果提示完全退出 Desktop 再重新打开。
 
-如果有插件安装失败（离线、源被墙），网络恢复后点 **重试失败的插件**。
+如果有插件安装失败（离线、源被墙），结果会写明失败个数；可以先重启加载其余内容，网络恢复后再点 **重试失败的插件**。
 
 命令行等价操作：
 

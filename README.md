@@ -47,7 +47,7 @@ It lives inside dsh as a Settings page (**Settings → 大肥鱼备份**), works
 | **After restore** | **Built-in folder browser** |
 | <img src="docs/screenshots/restore-complete.png" alt="Restore summary with restart notice"> | <img src="docs/screenshots/folder-browser.png" alt="Folder browser"> |
 
-Light theme follows dsh: [overview-light.png](docs/screenshots/overview-light.png).
+If some plugins fail to install, the summary says how many and offers a retry instead: [restore-partial.png](docs/screenshots/restore-partial.png). Light theme follows dsh: [overview-light.png](docs/screenshots/overview-light.png).
 
 ## Install
 
@@ -105,9 +105,9 @@ After building, the CLI is `node lib/cli/index.js` (or `npm link` to get `dsh-va
 2. Install dsh-vault as above.
 3. Settings → 大肥鱼备份 → **恢复**. Choose the snapshot, or point it at the folder/file you copied over.
 4. Click **预览差异**, review the changes, then **恢复**.
-5. When it says 恢复已全部完成, fully quit Desktop and reopen it.
+5. Fully quit Desktop and reopen it when the summary asks you to.
 
-If a plugin failed (offline, registry blocked), click **重试失败的插件** once the network is fixed.
+If some plugins failed (offline, registry blocked), the summary says how many. You can still restart to load everything else, and click **重试失败的插件** once the network is fixed.
 
 CLI equivalent:
 

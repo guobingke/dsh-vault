@@ -3,6 +3,7 @@ import type { ConflictStrategy, DiffItem, RestorePreview, RestoreResult, Snapsho
 import { useT, type Translate } from '../i18n.js'
 import { formatBytes, formatDateTime, relativeLabel } from '../lib/format.js'
 import { newestFirst } from '../lib/targets.js'
+const ROLLBACK_TARGET_ID = 'local-rollback'
 import { localizeNotice, pluginRawDetail, pluginReasonText } from '../notices.js'
 import { PathPicker, type FsBrowser } from './PathPicker.js'
 import { DiffGroups } from './DiffGroups.js'
@@ -152,16 +153,21 @@ export function RestorePanel({
   const targetLabel = (id: string): string => targets.find((t) => t.id === id)?.label ?? id
   const usingImport = sourceMode === 'import'
 
-  // Keep the target filter valid.
+  // Keep the target filter valid. "" (all locations) is a valid user choice; only the
+  // first default skips rollback snapshots so the newest real backup is preselected.
+  const filterInit = useRef(false)
   useEffect(() => {
-    if (usingImport) return
-    if (!targetId || !snapshots.some((s) => s.targetId === targetId)) {
-      const preferred = initialTargetId && snapshots.some((s) => s.targetId === initialTargetId)
-        ? initialTargetId
-        : snapshots[0]?.targetId ?? ''
-      setTargetId(preferred)
-    }
+    if (usingImport || !snapshots.length) return
+    if (filterInit.current && (targetId === '' || snapshots.some((s) => s.targetId === targetId))) return
+    filterInit.current = true
+    const has = (id?: string) => Boolean(id) && snapshots.some((s) => s.targetId === id)
+    const realFirst = [...snapshots].sort(newestFirst).find((s) => s.targetId !== ROLLBACK_TARGET_ID)
+    setTargetId(has(initialTargetId) ? initialTargetId! : realFirst?.targetId ?? '')
   }, [snapshots, targetId, initialTargetId, usingImport])
+  const extraTargetIds = useMemo(
+    () => [...new Set(snapshots.map((s) => s.targetId))].filter((id) => !targets.some((t) => t.id === id)),
+    [snapshots, targets],
+  )
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -352,6 +358,9 @@ export function RestorePanel({
                 <option value="">{tr('common.allTargets')}</option>
                 {targets.map((t) => (
                   <option key={t.id} value={t.id}>{t.label}</option>
+                ))}
+                {extraTargetIds.map((id) => (
+                  <option key={id} value={id}>{id === ROLLBACK_TARGET_ID ? tr('restore.rollbackTarget') : id}</option>
                 ))}
               </Select>
               <div style={{ width: 180 }}>
