@@ -1,12 +1,9 @@
 {
   "name": "dsh-vault",
   "version": "0.1.0",
-  "description": "Backup and restore your full DeepSeek Harness (dsh) setup: plugins, MCP, skills, settings, presets, and profiles — with local, encrypted, GitHub, WebDAV, and S3 storage targets.",
+  "description": "Backup and restore your full DeepSeek Harness (dsh) setup for web and Desktop: plugins, MCP, skills, settings, presets, and profiles — with local, encrypted, GitHub, WebDAV, and S3 storage targets.",
   "license": "MIT",
   "type": "module",
-  "engines": {
-    "node": "^22.19.0 || >=24.0.0"
-  },
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "bin": {
@@ -48,6 +45,8 @@
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
+    "dsh-desktop",
+    "desktop",
     "backup",
     "restore",
     "vault",
@@ -56,6 +55,10 @@
     "github",
     "encryption"
   ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.1.0-rc.6 <0.3.0-0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

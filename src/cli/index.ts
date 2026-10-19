@@ -1,19 +1,34 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path'
+import { spawn } from 'node:child_process'
 import { VaultService } from '../core/vault-service.js'
 import { resolveDshHome } from '../core/paths.js'
+import {
+  DESKTOP_PROFILE,
+  GUI_PROFILES,
+  installCommandForProfile,
+  listInitializedGuiProfiles,
+  multiProfileInstallPlan,
+  WEB_PROFILE,
+  type GuiProfile,
+} from '../core/profiles.js'
 
 function usage(): string {
   return `dsh-vault — standalone backup/restore for DeepSeek Harness
 
 Usage:
+  dsh-vault setup [--profile web|desktop|all] [--package <spec>] [--home <path>] [--dry-run]
   dsh-vault backup [--target <id>] [--encrypt] [--password <pass>] [--secrets] [--home <path>]
   dsh-vault restore <snapshotId> [--target <id>] [--password <pass>] [--keep|--use-backup] [--home <path>]
   dsh-vault list [--target <id>] [--home <path>]
   dsh-vault verify <snapshotId> [--target <id>] [--password <pass>] [--home <path>]
   dsh-vault status [--home <path>]
 
-Works even when the dsh web UI is broken. Secrets are excluded unless --secrets
+Desktop: use DeepSeek Harness Desktop's bundled \`dsh\` (Tray → Terminal) for
+\`dsh plugin --profile desktop add dsh-vault\`, or install from Desktop → Plugins.
+npm-global \`dsh\` refuses --profile desktop. Web: \`dsh plugin --profile web add dsh-vault\`.
+
+Works even when the dsh UI is broken. Secrets are excluded unless --secrets
 is combined with --encrypt.
 `
 }
@@ -28,6 +43,85 @@ function has(args: string[], name: string): boolean {
   return args.includes(name)
 }
 
+function runDshPluginAdd(profile: string, packageSpec: string): Promise<{ ok: boolean; detail: string }> {
+  return new Promise((resolvePromise) => {
+    const child = spawn('dsh', ['plugin', '--profile', profile, 'add', packageSpec], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: process.env,
+      shell: process.platform === 'win32',
+    })
+    let detail = ''
+    child.stdout?.on('data', (c: Buffer) => {
+      detail += c.toString('utf8')
+    })
+    child.stderr?.on('data', (c: Buffer) => {
+      detail += c.toString('utf8')
+    })
+    child.on('error', (err) => resolvePromise({ ok: false, detail: err.message }))
+    child.on('close', (code) => resolvePromise({ ok: code === 0, detail: detail.slice(0, 1200) }))
+  })
+}
+
+async function runSetup(args: string[], home: string): Promise<number> {
+  const packageSpec = getFlag(args, '--package') ?? 'dsh-vault'
+  const profileFlag = (getFlag(args, '--profile') ?? 'all').toLowerCase()
+  const dryRun = has(args, '--dry-run')
+
+  let profiles: GuiProfile[]
+  if (profileFlag === 'all') {
+    const initialized = listInitializedGuiProfiles(home)
+    profiles = initialized.length > 0 ? [...initialized] : [WEB_PROFILE]
+    if (!profiles.includes(DESKTOP_PROFILE)) {
+      // Still print desktop guidance even if not yet initialized.
+      process.stdout.write(
+        JSON.stringify({ note: 'desktop profile not initialized yet; open DeepSeek Harness Desktop once, quit, then re-run setup --profile desktop' }, null, 2) + '\n',
+      )
+    }
+  } else if (profileFlag === WEB_PROFILE || profileFlag === DESKTOP_PROFILE) {
+    profiles = [profileFlag]
+  } else {
+    process.stderr.write(`Unknown profile "${profileFlag}". Use web, desktop, or all.\n`)
+    return 1
+  }
+
+  const results: Array<{ profile: string; command: string; ok?: boolean; detail?: string; notes: string[] }> = []
+  for (const profile of profiles) {
+    const plan = installCommandForProfile(profile, packageSpec)
+    if (dryRun || (profile === DESKTOP_PROFILE && profileFlag === 'all' && !listInitializedGuiProfiles(home).includes(DESKTOP_PROFILE))) {
+      results.push({ profile, command: plan.command, notes: plan.notes })
+      continue
+    }
+    process.stderr.write(`→ ${plan.command}\n`)
+    const run = await runDshPluginAdd(profile, packageSpec)
+    results.push({
+      profile,
+      command: plan.command,
+      ok: run.ok,
+      detail: run.detail,
+      notes: plan.notes,
+    })
+  }
+
+  // When --profile all and desktop missing from run list, append guidance-only entry.
+  if (profileFlag === 'all' && !results.some((r) => r.profile === DESKTOP_PROFILE)) {
+    const plan = installCommandForProfile(DESKTOP_PROFILE, packageSpec)
+    results.push({ profile: DESKTOP_PROFILE, command: plan.command, notes: plan.notes })
+  }
+
+  process.stdout.write(JSON.stringify({
+    home,
+    packageSpec,
+    dryRun,
+    knownGuiProfiles: GUI_PROFILES,
+    initialized: listInitializedGuiProfiles(home),
+    results,
+    fullPlan: multiProfileInstallPlan(packageSpec, home),
+  }, null, 2) + '\n')
+
+  const failed = results.some((r) => r.ok === false)
+  return failed ? 1 : 0
+}
+
 async function main(argv: string[]): Promise<number> {
   const args = argv.slice(2)
   const cmd = args[0]
@@ -36,8 +130,13 @@ async function main(argv: string[]): Promise<number> {
     return 0
   }
 
-  const home = getFlag(args, '--home') ?? resolveDshHome()
-  const service = new VaultService({ dshHome: resolve(home) })
+  const home = resolve(getFlag(args, '--home') ?? resolveDshHome())
+
+  if (cmd === 'setup' || cmd === 'install') {
+    return runSetup(args, home)
+  }
+
+  const service = new VaultService({ dshHome: home })
   await service.init()
 
   try {
@@ -46,6 +145,10 @@ async function main(argv: string[]): Promise<number> {
       process.stdout.write(JSON.stringify({
         dshHome: s.dshHome,
         dataDir: s.dataDir,
+        activeProfile: s.activeProfile,
+        surface: s.surface,
+        guiProfiles: s.guiProfiles,
+        installPlan: s.installPlan,
         targets: s.targets.map((t) => ({ id: t.id, kind: t.kind, label: t.label })),
         schedule: s.settings.schedule,
         recentSnapshots: s.recentSnapshots,

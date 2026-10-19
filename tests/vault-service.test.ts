@@ -85,6 +85,86 @@ describe('VaultService', () => {
     assert.deepEqual(ids, ['a'])
   })
 
+  it('status reports desktop surface + install plan', async () => {
+    const home = await makeTempHome()
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises')
+      await mkdir(join(home.dshHome, 'profiles', 'desktop'), { recursive: true })
+      await writeFile(join(home.dshHome, 'profiles', 'desktop', 'package.json'), '{}\n')
+      await mkdir(join(home.dshHome, 'profiles', 'web'), { recursive: true })
+      await writeFile(join(home.dshHome, 'profiles', 'web', 'package.json'), '{}\n')
+
+      const service = new VaultService({
+        dshHome: home.dshHome,
+        agentsHome: home.agentsHome,
+        activeProfile: 'desktop',
+      })
+      await service.init()
+      const status = await service.status()
+      assert.equal(status.activeProfile, 'desktop')
+      assert.equal(status.surface, 'desktop')
+      assert.ok(status.guiProfiles.includes('desktop'))
+      assert.ok(status.guiProfiles.includes('web'))
+      assert.ok(status.installPlan.some((p) => p.profile === 'desktop' && /--profile desktop add/.test(p.command)))
+      assert.ok(status.installPlan.some((p) => p.profile === 'web'))
+      service.stopSchedule()
+    } finally {
+      await home.cleanup()
+    }
+  })
+
+  it('restore plugin reinstall targets desktop profile from manifest', async () => {
+    const home = await makeTempHome()
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises')
+      // Isolate: only desktop lists an npm plugin so reinstall profile is unambiguous.
+      await writeFile(
+        join(home.dshHome, 'profiles', 'web', 'package.json'),
+        JSON.stringify({ name: 'web', dependencies: {} }, null, 2),
+      )
+      await writeFile(join(home.dshHome, 'profiles', 'web', 'cordis.patch.yml'), '[]\n')
+      const profileDir = join(home.dshHome, 'profiles', 'desktop')
+      await mkdir(profileDir, { recursive: true })
+      await writeFile(
+        join(profileDir, 'package.json'),
+        JSON.stringify({ name: 'desktop', dependencies: { 'example-missing-plugin': '1.0.0' } }, null, 2),
+      )
+      await writeFile(
+        join(profileDir, 'cordis.patch.yml'),
+        `- insert:\n    - id: example-missing-plugin\n      name: 'example-missing-plugin'\n`,
+      )
+
+      const installs: Array<{ spec: string; profile: string }> = []
+      const service = new VaultService({
+        dshHome: home.dshHome,
+        agentsHome: home.agentsHome,
+        activeProfile: 'desktop',
+        runPluginInstall: async (spec, profile) => {
+          installs.push({ spec, profile })
+          return { ok: false, detail: 'simulated desktop carrier missing' }
+        },
+      })
+      await service.init()
+      const targetId = service.listTargets()[0]!.id
+      const backup = await service.backup({ targetId })
+
+      const result = await service.restore({
+        targetId,
+        snapshotId: backup.snapshotId,
+        conflict: 'use-backup',
+        createRollbackSnapshot: false,
+        reinstallPlugins: true,
+      })
+      assert.ok(installs.length >= 1)
+      assert.ok(installs.every((i) => i.profile === 'desktop'))
+      assert.ok(result.pluginsFailed.includes('example-missing-plugin'))
+      assert.ok(result.manualActions.some((m) => /bundled|Desktop|quit|Plugins/i.test(m)))
+      service.stopSchedule()
+    } finally {
+      await home.cleanup()
+    }
+  })
+
   it('honors per-path conflicts with global fallback (preview + apply)', async () => {
     const home = await makeTempHome()
     try {

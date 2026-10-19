@@ -34,6 +34,8 @@ src/client/
 
 Host mount: Settings → section id `dsh-vault` (slot `settings.section`).
 
+This registration works for **both** `dsh web` and DeepSeek Harness Desktop. Desktop embeds the shared Web UI and loads the same browser half (`dsh.client.platform: "web"`). The plugin must be installed into the profile that owns the running Host (`web` or `desktop`); activation is not shared across profiles. No separate Electron-native panel exists — Settings → dsh Vault is the desktop entry point.
+
 ## Tabs / IA
 
 | Tab id | Component | Purpose |
@@ -72,11 +74,24 @@ Errors: `{ "error": string, "code"?: string }`.
 {
   dshHome: string
   dataDir: string
+  /** Host process profile from `$DSH_PROFILE` / `$DSH_PROFILE_DIR` (`web`, `desktop`, …). */
+  activeProfile: string
+  /** Initialized GUI profiles under `$DSH_HOME/profiles` that currently exist. */
+  guiProfiles: string[]
+  /** Derived from `activeProfile` for UX copy. */
+  surface: 'desktop' | 'web' | 'other'
+  /**
+   * Install guidance for web + desktop (desktop always included so the UI can
+   * show “also install on Desktop” when the Host is only on `web`).
+   */
+  installPlan: Array<{ profile: string; command: string; notes: string[] }>
   targets: StorageTargetConfig[]
   settings: VaultSettings
   recentSnapshots: SnapshotInfo[]
 }
 ```
+
+Frontend redesigns may surface `activeProfile` / `installPlan` (e.g. “Install into Desktop too”) but must tolerate older hosts that omit them only if talking to a pre-0.1.0 server — current contract always returns these fields.
 
 ### `GET|PUT /settings`
 

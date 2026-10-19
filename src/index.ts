@@ -47,6 +47,7 @@ export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
 
   const service = new VaultService({
     dataDir: config.dataDir,
+    // Picks up $DSH_PROFILE from the Host (desktop → "desktop", dsh web → "web").
     resolveSecret,
   })
 

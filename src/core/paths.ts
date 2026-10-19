@@ -65,11 +65,20 @@ export function toSafeRelPath(rel: string): string {
   return segments.join('/')
 }
 
-/** Ensure absPath stays inside root. */
+/** Ensure absPath stays inside root (case-insensitive on Windows). */
 export function assertInside(root: string, absPath: string): string {
-  const resolvedRoot = resolve(root) + sep
+  const resolvedRoot = resolve(root)
   const resolved = resolve(absPath)
-  if (resolved !== resolve(root) && !resolved.startsWith(resolvedRoot)) {
+  if (process.platform === 'win32') {
+    const rootKey = resolvedRoot.replace(/[/\\]+$/, '').toLowerCase()
+    const pathKey = resolved.toLowerCase()
+    if (pathKey !== rootKey && !pathKey.startsWith(rootKey + '\\') && !pathKey.startsWith(rootKey + '/')) {
+      throw new Error(`path escapes root: ${absPath}`)
+    }
+    return resolved
+  }
+  const withSep = resolvedRoot.endsWith(sep) ? resolvedRoot : resolvedRoot + sep
+  if (resolved !== resolvedRoot && !resolved.startsWith(withSep)) {
     throw new Error(`path escapes root: ${absPath}`)
   }
   return resolved

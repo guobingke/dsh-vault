@@ -1,5 +1,6 @@
 export * from './types.js'
 export * from './paths.js'
+export * from './profiles.js'
 export * from './checksum.js'
 export * from './encryption.js'
 export * from './archive.js'
