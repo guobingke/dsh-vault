@@ -281,7 +281,10 @@ describe('preview lists local-only files as remove', () => {
       await service.init()
       const targetId = service.listTargets()[0]!.id
       const backup = await service.backup({ targetId })
-      await writeFile(join(home.dshHome, 'orphan-local.md'), 'should not be in scope\n')
+      // Root files are plugin data now (denylist scope); sessions/ stays out.
+      await writeFile(join(home.dshHome, 'orphan-local.md'), 'plugin data\n')
+      await mkdir(join(home.dshHome, 'sessions'), { recursive: true })
+      await writeFile(join(home.dshHome, 'sessions', 'chat.jsonl'), 'chat history\n')
       await mkdir(join(home.agentsHome, 'skills', 'local-only'), { recursive: true })
       await writeFile(join(home.agentsHome, 'skills', 'local-only', 'SKILL.md'), '# local only\n')
 
@@ -289,7 +292,8 @@ describe('preview lists local-only files as remove', () => {
       const removes = preview.items.filter((i) => i.change === 'remove')
       assert.ok(preview.removed >= 1)
       assert.ok(removes.some((i) => i.path === 'agents-home/skills/local-only/SKILL.md'))
-      assert.ok(!removes.some((i) => i.path.includes('orphan-local')))
+      assert.ok(removes.some((i) => i.path === 'orphan-local.md'))
+      assert.ok(!preview.items.some((i) => i.path.startsWith('sessions/')))
 
       await service.restore({
         targetId,

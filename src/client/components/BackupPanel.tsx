@@ -45,6 +45,8 @@ export interface BackupPanelProps {
   onNavigateStorage?: () => void
   /** Filesystem access for the Browse… dialog (in-app browser + optional native chooser). */
   fs?: FsBrowser
+  /** Detected plugin data entries under $DSH_HOME (shown under 插件数据). */
+  pluginDataEntries?: string[]
 }
 
 type DestMode = 'target' | 'directory' | 'file'
@@ -59,6 +61,7 @@ const CATEGORIES: Array<{ id: BackupCategory; label: MessageKey; desc: MessageKe
   { id: 'agent-presets', label: 'backup.cat.agent-presets', desc: 'backup.cat.agent-presets.desc' },
   { id: 'profiles', label: 'backup.cat.profiles', desc: 'backup.cat.profiles.desc' },
   { id: 'instructions', label: 'backup.cat.instructions', desc: 'backup.cat.instructions.desc' },
+  { id: 'plugin-data', label: 'backup.cat.plugin-data', desc: 'backup.cat.plugin-data.desc' },
   { id: 'credentials', label: 'backup.cat.credentials', desc: 'backup.cat.credentials.desc', secret: true },
 ]
 
@@ -86,6 +89,7 @@ export function BackupPanel({
   stage,
   onNavigateStorage,
   fs,
+  pluginDataEntries,
 }: BackupPanelProps) {
   const tr = useT()
   const [destMode, setDestMode] = useState<DestMode>(targets.length ? 'target' : 'directory')
@@ -262,7 +266,13 @@ export function BackupPanel({
               checked={scope.has(c.id)}
               onChange={() => toggleCategory(c.id)}
               title={tr(c.label)}
-              description={tr(c.desc)}
+              description={
+                c.id === 'plugin-data' && pluginDataEntries
+                  ? pluginDataEntries.length
+                    ? tr('backup.cat.plugin-data.found', { list: pluginDataEntries.join('  ') })
+                    : tr('backup.cat.plugin-data.none')
+                  : tr(c.desc)
+              }
             />
           ))}
         </div>

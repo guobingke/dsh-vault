@@ -285,6 +285,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                 onBackup={backupTo}
                 onNavigateStorage={() => navigate('storage')}
                 fs={fsBrowser}
+                pluginDataEntries={status?.pluginDataEntries}
               />
             ) : null}
 

@@ -73,6 +73,8 @@ export interface VaultStatusResponse {
   targets: StorageTargetConfig[]
   settings: VaultSettings
   recentSnapshots: SnapshotInfo[]
+  /** Plugin data folders/files under $DSH_HOME included in backups (newer hosts). */
+  pluginDataEntries?: string[]
 }
 
 export class VaultApi {

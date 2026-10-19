@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
 import { isBuiltinDshBundle } from './diff.js'
 import {
+  isRemoteNonRegistrySpec,
   classifyInstallFailure,
   decodeConsoleOutput,
   isWindowsAbsPath,
@@ -67,6 +68,8 @@ export interface PluginInstallDeps {
   preferredRegistry?: string | null
   /** Environment used for installer discovery (tests). */
   env?: NodeJS.ProcessEnv
+  /** Directory holding git for github:/git specs (null = none; undefined = discover). */
+  gitDir?: string | null
   /** Override for tests. */
   runCommand?: (
     command: string,
@@ -296,8 +299,86 @@ async function runPnpm(
   cwd: string,
 ): Promise<{ ok: boolean; detail: string; code: number | null }> {
   const run = deps.runCommand ?? defaultRunCommand
-  const env: NodeJS.ProcessEnv = { ...process.env, ...(pnpm.env ?? {}), DSH_HOME: deps.dshHome }
-  return run(pnpm.command, [...(pnpm.args ?? []), ...args], { cwd, env })
+  return run(pnpm.command, [...(pnpm.args ?? []), ...args], { cwd, env: await installerEnv(deps, pnpm) })
+}
+
+/** Child env: host env + package-manager env, one PATH key (Windows has `Path`), git reachable. */
+async function installerEnv(deps: PluginInstallDeps, pnpm?: PnpmInvocationLike): Promise<NodeJS.ProcessEnv> {
+  const base = deps.env ?? process.env
+  const win = process.platform === 'win32'
+  let env: NodeJS.ProcessEnv = { ...process.env, ...(deps.env ?? {}) }
+  for (const [k, v] of Object.entries(pnpm?.env ?? {})) {
+    if (win && k.toUpperCase() === 'PATH') env = withPath(env, v ?? '')
+    else env[k] = v
+  }
+  env.DSH_HOME = deps.dshHome
+  const gitDir = deps.gitDir === undefined ? await findGitDir(base) : deps.gitDir
+  if (gitDir) {
+    const delim = win ? ';' : ':'
+    env = withPath(env, `${gitDir}${delim}${pathOf(env)}`)
+  }
+  return env
+}
+
+function pathKey(env: NodeJS.ProcessEnv): string {
+  return Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+}
+
+function pathOf(env: NodeJS.ProcessEnv): string {
+  return env[pathKey(env)] ?? ''
+}
+
+function withPath(env: NodeJS.ProcessEnv, value: string): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {}
+  for (const [k, v] of Object.entries(env)) if (k.toUpperCase() !== 'PATH') out[k] = v
+  out[process.platform === 'win32' ? 'Path' : 'PATH'] = value
+  return out
+}
+
+/**
+ * pnpm needs `git` to resolve github:/git+ specs that are not in pnpm-lock.yaml.
+ * Returns a directory to put on PATH when git is not already there, else null.
+ */
+export async function findGit(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  exists: Exists = isFile,
+): Promise<{ path: string; onPath: boolean } | null> {
+  const win = platform === 'win32'
+  const P = win ? path.win32 : path.posix
+  const exe = win ? 'git.exe' : 'git'
+  const delim = win ? ';' : ':'
+  const pathValue = Object.entries(env).find(([k]) => k.toUpperCase() === 'PATH')?.[1] ?? ''
+  for (const dir of pathValue.split(delim).filter(Boolean)) {
+    if (await exists(P.join(dir, exe))) return { path: P.join(dir, exe), onPath: true }
+  }
+  const candidates: string[] = []
+  if (env.DSH_GIT?.trim()) candidates.push(env.DSH_GIT.trim())
+  for (const root of desktopResourceRoots(env, platform)) {
+    candidates.push(
+      P.join(root, 'git', 'cmd', exe),
+      P.join(root, 'git', 'bin', exe),
+      P.join(root, 'runtime', 'primary-runtime', 'dependencies', 'git', 'cmd', exe),
+      P.join(root, 'runtime', 'primary-runtime', 'dependencies', 'git', 'bin', exe),
+    )
+  }
+  if (win) {
+    for (const base of [env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA && P.join(env.LOCALAPPDATA, 'Programs')]) {
+      if (base) candidates.push(P.join(base, 'Git', 'cmd', exe), P.join(base, 'Git', 'bin', exe))
+    }
+    if (env.LOCALAPPDATA) candidates.push(P.join(env.LOCALAPPDATA, 'GitHubDesktop', 'app', 'resources', 'app', 'git', 'cmd', exe))
+  } else {
+    candidates.push('/usr/bin/git', '/usr/local/bin/git', '/opt/homebrew/bin/git')
+  }
+  for (const c of candidates) if (await exists(c)) return { path: c, onPath: false }
+  return null
+}
+
+/** Directory to prepend to PATH so pnpm finds git, or null (already on PATH / not found). */
+export async function findGitDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, exists: Exists = isFile): Promise<string | null> {
+  const git = await findGit(env, platform, exists)
+  if (!git || git.onPath) return null
+  return (platform === 'win32' ? path.win32 : path.posix).dirname(git.path)
 }
 
 /**
@@ -571,7 +652,7 @@ async function installViaDshCli(
   deps: PluginInstallDeps,
 ): Promise<{ ok: boolean; detail: string }> {
   const run = deps.runCommand ?? defaultRunCommand
-  const env = { ...process.env, DSH_HOME: deps.dshHome }
+  const env = await installerEnv(deps)
   const discoveryEnv = deps.env ?? process.env
   const tried: string[] = []
   let last = ''
@@ -611,6 +692,37 @@ async function installViaDshCli(
   return { ok: false, detail }
 }
 
+/** github:/git plugins when the spec itself failed (no git, repo gone, offline GitHub). */
+async function installGitFallback(
+  plugin: PluginRecord,
+  profileDir: string,
+  deps: PluginInstallDeps,
+): Promise<{ ok: boolean; detail: string }> {
+  const logs: string[] = []
+  const pnpm = await resolvePnpm(deps)
+  if (plugin.lockedTarball) {
+    const r = await runPnpm(deps, pnpm, ['add', `${plugin.name}@${plugin.lockedTarball}`], profileDir)
+    if (r.ok) {
+      await ensureBundleListed(profileDir, plugin.name)
+      return { ok: true, detail: `installed machine 1's locked tarball ${plugin.lockedTarball}` }
+    }
+    logs.push(`locked tarball: ${r.detail}`)
+  }
+  if (plugin.fallbackBundle) {
+    const abs = join(deps.dshHome, ...plugin.fallbackBundle.split('/'))
+    if (await pathExists(join(abs, 'package.json'))) {
+      const r = await runPnpm(deps, pnpm, ['add', `link:${specPath(abs)}`], profileDir)
+      if (r.ok) {
+        await ensureBundleListed(profileDir, plugin.name)
+        const d = await installBundledSourceDeps(abs, deps)
+        return { ok: d.ok, detail: d.ok ? `installed the copy from the backup (${plugin.fallbackBundle})` : d.detail }
+      }
+      logs.push(`backup copy: ${r.detail}`)
+    }
+  }
+  return { ok: false, detail: logs.join('\n\n') || 'no locked tarball or backup copy for this git plugin' }
+}
+
 async function installSpecFor(plugin: PluginRecord, dshHome: string): Promise<{ spec: string; kind: 'npm' | 'link' | 'git' | 'other' }> {
   if (plugin.bundledSource) {
     const target = await resolveLinkTarget(plugin, dshHome)
@@ -624,6 +736,8 @@ async function installSpecFor(plugin: PluginRecord, dshHome: string): Promise<{ 
     return { spec: `${local.tarball ? 'file' : 'link'}:${specPath(abs)}`, kind: 'link' }
   }
   if (local?.kind === 'unsupported') return { spec: local.raw, kind: 'other' }
+  const remote = [plugin.source, plugin.version].find((s) => isRemoteNonRegistrySpec(s) && !s!.startsWith('npm:'))
+  if (remote) return { spec: `${plugin.name}@${remote}`, kind: 'git' }
   if (plugin.source.startsWith('git') || plugin.source.includes('github.com')) {
     return { spec: plugin.source.startsWith('npm:') ? plugin.name : plugin.source, kind: 'git' }
   }
@@ -686,6 +800,10 @@ function reasonLine(reason: PluginFailureReason, subject?: string): string {
       return 'network error while contacting the npm registry'
     case 'installer-missing':
       return 'no pnpm / dsh installer found on this machine'
+    case 'git-missing':
+      return `git is needed to install ${subject ?? 'this plugin'} from GitHub, and it is not installed`
+    case 'git-unavailable':
+      return `the git repository cannot be reached: ${subject}`
     default:
       return subject ?? 'install failed'
   }
@@ -777,7 +895,9 @@ export async function reinstallMissingPlugins(
       for (const p of actionable) {
         if (profileOf(p) !== profile || done.has(key(profile, p.name))) continue
         if (presentBefore.has(key(profile, p.name))) continue
-        if ((await installSpecFor(p, deps.dshHome)).kind !== 'npm') continue
+        // Anything resolved from the network can fail alone; isolate it (npm and git/GitHub).
+        const k = (await installSpecFor(p, deps.dshHome)).kind
+        if (k !== 'npm' && k !== 'git') continue
         if (current?.dependencies && p.name in current.dependencies) isolate.push(p.name)
       }
       if (isolate.length) {
@@ -887,6 +1007,13 @@ export async function reinstallMissingPlugins(
       if (ok) how = viaPnpm.ok ? viaPnpm.detail : 'present after pnpm add'
       else logs.push(viaPnpm.ok ? 'pnpm add exited 0 but the package is not in node_modules' : viaPnpm.detail)
     }
+    // b2) git/GitHub plugins: machine 1's locked tarball (no git needed), then the copy in the backup.
+    if (!ok && kind === 'git') {
+      const fb = await installGitFallback(plugin, profileDir, deps)
+      ok = await pluginPackagePresent(deps.dshHome, profile, plugin.name)
+      if (ok) how = fb.detail
+      else logs.push(fb.detail)
+    }
     // c) dsh CLI (Desktop-bundled carrier first).
     if (!ok) {
       const viaCli = await installViaDshCli(spec, profile, deps)
@@ -937,7 +1064,11 @@ export async function reinstallMissingPlugins(
     if (!plugin?.installedVersion) continue
     const pkgDir = join(deps.dshHome, 'profiles', row.profile, 'node_modules', ...row.name.split('/'))
     const now = await installedPackageVersion(pkgDir)
-    if (now && now !== plugin.installedVersion) {
+    const remote = isRemoteNonRegistrySpec(plugin.version ?? plugin.source)
+    if (now && now !== plugin.installedVersion && remote) {
+      // A branch-tracking GitHub spec may legitimately be newer; report, don't fail.
+      row.detail = `${row.detail} (@${now}; backup had ${plugin.installedVersion})`
+    } else if (now && now !== plugin.installedVersion) {
       row.status = 'failed'
       row.reason = 'version-mismatch'
       row.subject = `${now} ≠ ${plugin.installedVersion}`

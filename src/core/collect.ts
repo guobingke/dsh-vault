@@ -10,7 +10,8 @@ import {
   toSafeRelPath,
 } from './paths.js'
 import { bundledSourceRel } from './plugin-install.js'
-import { parseLocalSpec, resolveLocalSpecPath } from './local-spec.js'
+import { isRemoteNonRegistrySpec, parseLocalSpec, resolveLocalSpecPath } from './local-spec.js'
+import { homeExcludeReason, isPluginDataRoot, isSecretPath, walkHome } from './home-scope.js'
 import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord } from './types.js'
 
 async function fileShaAndData(abs: string): Promise<{ size: number; sha256: string; data: Buffer }> {
@@ -35,7 +36,7 @@ async function walkFiles(
   for (const entry of entries) {
     if (entry.name === '.' || entry.name === '..') continue
     if (entry.isDirectory()) {
-      if (shouldSkipDir(entry.name)) continue
+      if (shouldSkipDir(entry.name) || homeExcludeReason(entry.name, true) === 'cache') continue
       const nextRel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name
       await walkFiles(join(absDir, entry.name), nextRel, category, includeSecrets, out)
       continue
@@ -63,7 +64,7 @@ async function maybeAddFile(
   includeSecrets: boolean,
   out: CollectedFile[],
 ): Promise<void> {
-  const secret = isSecretRelPath(relPath)
+  const secret = isSecretRelPath(relPath) || isSecretPath(relPath)
   if (secret && !includeSecrets) return
   try {
     const info = await stat(absPath)
@@ -93,7 +94,7 @@ export function extractPluginsFromProfilePackage(
   const deps = pkg.dependencies ?? {}
   for (const [name, version] of Object.entries(deps)) {
     const local = parseLocalSpec(version) !== null
-    out.push({ name, version, source: local || version.startsWith('git') ? version : `npm:${name}@${version}`, profile: profileName })
+    out.push({ name, version, source: local || version.startsWith('git') || isRemoteNonRegistrySpec(version) ? version : `npm:${name}@${version}`, profile: profileName })
   }
   const bundles = pkg.dsh?.profile?.bundles ?? []
   for (const b of bundles) {
@@ -152,43 +153,32 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
       'agent-presets',
       'profiles',
       'instructions',
+      'plugin-data',
       ...(includeSecrets ? (['credentials'] as BackupCategory[]) : []),
     ],
   )
   const files: CollectedFile[] = []
   const plugins: PluginRecord[] = []
 
-  if (wanted.has('settings') || wanted.has('providers')) {
-    await maybeAddFile(join(dshHome, 'settings.yaml'), 'settings.yaml', 'settings', includeSecrets, files)
-    // Home-wide patch layer: dsh-app-boot applies $DSH_HOME/cordis.patch.yml to every profile.
-    await maybeAddFile(join(dshHome, 'cordis.patch.yml'), 'cordis.patch.yml', 'settings', includeSecrets, files)
+  // Profiles carry the plugin inventory, so any plugin-related category pulls them in.
+  const wants = (cat: BackupCategory): boolean => {
+    if (cat === 'profiles') return ['profiles', 'plugins', 'plugin-config', 'mcp', 'providers'].some((c) => wanted.has(c as BackupCategory))
+    if (cat === 'settings') return wanted.has('settings') || wanted.has('providers')
+    if (cat === 'credentials') return includeSecrets && wanted.has('credentials')
+    return wanted.has(cat)
   }
-  if (wanted.has('plugin-config')) {
-    // Plugin data written through dsh's storage root ($DSH_HOME/storages/<domain>/…),
-    // e.g. dsh-cost-meter's ledger. Caches are skipped by shouldSkipDir.
-    await walkFiles(join(dshHome, 'storages'), 'storages', 'plugin-config', includeSecrets, files)
-  }
-  if (wanted.has('credentials') && includeSecrets) {
-    await maybeAddFile(join(dshHome, '.credentials.yaml'), '.credentials.yaml', 'credentials', true, files)
-  }
-  if (wanted.has('profiles') || wanted.has('plugins') || wanted.has('plugin-config') || wanted.has('mcp') || wanted.has('providers')) {
-    await walkFiles(join(dshHome, 'profiles'), 'profiles', 'profiles', includeSecrets, files)
-  }
-  if (wanted.has('agent-presets')) {
-    await walkFiles(join(dshHome, '.agent-presets'), '.agent-presets', 'agent-presets', includeSecrets, files)
-    await walkFiles(join(dshHome, 'agent-presets'), 'agent-presets', 'agent-presets', includeSecrets, files)
+
+  // Everything under $DSH_HOME except the denylist (home-scope.ts).
+  for (const f of await walkHome(dshHome, { includeSecrets })) {
+    const category = categoryForRelPath(f.rel)
+    if (!wants(category)) continue
+    await maybeAddFile(f.abs, f.rel, category, includeSecrets, files)
   }
   if (wanted.has('skills')) {
-    await walkFiles(join(dshHome, 'skills'), 'skills', 'skills', includeSecrets, files)
     await walkFiles(join(agentsHome, 'skills'), 'agents-home/skills', 'skills', includeSecrets, files)
   }
   if (wanted.has('instructions')) {
-    await maybeAddFile(join(dshHome, 'AGENTS.md'), 'AGENTS.md', 'instructions', includeSecrets, files)
     await maybeAddFile(join(agentsHome, 'AGENTS.md'), 'agents-home/AGENTS.md', 'instructions', includeSecrets, files)
-  }
-  if (wanted.has('mcp')) {
-    await maybeAddFile(join(dshHome, 'mcp.json'), 'mcp.json', 'mcp', includeSecrets, files)
-    await walkFiles(join(dshHome, 'mcp'), 'mcp', 'mcp', includeSecrets, files)
   }
 
   for (const extra of options.extraRoots ?? []) {
@@ -273,6 +263,25 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     }
   }
 
+  // git / GitHub / tarball-URL plugins: remember machine 1's exact locked tarball and bundle
+  // the installed copy, so machine 2 can install without git — or after the repo is gone.
+  if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {
+    const locks = new Map<string, Record<string, string>>()
+    for (const plugin of plugins) {
+      if (!plugin.profile || !isRemoteNonRegistrySpec(plugin.version ?? plugin.source)) continue
+      if (!locks.has(plugin.profile)) locks.set(plugin.profile, await lockedVersions(join(dshHome, 'profiles', plugin.profile)))
+      const locked = locks.get(plugin.profile)![plugin.name]
+      if (locked && /^https?:\/\//.test(locked)) plugin.lockedTarball = locked
+      const installed = await installedPackageDir(join(dshHome, 'profiles', plugin.profile), plugin.name)
+      if (!installed) continue
+      const rel = bundledSourceRel(plugin.profile, plugin.name)
+      const before = files.length
+      await walkFiles(installed, rel, 'plugins', false, files)
+      if (files.some((f, i) => i >= before && f.relPath === `${rel}/package.json`)) plugin.fallbackBundle = rel
+      else files.length = before
+    }
+  }
+
   // Deduplicate identical relative paths (keep first).
   const seen = new Set<string>()
   const deduped: CollectedFile[] = []
@@ -283,6 +292,25 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   }
 
   return { files: deduped, plugins, dshHome, agentsHome }
+}
+
+/** importers['.'].dependencies from a profile's pnpm-lock.yaml: name → resolved version/URL. */
+async function lockedVersions(profileDir: string): Promise<Record<string, string>> {
+  try {
+    const lock = parseYaml(await readFile(join(profileDir, 'pnpm-lock.yaml'), 'utf8')) as {
+      importers?: Record<string, { dependencies?: Record<string, { version?: string } | string> }>
+      dependencies?: Record<string, { version?: string } | string>
+    }
+    const deps = lock?.importers?.['.']?.dependencies ?? lock?.dependencies ?? {}
+    const out: Record<string, string> = {}
+    for (const [name, v] of Object.entries(deps)) {
+      const version = typeof v === 'string' ? v : v?.version
+      if (typeof version === 'string') out[name] = version.replace(/\(.*$/, '')
+    }
+    return out
+  } catch {
+    return {}
+  }
 }
 
 async function isFile(p: string): Promise<boolean> {
@@ -307,13 +335,15 @@ async function installedPackageDir(profileDir: string, name: string): Promise<st
 /** Category for a relative path (used by restore/diff). */
 export function categoryForRelPath(rel: string): BackupCategory {
   const p = rel.replace(/\\/g, '/')
-  if (isSecretRelPath(p)) return 'credentials'
-  if (p === 'settings.yaml' || p === 'cordis.patch.yml') return 'settings'
+  if (isSecretRelPath(p) || isSecretPath(p)) return 'credentials'
+  if (p === 'settings.yaml' || p === 'settings.yaml.imported' || p === 'cordis.patch.yml') return 'settings'
   if (p.startsWith('storages/')) return 'plugin-config'
   if (p === 'mcp.json' || p.startsWith('mcp/')) return 'mcp'
   if (p.startsWith('skills/') || p.startsWith('agents-home/skills/')) return 'skills'
   if (p === 'AGENTS.md' || p === 'agents-home/AGENTS.md') return 'instructions'
   if (p.startsWith('.agent-presets/') || p.startsWith('agent-presets/')) return 'agent-presets'
   if (p.startsWith('profiles/')) return 'profiles'
+  if (p.startsWith('plugin-sources/')) return 'plugins'
+  if (isPluginDataRoot(p.split('/')[0]!)) return 'plugin-data'
   return 'plugin-config'
 }

@@ -18,6 +18,8 @@ export type BackupCategory =
   | 'agent-presets'
   | 'profiles'
   | 'instructions'
+  /** Plugin-owned data directly under $DSH_HOME (dsh-purge/, redteam/, skin-center/, …). */
+  | 'plugin-data'
   | 'credentials'
 
 /** Conflict resolution when restoring overlapping paths. */
@@ -52,6 +54,10 @@ export interface PluginRecord {
   source: string
   profile?: string
   /** Snapshot-relative directory when a link:/file: plugin tree was bundled into the archive. */
+  /** git/GitHub/URL plugins: machine 1's resolved tarball from pnpm-lock.yaml (no git needed). */
+  lockedTarball?: string
+  /** git/GitHub/URL plugins: snapshot-relative copy of the installed package, used when the remote fails. */
+  fallbackBundle?: string
   bundledSource?: string
   /** Original local source on the source machine, resolved to an absolute path (`link:C:/…`, `file:/…/x.tgz`). */
   originalSource?: string
@@ -192,6 +198,8 @@ export interface RestoreRequest {
   createRollbackSnapshot?: boolean
   /** Attempt to reinstall missing plugins. Defaults to true. */
   reinstallPlugins?: boolean
+  /** Only install plugins of these profiles (files are still restored in full). */
+  pluginProfiles?: string[]
   includeSecrets?: boolean
 }
 
@@ -208,6 +216,8 @@ export type PluginFailureReasonCode =
   | 'missing-deps'
   | 'version-mismatch'
   | 'incompatible'
+  | 'git-missing'
+  | 'git-unavailable'
   | 'unknown'
 
 export interface PluginInstallResultRow {

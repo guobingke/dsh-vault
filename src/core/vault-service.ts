@@ -1,6 +1,7 @@
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { collectBackupFiles, extractPluginsFromProfilePackage } from './collect.js'
+import { listPluginDataEntries } from './home-scope.js'
 import { normalizeConflicts, resolveItemConflict, shouldApplyChange } from './conflict.js'
 import {
   DEFAULT_SETTINGS,
@@ -416,7 +417,10 @@ export class VaultService {
 
     if (req.reinstallPlugins !== false) {
       onProgress?.({ phase: 'reinstall', message: 'Installing plugins into profile', percent: 90 })
-      await this.installPlugins(unpacked.manifest.plugins, result)
+      const records = req.pluginProfiles?.length
+        ? unpacked.manifest.plugins.filter((p) => req.pluginProfiles!.includes(p.profile ?? this.activeProfile))
+        : unpacked.manifest.plugins
+      await this.installPlugins(records, result)
       await this.saveLastRestore({ snapshotId, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
     }
     this.finishPluginSummary(result)
@@ -684,6 +688,8 @@ export class VaultService {
     targets: StorageTargetConfig[]
     settings: VaultSettings
     recentSnapshots: SnapshotInfo[]
+    /** Plugin-owned entries directly under $DSH_HOME that a backup includes. */
+    pluginDataEntries: string[]
   }> {
     const recentSnapshots = (await this.listSnapshots()).slice(0, 10)
     const surface =
@@ -702,6 +708,7 @@ export class VaultService {
       targets: this.listTargets(),
       settings: this.settings,
       recentSnapshots,
+      pluginDataEntries: await listPluginDataEntries(this.dshHome),
     }
   }
 

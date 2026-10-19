@@ -93,6 +93,8 @@ export type PluginFailureReason =
   | 'missing-deps'
   | 'version-mismatch'
   | 'incompatible'
+  | 'git-missing'
+  | 'git-unavailable'
   | 'unknown'
 
 export interface ClassifiedFailure {
@@ -127,6 +129,13 @@ export function classifyInstallFailure(detail: string, ownPaths: string[] = [], 
       return { reason: 'blocked-by-other', subject: enoent, summary: `blocked by another dependency that cannot be resolved here: ${enoent}` }
     }
     return { reason: isTarballPath(enoent) ? 'tarball-missing' : 'local-source-missing', subject: enoent, summary: `local source missing: ${enoent}` }
+  }
+  if (/spawn git ENOENT|Command failed with ENOENT: git|'git' 不是内部或外部命令|'git' is not recognized|git: (command )?not found|git: No such file/i.test(text)) {
+    return { reason: 'git-missing', subject: name, summary: 'git is required to install this plugin from GitHub but was not found' }
+  }
+  const gitRepo = firstMatch(text, /git ls-remote (\S+)/) ?? firstMatch(text, /(https:\/\/codeload\.github\.com\/[^\s/]+\/[^\s/]+)/)
+  if (gitRepo && /ERR_PNPM_FETCH_404|404|Repository not found|could not read Username|Authentication failed|exit code 128|fatal:/i.test(text)) {
+    return { reason: 'git-unavailable', subject: gitRepo, summary: `the git repository is not reachable: ${gitRepo}` }
   }
   if (/ERR_PNPM_FETCH_404|E404|is not in the npm registry|404 Not Found|Not Found - 404/i.test(text)) {
     const pkg = firstMatch(text, /GET https?:\/\/[^/\s]+\/([^\s:]+)/) ?? name
@@ -166,3 +175,13 @@ export function decodeConsoleOutput(buf: Buffer, platform: NodeJS.Platform = pro
     return buf.toString('utf8')
   }
 }
+
+/** git+…, github:/gitlab:/bitbucket:, owner/repo shorthand, or an http(s) tarball URL. */
+export function isRemoteNonRegistrySpec(spec: string | undefined): boolean {
+  if (!spec) return false
+  const s = spec.replace(/^npm:[^@]+@/, '')
+  if (/^(git\+|git:|github:|gitlab:|bitbucket:|gist:)/i.test(s)) return true
+  if (/^https?:\/\//i.test(s)) return true
+  return /^[\w.-]+\/[\w.-]+(#.*)?$/.test(s) && !s.startsWith('@')
+}
+

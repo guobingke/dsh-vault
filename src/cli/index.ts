@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-import { resolve } from 'node:path'
+import { existsSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { VaultService } from '../core/vault-service.js'
 import { restoreExitCode, restoreFailureSummary } from './exit.js'
-import { resolveDshHome } from '../core/paths.js'
+import { resolveAgentsHome, resolveDshHome } from '../core/paths.js'
+import { diffHomes, formatHomeDiff } from '../core/home-diff.js'
+import { DOCUMENTED_EXCLUDES } from '../core/home-scope.js'
+import { bundledDshCandidates, desktopResourceRoots, findBundledPnpm, findDshCliEntry, findGit } from '../core/plugin-install.js'
 import {
   DESKTOP_PROFILE,
   GUI_PROFILES,
@@ -19,14 +23,24 @@ function usage(): string {
 
 Usage:
   dsh-vault setup [--profile web|desktop|all] [--package <spec>] [--home <path>] [--dry-run]
-  dsh-vault backup [--target <id>] [--encrypt] [--password <pass>] [--secrets] [--home <path>]
+  dsh-vault backup [--target <id> | --to-file <path>] [--encrypt] [--password <pass>] [--secrets] [--home <path>]
   dsh-vault restore <snapshotId> [--target <id>] [--password <pass>] [--keep|--use-backup] [--home <path>]
+  dsh-vault restore --from <file> [--home <sandbox DSH_HOME>] [--profile desktop|web|all]
+                    [--dsh-desktop-dir <DeepSeek Harness install dir>] [--password <pass>] [--no-plugins]
       (exits 2 when files were restored but a plugin failed to install)
   dsh-vault retry-plugins [--home <path>]
       (re-install only the plugins that failed in the last restore; config is not rewritten)
+  dsh-vault diff <homeA> <homeB> [--agents-a <dir>] [--agents-b <dir>] [--secrets] [--json]
+      (byte-compare two dsh homes with the backup excludes; exit 1 when they differ)
+  dsh-vault installers [--dsh-desktop-dir <dir>]
+      (show which node / pnpm / git / dsh CLI a restore would use)
+  dsh-vault excludes
   dsh-vault list [--target <id>] [--home <path>]
   dsh-vault verify <snapshotId> [--target <id>] [--password <pass>] [--home <path>]
   dsh-vault status [--home <path>]
+
+--home also moves the agents root: <home>/../.agents (or --agents-home <dir>), so a
+sandbox restore never writes into your real ~/.agents.
 
 Desktop: use DeepSeek Harness Desktop's bundled \`dsh\` (Tray → Terminal) for
 \`dsh plugin --profile desktop add dsh-vault\`, or install from Desktop → Plugins.
@@ -127,6 +141,53 @@ async function runSetup(args: string[], home: string): Promise<number> {
   return failed ? 1 : 0
 }
 
+/** --dsh-desktop-dir: the DeepSeek Harness install dir (or its resources/ folder). */
+function applyDesktopDir(dir: string): void {
+  const resources = existsSync(join(dir, 'resources')) ? join(dir, 'resources') : dir
+  process.env.DSH_DESKTOP_RESOURCES = resources
+  process.env.DSH_DESKTOP_DSH_DIR = process.env.DSH_DESKTOP_DSH_DIR ?? dir
+}
+
+/** --agents-home, else the sibling of --home (…/.dsh → …/.agents), else the normal default. */
+function agentsHomeFor(args: string[]): string {
+  const explicit = getFlag(args, '--agents-home')
+  if (explicit) return resolve(explicit)
+  const h = getFlag(args, '--home')
+  if (h) return join(dirname(resolve(h)), '.agents')
+  return resolveAgentsHome()
+}
+
+async function runDiff(args: string[]): Promise<number> {
+  const positional = args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1]?.startsWith('--') && !['--secrets', '--json'].includes(all[i - 1]!)))
+  const [a, b] = positional
+  if (!a || !b) {
+    process.stderr.write('Usage: dsh-vault diff <homeA> <homeB> [--agents-a <dir>] [--agents-b <dir>] [--secrets] [--json]\n')
+    return 1
+  }
+  const homeA = resolve(a)
+  const homeB = resolve(b)
+  const sibling = (h: string) => (basename(h) === '.dsh' ? join(dirname(h), '.agents') : undefined)
+  const agentsA = getFlag(args, '--agents-a') ? resolve(getFlag(args, '--agents-a')!) : sibling(homeA)
+  const agentsB = getFlag(args, '--agents-b') ? resolve(getFlag(args, '--agents-b')!) : sibling(homeB)
+  const result = await diffHomes({ homeA, homeB, agentsA, agentsB, includeSecrets: has(args, '--secrets') })
+  process.stdout.write(has(args, '--json') ? `${JSON.stringify({ ...result, agentsA, agentsB }, null, 2)}\n` : formatHomeDiff(result))
+  return result.clean ? 0 : 1
+}
+
+async function runInstallers(): Promise<number> {
+  const roots = desktopResourceRoots()
+  const pnpm = await findBundledPnpm()
+  const out = {
+    desktopResourceRoots: roots.map((r) => ({ path: r, exists: existsSync(r) })),
+    bundledPnpm: pnpm ? { node: pnpm.command, script: pnpm.args?.[0] } : null,
+    git: (await findGit()) ?? 'NOT FOUND — github: plugins need git unless pnpm-lock.yaml pins them (install Git for Windows)',
+    dshCliEntry: await findDshCliEntry(roots),
+    dshCandidates: bundledDshCandidates().filter((c) => /[\\/]/.test(c) && existsSync(c)),
+  }
+  process.stdout.write(`${JSON.stringify(out, null, 2)}\n`)
+  return 0
+}
+
 async function main(argv: string[]): Promise<number> {
   const args = argv.slice(2)
   const cmd = args[0]
@@ -141,7 +202,23 @@ async function main(argv: string[]): Promise<number> {
     return runSetup(args, home)
   }
 
-  const service = new VaultService({ dshHome: home })
+  const desktopDir = getFlag(args, '--dsh-desktop-dir')
+  if (desktopDir) applyDesktopDir(resolve(desktopDir))
+
+  if (cmd === 'diff') return runDiff(args)
+  if (cmd === 'installers') return runInstallers()
+  if (cmd === 'excludes') {
+    for (const e of DOCUMENTED_EXCLUDES) process.stdout.write(`${e.pattern}\n    ${e.why}\n`)
+    return 0
+  }
+
+  const agentsHome = agentsHomeFor(args)
+  const profileFlag = (getFlag(args, '--profile') ?? '').toLowerCase()
+  const service = new VaultService({
+    dshHome: home,
+    agentsHome,
+    ...(profileFlag === DESKTOP_PROFILE || profileFlag === WEB_PROFILE ? { activeProfile: profileFlag } : {}),
+  })
   await service.init()
 
   try {
@@ -168,8 +245,9 @@ async function main(argv: string[]): Promise<number> {
     }
 
     if (cmd === 'backup') {
-      const targetId = getFlag(args, '--target') ?? service.listTargets()[0]?.id
-      if (!targetId) {
+      const toFile = getFlag(args, '--to-file')
+      const targetId = toFile ? undefined : getFlag(args, '--target') ?? service.listTargets()[0]?.id
+      if (!toFile && !targetId) {
         process.stderr.write('No storage target. Configure one in the UI or targets.json.\n')
         return 1
       }
@@ -177,12 +255,15 @@ async function main(argv: string[]): Promise<number> {
       const includeSecrets = has(args, '--secrets')
       const password = getFlag(args, '--password')
       const result = await service.backup({
-        targetId,
+        ...(toFile ? { exportFile: resolve(toFile) } : { targetId }),
         encrypt,
         includeSecrets,
         password,
       })
       process.stdout.write(JSON.stringify({
+        dshHome: home,
+        agentsHome,
+        exportFile: toFile ? resolve(toFile) : undefined,
         snapshotId: result.snapshotId,
         targetId: result.targetId,
         remoteKey: result.remoteKey,
@@ -207,6 +288,22 @@ async function main(argv: string[]): Promise<number> {
       const result = await service.verify(targetId, snapshotId, getFlag(args, '--password'))
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
       return 0
+    }
+
+    if (cmd === 'restore' && getFlag(args, '--from')) {
+      const from = resolve(getFlag(args, '--from')!)
+      const pluginProfiles = !profileFlag || profileFlag === 'all' ? undefined : [profileFlag]
+      process.stderr.write(`restore ${from}\n  → DSH_HOME ${home}\n  → agents  ${agentsHome}\n`)
+      const result = await service.restore({
+        importPath: from,
+        conflict: has(args, '--keep') ? 'keep-current' : 'use-backup',
+        password: getFlag(args, '--password'),
+        reinstallPlugins: !has(args, '--no-plugins'),
+        pluginProfiles,
+      })
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+      process.stderr.write(restoreFailureSummary(result))
+      return restoreExitCode(result)
     }
 
     if (cmd === 'restore') {
