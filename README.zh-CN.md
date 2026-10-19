@@ -59,7 +59,15 @@ dsh-vault 把这件事变成三步：旧电脑上备份，新电脑上恢复，�
 github:guobingke/dsh-vault
 ```
 
-安装完成后重启 Desktop，打开 **设置 → 大肥鱼备份**。不需要 Node、git，也不需要构建：构建产物已提交在仓库里，dsh 会直接从 GitHub 下载压缩包。
+安装完成后重启 Desktop，打开 **设置 → 大肥鱼备份**。不需要构建：构建产物已提交在仓库里。
+
+也可以直接填完整仓库地址 `https://github.com/guobingke/dsh-vault`（带不带 `.git` 都行）。末尾不要加 `/`，也不要带 `/tree/...`，插件页会拒绝。
+
+这几种写法都需要本机装有 **git**：pnpm 要用 git 查出该拉哪个提交。Windows 请先安装 [Git for Windows](https://git-scm.com/download/win)。没有 git 的话，改填下面的压缩包地址，完全不需要 git：
+
+```
+https://github.com/guobingke/dsh-vault/archive/refs/heads/main.tar.gz
+```
 
 不要只填 `dsh-vault`，npm 上这个名字是另一个无关的包。
 

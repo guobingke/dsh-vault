@@ -59,7 +59,15 @@ In DeepSeek Harness Desktop (or `dsh web`), open **Plugins → 添加插件** an
 github:guobingke/dsh-vault
 ```
 
-Restart Desktop when it finishes, then open **Settings → 大肥鱼备份**. No Node, git or build step is needed: the built files are committed to the repo and dsh downloads them as a tarball from GitHub.
+Restart Desktop when it finishes, then open **Settings → 大肥鱼备份**. No build step is needed: the built files are committed to the repo.
+
+The full repository URL works too: `https://github.com/guobingke/dsh-vault` (with or without `.git`). Don't add a trailing `/` or a `/tree/...` path, because the plugin page rejects those.
+
+These forms need **git** on the machine, because pnpm asks git which commit to fetch. On Windows, install [Git for Windows](https://git-scm.com/download/win) first. Without git, enter the tarball URL instead. It installs with no git at all:
+
+```
+https://github.com/guobingke/dsh-vault/archive/refs/heads/main.tar.gz
+```
 
 Don't enter just `dsh-vault`. That name on npm belongs to an unrelated package.
 
