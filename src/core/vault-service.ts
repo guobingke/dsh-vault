@@ -2,6 +2,7 @@ import { chmod, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promis
 import { basename, dirname, join } from 'node:path'
 import { collectBackupFiles, extractPluginsFromProfilePackage } from './collect.js'
 import { listPluginDataEntries } from './home-scope.js'
+import { listDetectedPlugins, npmRegistryLookup, pluginKey, registryStatuses, type DetectedPlugin, type RegistryLookup } from './plugin-copies.js'
 import { normalizeConflicts, resolveItemConflict, shouldApplyChange } from './conflict.js'
 import {
   DEFAULT_SETTINGS,
@@ -82,6 +83,8 @@ export interface VaultServiceOptions {
   pickDirectory?: PickDirectoryFn
   /** Override plugin install runner (tests). */
   runPluginInstall?: PluginInstallDeps['runCommand']
+  /** Registry version check (tests inject; default queries npm registries with a timeout; null disables). */
+  registryLookup?: RegistryLookup | null
 }
 
 export class VaultService {
@@ -174,11 +177,39 @@ export class VaultService {
     return this.settings
   }
 
+  private registryLookup(): RegistryLookup | null {
+    if (this.options.registryLookup !== undefined) return this.options.registryLookup
+    if (process.env.DSH_VAULT_NO_REGISTRY_CHECK === '1') return null
+    return npmRegistryLookup(this.preferredRegistry)
+  }
+
+  /** Effective no-copy list for a backup: request overrides, else persisted settings. */
+  private copyExcludeFor(req: BackupRequest): string[] | undefined {
+    const enabled = req.bundlePluginCopies ?? this.settings.pluginCopies?.enabled ?? true
+    const exclude = req.pluginCopyExclude ?? this.settings.pluginCopies?.exclude ?? []
+    if (!enabled) return ['*']
+    return exclude
+  }
+
+  /** Every plugin in every profile, with registry status and 「建议保存副本」 hints. */
+  async listPlugins(opts: { checkRegistry?: boolean } = {}): Promise<{ plugins: Array<DetectedPlugin & { copy: boolean }>; settings: VaultSettings['pluginCopies']; restoreOrder: VaultSettings['pluginRestoreOrder'] }> {
+    const lookup = opts.checkRegistry === false ? undefined : this.registryLookup() ?? undefined
+    const exclude = new Set(this.settings.pluginCopies?.exclude ?? [])
+    const enabled = this.settings.pluginCopies?.enabled !== false
+    const plugins = (await listDetectedPlugins(this.dshHome, lookup)).map((p) => ({ ...p, copy: enabled && !exclude.has(p.key) }))
+    return { plugins, settings: this.settings.pluginCopies, restoreOrder: this.settings.pluginRestoreOrder }
+  }
+
   async updateSettings(patch: Partial<VaultSettings>): Promise<VaultSettings> {
     this.settings = {
       ...this.settings,
       ...patch,
       retention: { ...this.settings.retention, ...patch.retention },
+      pluginCopies: {
+        enabled: (patch.pluginCopies?.enabled ?? this.settings.pluginCopies?.enabled) !== false,
+        exclude: Array.isArray(patch.pluginCopies?.exclude) ? [...new Set(patch.pluginCopies!.exclude.filter((x) => typeof x === 'string'))] : this.settings.pluginCopies?.exclude ?? [],
+      },
+      pluginRestoreOrder: (patch.pluginRestoreOrder ?? this.settings.pluginRestoreOrder) === 'copy-first' ? 'copy-first' : 'source-first',
       schedule: { ...this.settings.schedule, ...patch.schedule, retention: { ...this.settings.schedule.retention, ...patch.schedule?.retention } },
     }
     await saveSettings(this.dataDir, this.settings)
@@ -245,7 +276,16 @@ export class VaultService {
       includeSecrets,
       categories: req.categories,
       bundleLocalPlugins: req.bundleLocalPlugins,
+      pluginCopyExclude: this.copyExcludeFor(req),
     })
+    // Mark copies whose exact version the registry no longer has: restore installs those from the copy directly.
+    const lookup = this.registryLookup()
+    const withCopy = plugins.filter((p) => p.fallbackBundle)
+    if (lookup && withCopy.length) {
+      onProgress?.({ phase: 'collect', message: 'Checking plugin versions on the registry', percent: 10 })
+      const st = await registryStatuses(withCopy, lookup)
+      for (const p of withCopy) if (st.get(pluginKey(p.profile, p.name)) === 'missing') p.registryMissing = true
+    }
     const packed = await packSnapshot({
       files,
       plugins,
@@ -420,7 +460,7 @@ export class VaultService {
       const records = req.pluginProfiles?.length
         ? unpacked.manifest.plugins.filter((p) => req.pluginProfiles!.includes(p.profile ?? this.activeProfile))
         : unpacked.manifest.plugins
-      await this.installPlugins(records, result)
+      await this.installPlugins(records, result, undefined, req.pluginRestoreOrder)
       await this.saveLastRestore({ snapshotId, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
     }
     this.finishPluginSummary(result)
@@ -445,8 +485,10 @@ export class VaultService {
     records: VaultManifest['plugins'],
     result: RestoreResult,
     only?: Set<string>,
+    order?: VaultSettings['pluginRestoreOrder'],
   ): Promise<void> {
-    const { results, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only })
+    const restoreOrder = order ?? this.settings.pluginRestoreOrder ?? 'source-first'
+    const { results, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only, restoreOrder })
     result.pluginResults = results
     result.pluginsReinstalled = results.filter((r) => r.status === 'installed' || r.status === 'installed-from-backup').map((r) => r.name)
     result.pluginsFailed = results.filter((r) => r.status === 'failed').map((r) => r.name)

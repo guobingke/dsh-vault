@@ -21,6 +21,7 @@ import {
   TextInput,
 } from './ui.js'
 import { PathPicker, type FsBrowser } from './PathPicker.js'
+import { PluginCopiesCard, type PluginCopiesApi } from './PluginCopiesCard.js'
 
 export interface BackupPanelProps {
   targets: StorageTargetConfig[]
@@ -47,6 +48,8 @@ export interface BackupPanelProps {
   fs?: FsBrowser
   /** Detected plugin data entries under $DSH_HOME (shown under 插件数据). */
   pluginDataEntries?: string[]
+  /** Plugin copy selection (保存插件副本); hidden when absent. */
+  copiesApi?: PluginCopiesApi
 }
 
 type DestMode = 'target' | 'directory' | 'file'
@@ -90,6 +93,7 @@ export function BackupPanel({
   onNavigateStorage,
   fs,
   pluginDataEntries,
+  copiesApi,
 }: BackupPanelProps) {
   const tr = useT()
   const [destMode, setDestMode] = useState<DestMode>(targets.length ? 'target' : 'directory')
@@ -277,6 +281,8 @@ export function BackupPanel({
           ))}
         </div>
       </Card>
+
+      {copiesApi && (scope.has('plugins') || scope.has('profiles')) ? <PluginCopiesCard api={copiesApi} /> : null}
 
       <Rows label={tr('backup.encTitle')}>
         <SettingRow

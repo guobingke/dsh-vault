@@ -24,7 +24,12 @@ function usage(): string {
 Usage:
   dsh-vault setup [--profile web|desktop|all] [--package <spec>] [--home <path>] [--dry-run]
   dsh-vault backup [--target <id> | --to-file <path>] [--encrypt] [--password <pass>] [--secrets] [--home <path>]
+  dsh-vault backup ... [--no-plugin-copies] [--no-copy <profile:name>]... [--save-copy-choice]
+  dsh-vault plugins [--no-registry] [--json]      plugins + 建议保存副本 hints
+  dsh-vault plugins --copy all|none | --exclude <profile:name>... | --include <profile:name>...
+                    [--restore-order source-first|copy-first]   (persisted settings)
   dsh-vault restore <snapshotId> [--target <id>] [--password <pass>] [--keep|--use-backup] [--home <path>]
+  dsh-vault restore ... [--plugin-order source-first|copy-first]
   dsh-vault restore --from <file> [--home <sandbox DSH_HOME>] [--profile desktop|web|all]
                     [--dsh-desktop-dir <DeepSeek Harness install dir>] [--password <pass>] [--no-plugins]
       (exits 2 when files were restored but a plugin failed to install)
@@ -49,6 +54,25 @@ npm-global \`dsh\` refuses --profile desktop. Web: \`dsh plugin --profile web ad
 Works even when the dsh UI is broken. Secrets are excluded unless --secrets
 is combined with --encrypt.
 `
+}
+
+function getFlags(args: string[], name: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) if (args[i] === name && args[i + 1]) out.push(args[i + 1]!)
+  return out
+}
+
+function copyFlags(args: string[]): { bundlePluginCopies?: boolean; pluginCopyExclude?: string[] } {
+  const out: { bundlePluginCopies?: boolean; pluginCopyExclude?: string[] } = {}
+  if (args.includes('--no-plugin-copies')) out.bundlePluginCopies = false
+  const ex = getFlags(args, '--no-copy')
+  if (ex.length) out.pluginCopyExclude = ex
+  return out
+}
+
+function restoreOrderFlag(args: string[]): 'source-first' | 'copy-first' | undefined {
+  const v = getFlag(args, '--plugin-order') ?? getFlag(args, '--restore-order')
+  return v === 'copy-first' || v === 'source-first' ? v : undefined
 }
 
 function getFlag(args: string[], name: string): string | undefined {
@@ -259,7 +283,12 @@ async function main(argv: string[]): Promise<number> {
         encrypt,
         includeSecrets,
         password,
+        ...copyFlags(args),
       })
+      if (has(args, '--save-copy-choice')) {
+        const c = copyFlags(args)
+        await service.updateSettings({ pluginCopies: { enabled: c.bundlePluginCopies ?? true, exclude: c.pluginCopyExclude ?? [] } })
+      }
       process.stdout.write(JSON.stringify({
         dshHome: home,
         agentsHome,
@@ -271,6 +300,36 @@ async function main(argv: string[]): Promise<number> {
         encrypted: result.encrypted,
         includeSecrets: result.includeSecrets,
       }, null, 2) + '\n')
+      return 0
+    }
+
+    if (cmd === 'plugins') {
+      const cur = service.getSettings()
+      let exclude = new Set(cur.pluginCopies?.exclude ?? [])
+      let enabled = cur.pluginCopies?.enabled !== false
+      let changed = false
+      const copy = getFlag(args, '--copy')
+      if (copy === 'all') { enabled = true; exclude = new Set(); changed = true }
+      if (copy === 'none') { enabled = false; changed = true }
+      for (const k of getFlags(args, '--exclude')) { exclude.add(k); changed = true }
+      for (const k of getFlags(args, '--include')) { exclude.delete(k); enabled = true; changed = true }
+      const order = getFlag(args, '--restore-order')
+      if (changed || order) {
+        await service.updateSettings({
+          pluginCopies: { enabled, exclude: [...exclude].sort() },
+          ...(order === 'copy-first' || order === 'source-first' ? { pluginRestoreOrder: order } : {}),
+        })
+      }
+      const r = await service.listPlugins({ checkRegistry: !has(args, '--no-registry') })
+      if (has(args, '--json')) {
+        process.stdout.write(JSON.stringify(r, null, 2) + '\n')
+        return 0
+      }
+      process.stdout.write(`保存插件副本: ${r.settings.enabled ? '开' : '关'}   恢复顺序: ${r.restoreOrder === 'copy-first' ? '优先使用备份副本' : '优先从源安装，失败再用副本'}\n`)
+      for (const p of r.plugins) {
+        const tags = [p.kind, p.cordisOnly ? 'cordis-only' : '', p.registry === 'missing' ? '仓库无此版本' : '', p.recommended ? '建议保存副本' : ''].filter(Boolean).join(', ')
+        process.stdout.write(`[${p.copy ? 'x' : ' '}] ${p.key}${p.version ? `@${p.version}` : ''}  (${tags})\n`)
+      }
       return 0
     }
 
@@ -300,6 +359,7 @@ async function main(argv: string[]): Promise<number> {
         password: getFlag(args, '--password'),
         reinstallPlugins: !has(args, '--no-plugins'),
         pluginProfiles,
+        pluginRestoreOrder: restoreOrderFlag(args),
       })
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
       process.stderr.write(restoreFailureSummary(result))
@@ -323,6 +383,7 @@ async function main(argv: string[]): Promise<number> {
         snapshotId,
         conflict,
         password: getFlag(args, '--password'),
+        pluginRestoreOrder: restoreOrderFlag(args),
       })
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
       process.stderr.write(restoreFailureSummary(result))

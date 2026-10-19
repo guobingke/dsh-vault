@@ -77,7 +77,30 @@ export interface VaultStatusResponse {
   pluginDataEntries?: string[]
 }
 
+export interface DetectedPluginView {
+  key: string
+  name: string
+  profile: string
+  kind: 'npm' | 'github' | 'local'
+  version?: string
+  cordisOnly: boolean
+  installed: boolean
+  registry: 'present' | 'missing' | 'unknown' | 'not-applicable'
+  recommended: boolean
+  copy: boolean
+}
+
+export interface PluginListResponse {
+  plugins: DetectedPluginView[]
+  settings: VaultSettings['pluginCopies']
+  restoreOrder: VaultSettings['pluginRestoreOrder']
+}
+
 export class VaultApi {
+  listPlugins(checkRegistry = true): Promise<PluginListResponse> {
+    return request(`/plugins?registry=${checkRegistry ? '1' : '0'}`)
+  }
+
   status(): Promise<VaultStatusResponse> {
     return request('/status')
   }
@@ -113,6 +136,8 @@ export class VaultApi {
     categories?: BackupCategory[]
     kdf?: KdfAlgorithm
     bundleLocalPlugins?: boolean
+    bundlePluginCopies?: boolean
+    pluginCopyExclude?: string[]
   }): Promise<BackupResult> {
     return request('/backup', { method: 'POST', body: JSON.stringify(body) })
   }

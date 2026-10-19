@@ -70,6 +70,8 @@ export interface PluginRecord {
   bundledFrom?: 'source' | 'installed'
   /** Exact version found in the profile's node_modules at backup time (npm plugins). */
   installedVersion?: string
+  /** Backup-time registry check: this exact version is not on the registry (restore uses the copy directly). */
+  registryMissing?: boolean
 }
 
 export interface VaultManifest {
@@ -114,6 +116,8 @@ export interface CollectOptions {
   extraRoots?: Array<{ abs: string; relPrefix: string; category: BackupCategory }>
   /** Bundle link:/file: plugin source trees into plugin-sources/. Default true. */
   bundleLocalPlugins?: boolean
+  /** `profile:name` keys that get no saved copy (neither local source nor installed fallback). */
+  pluginCopyExclude?: string[]
 }
 
 export interface BackupRequest {
@@ -135,6 +139,10 @@ export interface BackupRequest {
   dshVersion?: string
   /** When true, bundle link:/file: plugin source trees into the snapshot. Default true. */
   bundleLocalPlugins?: boolean
+  /** Save plugin copies at all (default: settings.pluginCopies.enabled, true). */
+  bundlePluginCopies?: boolean
+  /** `profile:name` keys without a saved copy (default: settings.pluginCopies.exclude). */
+  pluginCopyExclude?: string[]
 }
 
 export interface BackupResult {
@@ -204,7 +212,12 @@ export interface RestoreRequest {
   /** Only install plugins of these profiles (files are still restored in full). */
   pluginProfiles?: string[]
   includeSecrets?: boolean
+  /** Plugins with a saved copy: try the copy first, or the source first (default: settings). */
+  pluginRestoreOrder?: PluginRestoreOrder
 }
+
+/** 优先从源安装，失败再用副本 (`source-first`) / 优先使用备份副本 (`copy-first`). */
+export type PluginRestoreOrder = 'source-first' | 'copy-first'
 
 export type PluginInstallStatus = 'installed' | 'installed-from-backup' | 'already-present' | 'failed' | 'skipped'
 
@@ -221,6 +234,7 @@ export type PluginFailureReasonCode =
   | 'incompatible'
   | 'git-missing'
   | 'git-unavailable'
+  | 'no-backup-copy'
   | 'unknown'
 
 export interface PluginInstallResultRow {
@@ -288,6 +302,10 @@ export interface VaultSettings {
   schedule: ScheduleConfig
   /** Prefer scrypt (built-in) or argon2id when available. */
   preferredKdf: KdfAlgorithm
+  /** Save copies of installed plugins in each backup. Default: enabled, nothing excluded. */
+  pluginCopies: { enabled: boolean; exclude: string[] }
+  /** How restore uses saved copies. Default `source-first`. */
+  pluginRestoreOrder: PluginRestoreOrder
 }
 
 export interface ProgressEvent {

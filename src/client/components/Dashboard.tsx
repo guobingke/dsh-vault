@@ -37,6 +37,8 @@ function emptyStatus(): VaultStatusResponse {
   const settings: VaultSettings = {
     retention: { keepLast: 0 },
     preferredKdf: 'scrypt',
+    pluginCopies: { enabled: true, exclude: [] },
+    pluginRestoreOrder: 'source-first',
     schedule: {
       enabled: false,
       intervalMinutes: 1440,

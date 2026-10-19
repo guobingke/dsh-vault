@@ -231,11 +231,18 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   // Bundle local plugin sources (link:/file:/portal: dirs, file: tarballs, workspace: specs)
   // so machine 2 can install them from the snapshot instead of machine 1's paths.
   const bundleLocal = options.bundleLocalPlugins !== false
+  const noCopy = new Set(options.pluginCopyExclude ?? [])
+  const copyWanted = (p: PluginRecord) => !noCopy.has('*') && !noCopy.has(`${p.profile ?? 'web'}:${p.name}`)
   if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {
     for (const plugin of plugins) {
       if (!plugin.profile) continue
       const spec = parseLocalSpec(plugin.version ?? plugin.source)
       if (!spec) continue
+      if (!copyWanted(plugin)) {
+        if (spec.kind === 'path') plugin.originalSource = `${spec.protocol}:${resolveLocalSpecPath(spec.path, join(dshHome, 'profiles', plugin.profile))}`
+        else plugin.originalSource = spec.raw
+        continue
+      }
       const profileDir = join(dshHome, 'profiles', plugin.profile)
       const relPrefix = bundledSourceRel(plugin.profile, plugin.name)
       const before = files.length
@@ -297,7 +304,7 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
         const locked = locks.get(plugin.profile)![plugin.name]
         if (locked && /^https?:\/\//.test(locked)) plugin.lockedTarball = locked
       }
-      if (plugin.fallbackBundle) continue
+      if (plugin.fallbackBundle || !copyWanted(plugin)) continue
       const installed = await installedPackageDir(profileDir, plugin.name)
       if (!installed) continue
       const rel = bundledSourceRel(plugin.profile, plugin.name)

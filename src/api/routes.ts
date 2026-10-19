@@ -26,6 +26,13 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
   )
 
   routes.push(
+    endpoint({ path: `${API_PREFIX}/plugins`, methods: ['GET'] }, async (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      writeJson(res, 200, await service.listPlugins({ checkRegistry: url.searchParams.get('registry') !== '0' }))
+    }),
+  )
+
+  routes.push(
     endpoint({ path: `${API_PREFIX}/targets`, methods: ['GET', 'POST'] }, async (req, res) => {
       if (req.method === 'GET') {
         writeJson(res, 200, { targets: service.listTargets() })

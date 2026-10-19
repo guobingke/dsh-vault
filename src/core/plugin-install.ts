@@ -819,6 +819,8 @@ function reasonLine(reason: PluginFailureReason, subject?: string): string {
       return `git is needed to install ${subject ?? 'this plugin'} from GitHub, and it is not installed`
     case 'git-unavailable':
       return `the git repository cannot be reached: ${subject}`
+    case 'no-backup-copy':
+      return `${subject ?? 'this plugin'} is not on the registry at that version, and this backup has no saved copy of it; back up again on the original machine with the current 大肥鱼备份 (dsh-vault)`
     default:
       return subject ?? 'install failed'
   }
@@ -827,6 +829,8 @@ function reasonLine(reason: PluginFailureReason, subject?: string): string {
 export interface ReinstallOptions {
   /** Only these `profile:name` keys (retry). Others are left alone. */
   only?: Set<string>
+  /** Plugins with a saved copy: `copy-first` installs the copy before trying the source. Default `source-first`. */
+  restoreOrder?: 'source-first' | 'copy-first'
 }
 
 /**
@@ -998,9 +1002,24 @@ export async function reinstallMissingPlugins(
     const logs: string[] = []
     let ok = false
     let how = ''
+    let fromBackup = false
+
+    // 0) Copy first: user chose 优先使用备份副本, or the exact version is known to be gone from the registry.
+    const copyFirst = Boolean(plugin.fallbackBundle || plugin.lockedTarball) &&
+      (options.restoreOrder === 'copy-first' || plugin.registryMissing === true)
+    if (copyFirst) {
+      const fb = await installFromBackupFallback(plugin, profileDir, deps)
+      ok = fb.ok || (await pluginPackagePresent(deps.dshHome, profile, plugin.name))
+      if (ok) {
+        how = fb.detail
+        fromBackup = true
+      } else {
+        logs.push(fb.detail)
+      }
+    }
 
     // a) Host pluginManager — only for the profile it manages.
-    if (deps.pluginManager && profile === managerProfile) {
+    if (!ok && deps.pluginManager && profile === managerProfile) {
       const viaMgr = await installViaPluginManager(deps.pluginManager, spec, deps)
       if (viaMgr.already) {
         await materializeProfile(profileDir, deps)
@@ -1030,8 +1049,7 @@ export async function reinstallMissingPlugins(
       else logs.push(viaCli.ok ? 'dsh plugin add exited 0 but the package is not in node_modules' : viaCli.detail)
     }
     // d) Exact version unpublished / git missing: install the copy packed at backup time.
-    let fromBackup = false
-    if (!ok && (plugin.fallbackBundle || plugin.lockedTarball)) {
+    if (!ok && !copyFirst && (plugin.fallbackBundle || plugin.lockedTarball)) {
       const soFar = logs.join('\n')
       const classified = classifyInstallFailure(soFar, ownPathsOf(plugin, deps.dshHome), plugin.name)
       const fetchFail =
@@ -1067,6 +1085,11 @@ export async function reinstallMissingPlugins(
     } else {
       const log = logs.join('\n\n')
       const c = classifyInstallFailure(log, ownPathsOf(plugin, deps.dshHome), plugin.name)
+      // Snapshot from an older build (or the copy was turned off): say so instead of only the npm error.
+      if (c.reason === 'registry-not-found' && !plugin.fallbackBundle && !plugin.lockedTarball && !plugin.bundledSource) {
+        c.reason = 'no-backup-copy'
+        c.subject = `${plugin.name}${plugin.installedVersion ? `@${plugin.installedVersion}` : ''}`
+      }
       fail({
         name: plugin.name,
         profile,

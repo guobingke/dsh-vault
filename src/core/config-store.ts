@@ -21,6 +21,8 @@ export const DEFAULT_SETTINGS: VaultSettings = {
   retention: { ...DEFAULT_RETENTION },
   schedule: { ...DEFAULT_SCHEDULE },
   preferredKdf: 'scrypt',
+  pluginCopies: { enabled: true, exclude: [] },
+  pluginRestoreOrder: 'source-first',
 }
 
 export async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
@@ -43,6 +45,8 @@ export async function loadSettings(dataDir: string): Promise<VaultSettings> {
     ...DEFAULT_SETTINGS,
     ...stored,
     retention: { ...DEFAULT_RETENTION, ...stored.retention },
+    pluginCopies: { enabled: stored.pluginCopies?.enabled !== false, exclude: Array.isArray(stored.pluginCopies?.exclude) ? stored.pluginCopies!.exclude.filter((x) => typeof x === 'string') : [] },
+    pluginRestoreOrder: stored.pluginRestoreOrder === 'copy-first' ? 'copy-first' : 'source-first',
     schedule: { ...DEFAULT_SCHEDULE, ...stored.schedule, retention: { ...DEFAULT_RETENTION, ...stored.schedule?.retention } },
   }
 }
