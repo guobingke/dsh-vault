@@ -1,0 +1,7 @@
+# dsh-vault bundle patch: inserts this plugin into a profile's layer stack.
+# Activate with:
+#   dsh plugin --profile web add dsh-vault
+#   dsh plugin --profile web add link:<absolute-path-to-this-repo>
+- insert:
+    - id: dsh-vault
+      name: 'dsh-vault'

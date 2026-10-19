@@ -1,0 +1,113 @@
+import { homedir } from 'node:os'
+import { join, normalize, resolve, sep } from 'node:path'
+
+/** Resolve $DSH_HOME with the same precedence as @deepseek-ai/dsh-home-paths. */
+export function resolveDshHome(configured?: string, env: NodeJS.ProcessEnv = process.env): string {
+  return resolveRoot(configured, env, 'DSH_HOME', () => join(homedir(), '.dsh'))
+}
+
+/** Resolve $DSH_AGENTS_HOME (shared agents root outside DSH_HOME). */
+export function resolveAgentsHome(configured?: string, env: NodeJS.ProcessEnv = process.env): string {
+  return resolveRoot(configured, env, 'DSH_AGENTS_HOME', () => join(homedir(), '.agents'))
+}
+
+function resolveRoot(
+  configured: string | undefined,
+  env: NodeJS.ProcessEnv,
+  envKey: string,
+  fallback: () => string,
+): string {
+  const raw = (configured && configured.trim()) || (env[envKey] && env[envKey]!.trim()) || ''
+  if (!raw) return fallback()
+  return resolve(expandTilde(raw))
+}
+
+function expandTilde(p: string): string {
+  if (p === '~') return homedir()
+  if (p.startsWith('~/') || p.startsWith('~\\')) return join(homedir(), p.slice(2))
+  return p
+}
+
+/** Plugin-owned data directory under $DSH_HOME. */
+export function vaultDataDir(dshHome: string, override?: string): string {
+  if (override && override.trim()) return resolve(expandTilde(override.trim()))
+  return join(dshHome, 'dsh-vault')
+}
+
+export function vaultConfigPath(dataDir: string): string {
+  return join(dataDir, 'config.json')
+}
+
+export function vaultTargetsPath(dataDir: string): string {
+  return join(dataDir, 'targets.json')
+}
+
+export function vaultSchedulePath(dataDir: string): string {
+  return join(dataDir, 'schedule.json')
+}
+
+export function vaultTempDir(dataDir: string): string {
+  return join(dataDir, 'tmp')
+}
+
+export function vaultRollbackDir(dataDir: string): string {
+  return join(dataDir, 'rollback')
+}
+
+/** Normalize to POSIX relative path and reject traversal. */
+export function toSafeRelPath(rel: string): string {
+  const norm = rel.replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!norm || norm.includes('\0')) throw new Error(`unsafe path: ${rel}`)
+  const segments = norm.split('/')
+  for (const seg of segments) {
+    if (!seg || seg === '.' || seg === '..') throw new Error(`unsafe path: ${rel}`)
+  }
+  return segments.join('/')
+}
+
+/** Ensure absPath stays inside root. */
+export function assertInside(root: string, absPath: string): string {
+  const resolvedRoot = resolve(root) + sep
+  const resolved = resolve(absPath)
+  if (resolved !== resolve(root) && !resolved.startsWith(resolvedRoot)) {
+    throw new Error(`path escapes root: ${absPath}`)
+  }
+  return resolved
+}
+
+export function joinRel(root: string, rel: string): string {
+  return assertInside(root, join(root, ...toSafeRelPath(rel).split('/')))
+}
+
+/** Paths that must never be packed unless explicitly opted into secrets mode. */
+export const SECRET_BASENAMES = new Set([
+  '.credentials.yaml',
+  'credentials.yaml',
+  '.env',
+  '.env.local',
+])
+
+export function isSecretRelPath(rel: string): boolean {
+  const base = rel.replace(/\\/g, '/').split('/').pop() ?? ''
+  if (SECRET_BASENAMES.has(base)) return true
+  if (rel.replace(/\\/g, '/').includes('/.credentials.yaml')) return true
+  return false
+}
+
+/** Directories skipped while collecting (reinstallable artifacts). */
+export const SKIP_DIR_NAMES = new Set([
+  'node_modules',
+  '.git',
+  'cache',
+  'dsh-vault',
+  'dsh-config-manager',
+  'config-backups',
+])
+
+export function shouldSkipDir(name: string): boolean {
+  return SKIP_DIR_NAMES.has(name)
+}
+
+export function normalizePathKey(p: string): string {
+  return normalize(p).replace(/\\/g, '/')
+}
