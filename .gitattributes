@@ -1,0 +1,2 @@
+# Built output is committed so `github:guobingke/dsh-vault` installs without a build step.
+lib/** text eol=lf linguist-generated=true

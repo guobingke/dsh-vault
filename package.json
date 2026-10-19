@@ -38,8 +38,8 @@
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import ./tests/env.mjs --import tsx --test \"tests/**/*.test.ts\"",
-    "prepare": "npm run build",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "check:lib": "node scripts/check-lib.mjs"
   },
   "keywords": [
     "dsh",

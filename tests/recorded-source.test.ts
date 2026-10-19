@@ -276,3 +276,29 @@ describe('plugins are only installed from a recorded source', () => {
     }
   })
 })
+
+describe('dsh-vault installed from GitHub', () => {
+  it('a github: dsh-vault on the target is kept and never reinstalled', async () => {
+    const home = await makeTempHome()
+    try {
+      await profile(home.dshHome, 'web', { name: 'web', dependencies: { 'dsh-vault': 'github:guobingke/dsh-vault' }, dsh: { profile: { bundles: ['dsh-vault'] } } })
+      const nm = join(home.dshHome, 'profiles', 'web', 'node_modules', 'dsh-vault')
+      await writePkg(nm, { name: 'dsh-vault', version: '0.1.0', keywords: ['dsh-plugin'] })
+      const calls: string[] = []
+      const svc = service(home, calls)
+      await svc.init()
+      const targetId = svc.listTargets()[0]!.id
+      const backup = await svc.backup({ targetId })
+      assert.ok(!backup.manifest.files.some((f) => f.path.includes('plugin-sources/web/dsh-vault')))
+      await profile(home.dshHome, 'web', { name: 'web', dependencies: { 'dsh-vault': 'github:guobingke/dsh-vault#main' }, dsh: { profile: { bundles: ['dsh-vault'] } } })
+      const result = await svc.restore({ targetId, snapshotId: backup.snapshotId, conflict: 'use-backup', createRollbackSnapshot: false })
+      const web = JSON.parse(await readFile(join(home.dshHome, 'profiles', 'web', 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
+      assert.equal(web.dependencies['dsh-vault'], 'github:guobingke/dsh-vault#main')
+      assert.ok(!calls.some((c) => c.includes('dsh-vault')), calls.join('\n'))
+      assert.equal(result.pluginResults!.find((r) => r.name === 'dsh-vault')!.reason, 'self')
+      svc.stopSchedule()
+    } finally {
+      await home.cleanup()
+    }
+  })
+})

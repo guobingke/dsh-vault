@@ -1,0 +1,1508 @@
+/* ==========================================================================
+   dsh-vault — settings section styles
+
+   Rendered inside the host's Settings modal (right content column, ~450–520px).
+   The host owns the frame, navigation, colors and light/dark theme, so this
+   stylesheet only:
+
+     1. maps a small set of --dv-* aliases onto host --dsw-* tokens
+        (with light-theme fallbacks), and
+     2. recreates native-looking settings rows, segmented tabs, provider
+        cards, buttons, switches and inputs from those tokens.
+
+   No gradients, glows, shadows or brand palette. Host tokens switch with the
+   theme automatically; the fallbacks below match the default (light) theme.
+   ========================================================================== */
+
+.dsh-vault-root {
+  /* ---- color --------------------------------------------------------- */
+  --dv-text: var(--dsw-alias-label-primary, #14171c);
+  --dv-text-secondary: var(--dsw-alias-label-secondary, #5c6169);
+  --dv-text-tertiary: var(--dsw-alias-label-tertiary, #81858c);
+  --dv-text-caption: var(--dsw-alias-label-caption, #a0a4ab);
+  --dv-bg-layer-1: var(--dsw-alias-bg-layer-1, #ffffff);
+  --dv-bg-layer-2: var(--dsw-alias-bg-layer-2, #fafafa);
+  --dv-bg-layer-3: var(--dsw-alias-bg-layer-3, #ffffff);
+  --dv-bg-module: var(--dsw-alias-bg-module-platform, #f5f6f7);
+  --dv-bg-selected: var(--dsw-alias-bg-document-preview, #ebeef2);
+  --dv-bg-skeleton: var(--dsw-alias-bg-skeleton, #eef0f2);
+  --dv-border-l1: var(--dsw-alias-border-l1, #0000000f);
+  --dv-border-l2: var(--dsw-alias-border-l2, #0000001a);
+  --dv-border-l3: var(--dsw-alias-border-l3, #00000026);
+  --dv-border-l4: var(--dsw-alias-border-l4, #00000033);
+  --dv-on-primary: var(--dsw-alias-bg-layer-3, #ffffff);
+
+  --dv-ok: var(--dsw-alias-state-success-primary, #22c55e);
+  --dv-ok-label: var(--dsw-alias-state-success-primary, #16a34a);
+  --dv-warn: var(--dsw-alias-state-warn-primary, #dd8629);
+  --dv-warn-bg: var(--dsw-alias-state-warn-tertiary, #fef5e7);
+  --dv-danger: var(--dsw-alias-state-error-primary, #ec1313);
+  --dv-info: var(--dsw-alias-state-business-primary, #4176e6);
+  --dv-info-bg: var(--dsw-alias-state-business-tertiary, #e4edfd);
+  --dv-neutral-dot: var(--dsw-alias-label-caption, #a0a4ab);
+
+  --dv-focus: var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4176e6));
+  --dv-focus-width: var(--dsw-focus-ring-width, 2px);
+
+  /* ---- type / geometry ---------------------------------------------- */
+  --dv-font: var(--dsw-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif);
+  --dv-mono: var(--dsw-font-markdown-code-font-family, ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace);
+  --dv-radius-xs: var(--dsw-radius-xs, 4px);
+  --dv-radius-sm: var(--dsw-radius-sm, 8px);
+  --dv-radius-md: var(--dsw-radius-md, 12px);
+  --dv-radius-lg: var(--dsw-radius-lg, 16px);
+  --dv-radius-xl: var(--dsw-radius-xl, 20px);
+
+  font-family: var(--dv-font);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--dv-text);
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  text-align: left;
+}
+
+.dsh-vault-root *,
+.dsh-vault-root *::before,
+.dsh-vault-root *::after {
+  box-sizing: border-box;
+}
+
+.dsh-vault-root :focus-visible {
+  outline: var(--dv-focus-width) solid var(--dv-focus);
+  outline-offset: 2px;
+}
+
+.dsh-vault-root button,
+.dsh-vault-root input,
+.dsh-vault-root select,
+.dsh-vault-root textarea {
+  font: inherit;
+  color: inherit;
+}
+
+.dsh-vault-root code,
+.dsh-vault-root .dv-mono {
+  font-family: var(--dv-mono);
+  font-size: 0.92em;
+}
+
+.dv-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.dv-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.dv-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Skip link — visually hidden until focused. */
+.dv-skip {
+  position: absolute;
+  left: 0;
+  top: -40px;
+  padding: 6px 10px;
+  border-radius: var(--dv-radius-sm);
+  background: var(--dv-bg-module);
+  color: var(--dv-text);
+  text-decoration: none;
+  z-index: 1;
+}
+.dv-skip:focus {
+  top: 0;
+}
+
+/* ==========================================================================
+   Section layout
+   ========================================================================== */
+
+.dv-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.dv-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dv-section-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  color: var(--dv-text);
+}
+
+.dv-section-desc {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--dv-text-secondary);
+}
+
+/* Sub-section tabs: a quiet row; selected = gray pill (native nav highlight). */
+.dv-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.dv-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dv-text-secondary);
+  font-size: 14px;
+  line-height: 20px;
+  padding: 6px 12px;
+  margin-left: -4px;
+  border-radius: var(--dv-radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dv-tab:first-child {
+  margin-left: 0;
+}
+.dv-tab:hover {
+  color: var(--dv-text);
+  background: var(--dv-bg-module);
+}
+.dv-tab[aria-selected='true'] {
+  color: var(--dv-text);
+  background: var(--dv-bg-selected);
+}
+
+.dv-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* ==========================================================================
+   Setting rows
+   ========================================================================== */
+
+.dv-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.dv-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--dv-border-l2);
+  min-width: 0;
+}
+.dv-row:first-child {
+  padding-top: 0;
+}
+.dv-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.dv-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  /* Native rows leave room so long labels never touch the control, but the
+     long status sentences on the right get more share of the width here. */
+  padding-right: 16px;
+  flex: 1 1 auto;
+}
+
+.dv-row-title {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  color: var(--dv-text);
+}
+
+.dv-row-desc {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dv-text-tertiary);
+}
+
+.dv-row-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 62%;
+  text-align: right;
+}
+
+.dv-row[data-stack='true'] {
+  flex-direction: column;
+  align-items: stretch;
+}
+.dv-row[data-stack='true'] .dv-row-text {
+  padding-right: 0;
+}
+.dv-row[data-stack='true'] .dv-row-control {
+  max-width: none;
+}
+
+/* Status line with a dot (overview, target state). */
+.dv-dottext {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--dv-text);
+}
+.dv-dottext > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dv-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--dv-neutral-dot);
+}
+.dv-dot[data-tone='ok'] {
+  background: var(--dv-ok);
+}
+.dv-dot[data-tone='warn'] {
+  background: var(--dv-warn);
+}
+.dv-dot[data-tone='danger'] {
+  background: var(--dv-danger);
+}
+
+.dv-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dv-muted {
+  color: var(--dv-text-tertiary);
+}
+.dv-secondary {
+  color: var(--dv-text-secondary);
+}
+.dv-small {
+  font-size: 12px;
+  line-height: 18px;
+}
+.dv-error-text {
+  color: var(--dv-danger);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+/* ==========================================================================
+   Provider-style cards (targets, restore diff, snapshot items)
+   ========================================================================== */
+
+.dv-card {
+  background: var(--dv-bg-module);
+  border-radius: var(--dv-radius-lg);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dv-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dv-card-head {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+.dv-card-head > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-width: 0;
+}
+
+.dv-card-title {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dv-text);
+  overflow-wrap: anywhere;
+}
+
+.dv-card-sub {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dv-text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.dv-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.dv-card-actions .dv-select,
+.dv-card-actions .dv-input {
+  max-width: 100%;
+}
+
+.dv-card-sep {
+  height: 1px;
+  background: var(--dv-border-l2);
+  margin: 2px 0;
+}
+
+.dv-card-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+
+.dv-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--dv-radius-md);
+  background: var(--dv-bg-module);
+  color: var(--dv-text);
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+.dv-btn:hover:not(:disabled) {
+  opacity: 0.86;
+}
+.dv-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Primary: label-primary fill, layer-3 text — black on light, white on dark. */
+.dv-btn[data-variant='primary'] {
+  background: var(--dv-text);
+  color: var(--dv-on-primary);
+}
+
+/* Secondary: layer-1 fill with a hairline border (native Cancel). */
+.dv-btn[data-variant='secondary'] {
+  background: var(--dv-bg-layer-1);
+  border-color: var(--dv-border-l3);
+}
+
+/* Text button: no chrome until hover. */
+.dv-btn[data-variant='quiet'] {
+  background: transparent;
+  border-color: transparent;
+  color: var(--dv-text-secondary);
+  padding: 5px 8px;
+}
+.dv-btn[data-variant='quiet']:hover:not(:disabled) {
+  background: var(--dv-bg-module);
+  color: var(--dv-text);
+}
+
+/* Destructive: neutral fill, error text only. */
+.dv-btn[data-variant='danger'] {
+  background: transparent;
+  border-color: var(--dv-border-l3);
+  color: var(--dv-danger);
+}
+.dv-btn[data-variant='danger']:hover:not(:disabled) {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--dv-danger) 45%, transparent);
+}
+
+/* Destructive confirm: error fill, white text. */
+.dv-btn[data-variant='danger-solid'] {
+  background: var(--dv-danger);
+  color: #fff;
+}
+
+.dv-btn[data-size='sm'] {
+  min-height: 28px;
+  padding: 2px 10px;
+  font-size: 13px;
+  border-radius: var(--dv-radius-md);
+}
+
+.dv-btn[data-block='true'] {
+  width: 100%;
+}
+
+/* Dashed "add" row for lists (native "Add model provider" style). */
+.dv-btn[data-variant='dashed'] {
+  width: 100%;
+  flex: 1 1 140px;
+  background: transparent;
+  border: 1px dashed var(--dv-border-l3);
+  color: var(--dv-text);
+}
+.dv-btn[data-variant='dashed']:hover:not(:disabled) {
+  background: var(--dv-bg-module);
+  opacity: 1;
+}
+
+.dv-iconbtn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dv-radius-sm);
+  background: transparent;
+  color: var(--dv-text-tertiary);
+  cursor: pointer;
+  flex: none;
+}
+.dv-iconbtn:hover:not(:disabled) {
+  background: var(--dv-bg-selected);
+  color: var(--dv-text);
+}
+.dv-iconbtn[data-variant='danger']:hover:not(:disabled) {
+  color: var(--dv-danger);
+}
+.dv-iconbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Small selectable chip used for interval presets and retention presets. */
+.dv-chip {
+  appearance: none;
+  border: 1px solid var(--dv-border-l3);
+  background: var(--dv-bg-layer-1);
+  color: var(--dv-text);
+  border-radius: var(--dv-radius-md);
+  padding: 3px 10px;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dv-chip:hover {
+  background: var(--dv-bg-module);
+}
+.dv-chip[aria-pressed='true'] {
+  background: var(--dv-bg-module);
+  border-color: var(--dv-border-l4);
+}
+.dv-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dv-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dv-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ==========================================================================
+   Segmented control (diff filter, per-item conflict choice)
+   ========================================================================== */
+
+.dv-segment {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--dv-radius-md);
+  background: var(--dv-bg-module);
+  max-width: 100%;
+}
+.dv-segment button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dv-text-secondary);
+  border-radius: calc(var(--dv-radius-md) - 2px);
+  padding: 2px 10px;
+  font-size: 13px;
+  min-height: 24px;
+  line-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.dv-segment button:hover {
+  color: var(--dv-text);
+}
+.dv-segment button[aria-pressed='true'] {
+  background: var(--dv-bg-layer-1);
+  color: var(--dv-text);
+}
+.dv-segment .dv-count {
+  color: var(--dv-text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Inputs
+   ========================================================================== */
+
+.dv-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dv-label {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dv-text-secondary);
+}
+
+.dv-hint {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dv-text-tertiary);
+}
+
+.dv-input,
+.dv-select,
+.dv-textarea {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--dv-border-l3);
+  border-radius: var(--dv-radius-sm);
+  background: var(--dv-bg-layer-1);
+  color: var(--dv-text);
+  font-size: 14px;
+  line-height: 30px;
+}
+.dv-textarea {
+  height: auto;
+  min-height: 64px;
+  padding: 6px 10px;
+  line-height: 20px;
+  resize: vertical;
+}
+.dv-input::placeholder,
+.dv-textarea::placeholder {
+  color: var(--dv-text-caption);
+}
+.dv-input[aria-invalid='true'],
+.dv-textarea[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--dv-danger) 60%, transparent);
+}
+.dv-input:disabled,
+.dv-textarea:disabled,
+.dv-select:disabled {
+  background: var(--dv-bg-module);
+  color: var(--dv-text-tertiary);
+  cursor: not-allowed;
+}
+
+/* Native select rendered as the host's gray picker with a small chevron. */
+.dv-select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: auto;
+  max-width: 100%;
+  height: 32px;
+  padding: 0 30px 0 14px;
+  border: 0;
+  border-radius: var(--dv-radius-md);
+  background-color: var(--dv-bg-module);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2381858c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  font-size: 14px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.dv-select[data-block='true'] {
+  width: 100%;
+}
+
+.dv-input-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.dv-input-group .dv-input {
+  padding-right: 34px;
+}
+.dv-input-group .dv-iconbtn {
+  position: absolute;
+  right: 2px;
+}
+
+.dv-num-input {
+  width: 72px;
+  text-align: right;
+}
+
+/* Checkbox (native input, custom mark). */
+.dv-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  min-width: 0;
+}
+.dv-check input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  flex: none;
+  border: 1px solid var(--dv-border-l3);
+  border-radius: var(--dv-radius-xs);
+  background: var(--dv-bg-layer-1);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+}
+.dv-check input:checked {
+  background: var(--dv-text);
+  border-color: var(--dv-text);
+}
+.dv-check input:checked::after {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border: 2px solid var(--dv-on-primary);
+  border-top: 0;
+  border-right: 0;
+  transform: translateY(-1px) rotate(-45deg);
+}
+.dv-check input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.dv-check-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dv-check-title {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--dv-text);
+}
+.dv-check-desc {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dv-text-tertiary);
+}
+.dv-check[data-disabled='true'] {
+  cursor: not-allowed;
+}
+.dv-check[data-disabled='true'] .dv-check-title {
+  color: var(--dv-text-tertiary);
+}
+
+/* Switch: label-primary track when on, layer-3 knob. */
+.dv-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  flex: none;
+}
+.dv-switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.dv-switch-track {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--dv-border-l4);
+  transition: background-color 0.15s ease;
+}
+.dv-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dv-on-primary);
+  transition: transform 0.15s ease;
+}
+.dv-switch input:checked + .dv-switch-track {
+  background: var(--dv-text);
+}
+.dv-switch input:checked + .dv-switch-track::after {
+  transform: translateX(12px);
+}
+.dv-switch input:focus-visible + .dv-switch-track {
+  outline: var(--dv-focus-width) solid var(--dv-focus);
+  outline-offset: 2px;
+}
+.dv-switch input:disabled + .dv-switch-track {
+  opacity: 0.4;
+}
+.dv-switch[data-disabled='true'] {
+  cursor: not-allowed;
+}
+
+/* Radio / checkbox tile (target and snapshot selection). */
+.dv-option {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--dv-border-l2);
+  border-radius: var(--dv-radius-md);
+  background: var(--dv-bg-layer-1);
+  cursor: pointer;
+  min-width: 0;
+}
+.dv-option:hover {
+  background: var(--dv-bg-module);
+}
+.dv-option[data-selected='true'] {
+  border-color: var(--dv-border-l4);
+  background: var(--dv-bg-module);
+}
+.dv-option input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.dv-option:focus-within {
+  outline: var(--dv-focus-width) solid var(--dv-focus);
+  outline-offset: 1px;
+}
+.dv-option-mark {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  flex: none;
+  border: 1px solid var(--dv-border-l3);
+  border-radius: 50%;
+  display: grid;
+  place-content: center;
+  background: var(--dv-bg-layer-1);
+}
+.dv-option[data-selected='true'] .dv-option-mark {
+  border-color: var(--dv-text);
+}
+.dv-option[data-shape='square'] .dv-option-mark {
+  border-radius: var(--dv-radius-xs);
+}
+.dv-option-mark > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dv-text);
+}
+.dv-option[data-shape='square'] .dv-option-mark > span {
+  width: 4px;
+  height: 8px;
+  border-radius: 0;
+  border: 2px solid var(--dv-on-primary);
+  border-top: 0;
+  border-left: 0;
+  background: none;
+  transform: translateY(-1px) rotate(45deg);
+}
+.dv-option[data-shape='square'][data-selected='true'] .dv-option-mark {
+  background: var(--dv-text);
+}
+.dv-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.dv-option-title {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--dv-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.dv-option-desc {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dv-text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.dv-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ==========================================================================
+   Status text, tags, banners
+   ========================================================================== */
+
+.dv-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: var(--dv-radius-xs);
+  background: var(--dv-bg-module);
+  border: 1px solid var(--dv-border-l2);
+  color: var(--dv-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.dv-tag[data-tone='ok'] {
+  color: var(--dv-ok-label);
+}
+.dv-tag[data-tone='warn'] {
+  color: var(--dv-warn);
+}
+.dv-tag[data-tone='danger'] {
+  color: var(--dv-danger);
+}
+.dv-tag[data-tone='info'] {
+  color: var(--dv-info);
+}
+
+.dv-tag-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.dv-banner {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--dv-radius-md);
+  border: 1px solid var(--dv-border-l2);
+  background: var(--dv-bg-module);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dv-text);
+  overflow-wrap: anywhere;
+}
+.dv-banner[data-tone='error'] {
+  border-color: color-mix(in srgb, var(--dv-danger) 35%, transparent);
+  color: var(--dv-danger);
+  background: var(--dv-bg-layer-1);
+}
+.dv-banner[data-tone='warn'] {
+  background: var(--dv-warn-bg);
+  border-color: color-mix(in srgb, var(--dv-warn) 30%, transparent);
+}
+.dv-banner[data-tone='info'] {
+  background: var(--dv-info-bg);
+  border-color: transparent;
+}
+.dv-banner-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dv-banner-title {
+  font-weight: 500;
+}
+.dv-banner ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+/* ==========================================================================
+   Lists / tables (snapshots, diff)
+   ========================================================================== */
+
+.dv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dv-list-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--dv-border-l2);
+  min-width: 0;
+}
+.dv-list-item:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.dv-list-item:first-child {
+  padding-top: 0;
+}
+
+.dv-list-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.dv-list-title {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--dv-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dv-list-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: none;
+}
+
+.dv-scroll {
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.dv-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.dv-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 420px) {
+  .dv-grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dv-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .dv-row-text {
+    padding-right: 0;
+  }
+  .dv-row-control {
+    max-width: none;
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
+.dv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.dv-table th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--dv-text-tertiary);
+  font-size: 12px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--dv-border-l2);
+  white-space: nowrap;
+}
+.dv-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--dv-border-l1);
+  vertical-align: top;
+}
+.dv-table tr:last-child td {
+  border-bottom: 0;
+}
+.dv-th-right,
+.dv-td-right {
+  text-align: right;
+}
+
+.dv-path {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* Per-item conflict row (restore). */
+.dv-conflict-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--dv-border-l2);
+  min-width: 0;
+}
+.dv-conflict-row:last-child {
+  border-bottom: 0;
+}
+.dv-conflict-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.dv-conflict-path {
+  font-family: var(--dv-mono);
+  font-size: 12px;
+  color: var(--dv-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  min-width: 0;
+}
+
+/* ==========================================================================
+   Progress
+   ========================================================================== */
+
+.dv-progress {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--dv-bg-skeleton);
+  overflow: hidden;
+}
+.dv-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--dv-text);
+  border-radius: inherit;
+  transition: width 0.2s ease;
+}
+.dv-progress[data-indeterminate='true'] > span {
+  width: 35%;
+  animation: dv-indeterminate 1.2s ease-in-out infinite;
+}
+@keyframes dv-indeterminate {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+.dv-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dv-text-tertiary);
+  margin-bottom: 6px;
+}
+
+.dv-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--dv-border-l3);
+  border-top-color: var(--dv-text-secondary);
+  animation: dv-spin 0.8s linear infinite;
+  flex: none;
+}
+@keyframes dv-spin {
+  to { transform: rotate(360deg); }
+}
+
+.dv-loading-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--dv-text-tertiary);
+}
+
+.dv-skeleton {
+  height: 12px;
+  border-radius: var(--dv-radius-xs);
+  background: var(--dv-bg-skeleton);
+  animation: dv-pulse 1.4s ease-in-out infinite;
+}
+@keyframes dv-pulse {
+  50% { opacity: 0.5; }
+}
+
+/* Empty / error states — plain text, no illustration. */
+.dv-state {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dv-text-secondary);
+}
+.dv-state-title {
+  font-size: 14px;
+  color: var(--dv-text);
+}
+.dv-state[data-tone='error'] .dv-state-title {
+  color: var(--dv-danger);
+}
+.dv-state-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* ==========================================================================
+   Details
+   ========================================================================== */
+
+.dv-details {
+  border-radius: var(--dv-radius-md);
+}
+.dv-details > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--dv-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+}
+.dv-details > summary::-webkit-details-marker {
+  display: none;
+}
+.dv-details > summary::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.12s ease;
+}
+.dv-details[open] > summary::before {
+  transform: rotate(45deg);
+}
+.dv-details-body {
+  padding: 4px 0 8px 13px;
+  font-size: 13px;
+  color: var(--dv-text-secondary);
+}
+
+/* ==========================================================================
+   Dialog (confirmation only — the host owns the settings modal frame)
+   ========================================================================== */
+
+.dv-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  /* --dsw-alias-bg-overlay is an opaque surface color (#e9ecf2), not a scrim: it hid
+     the whole Settings modal behind vault dialogs. mask-drop is the host's translucent wash. */
+  background: var(--dsw-alias-bg-mask-drop, rgb(0 0 0 / 0.32));
+}
+
+.dv-dialog {
+  width: min(400px, 100%);
+  background: var(--dv-bg-layer-1);
+  border-radius: var(--dv-radius-xl);
+  border: 1px solid var(--dv-border-l2);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  outline: none;
+}
+
+.dv-dialog-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  color: var(--dv-text);
+}
+
+.dv-dialog-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dv-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.dv-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dv-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dv-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+.dv-kv dt {
+  color: var(--dv-text-tertiary);
+}
+.dv-kv dd {
+  margin: 0;
+  color: var(--dv-text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsh-vault-root *,
+  .dsh-vault-root *::before,
+  .dsh-vault-root *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ==========================================================================
+   Path browser (Browse… dialog)
+   ========================================================================== */
+
+.dv-dialog[data-size='wide'] {
+  width: min(560px, 100%);
+  max-height: calc(100vh - 32px);
+}
+
+.dv-picker-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+.dv-picker-bar .dv-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.dv-picker-list {
+  display: flex;
+  flex-direction: column;
+  height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--dv-border-l2);
+  border-radius: var(--dv-radius-sm);
+  padding: 4px;
+  background: var(--dv-bg-layer-1);
+}
+
+.dv-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--dv-radius-xs);
+  background: transparent;
+  color: var(--dv-text);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+.dv-picker-item:hover:not(:disabled) {
+  background: var(--dv-bg-module);
+}
+.dv-picker-item[data-selected='true'] {
+  background: var(--dv-bg-selected);
+}
+.dv-picker-item:disabled {
+  cursor: default;
+  color: var(--dv-text-caption);
+}
+.dv-picker-item[data-hidden='true'] .dv-picker-name {
+  color: var(--dv-text-tertiary);
+}
+
+.dv-picker-icon {
+  display: inline-flex;
+  flex: none;
+  font-size: 16px;
+  color: var(--dv-text-secondary);
+}
+
+.dv-picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dv-picker-size {
+  flex: none;
+  font-size: 12px;
+  color: var(--dv-text-tertiary);
+}
+
+.dv-picker-empty {
+  padding: 24px 8px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--dv-text-tertiary);
+}
+
+.dv-picker-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Restore results: raw installer log, collapsed under 详情 */
+.dsh-vault-root .dv-details {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--dv-text-tertiary);
+}
+.dsh-vault-root .dv-details > summary {
+  cursor: pointer;
+  width: fit-content;
+  user-select: none;
+}
+.dsh-vault-root .dv-details > summary:focus-visible {
+  outline: var(--dv-focus-width) solid var(--dv-focus);
+  outline-offset: 2px;
+  border-radius: var(--dv-radius-xs);
+}
+.dsh-vault-root .dv-log {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--dv-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  border: 1px solid var(--dv-border-l1);
+  border-radius: var(--dv-radius-sm);
+  background: var(--dv-bg-module);
+  color: var(--dv-text-secondary);
+}
+
+/* Restore preview: collapsible groups (native list look, no decoration) */
+.dsh-vault-root .dv-diff-groups { display: flex; flex-direction: column; gap: 8px; }
+.dsh-vault-root .dv-diff-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dsh-vault-root .dv-diff-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.dsh-vault-root .dv-diff-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--dv-border-l1); border-radius: 8px; overflow: hidden; }
+.dsh-vault-root .dv-diff-group + .dv-diff-group { border-top: 1px solid var(--dv-border-l1); }
+.dsh-vault-root .dv-diff-head { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; color: var(--dv-text); font-size: 13px; }
+.dsh-vault-root .dv-diff-head:hover { background: var(--dv-bg-module); }
+.dsh-vault-root .dv-diff-head:focus-visible { outline: 2px solid var(--dv-border-l4); outline-offset: -2px; }
+.dsh-vault-root .dv-diff-chevron { width: 12px; color: var(--dv-text-tertiary); font-size: 11px; }
+.dsh-vault-root .dv-diff-title { font-weight: 500; flex: 0 0 auto; }
+.dsh-vault-root .dv-diff-body { display: flex; flex-direction: column; gap: 2px; padding: 4px 12px 10px 32px; }
+.dsh-vault-root .dv-diff-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 12px; }
+.dsh-vault-root .dv-diff-row .dv-path { overflow-wrap: anywhere; }
+.dsh-vault-root .dv-diff-badge { color: var(--dv-text-tertiary); font-size: 12px; }
+.dsh-vault-root .dv-diff-row[data-change="add"] .dv-diff-badge { color: var(--dv-ok-label); }
+.dsh-vault-root .dv-diff-row[data-change="change"] .dv-diff-badge { color: var(--dv-warn); }
+.dsh-vault-root .dv-result-list { margin: 6px 0 0; padding-left: 18px; }
+.dsh-vault-root .dv-result-list li { overflow-wrap: anywhere; }
+
+/* Job progress (thin native bar) + restart notice */
+.dsh-vault-root .dv-job { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--dv-border-l1); border-radius: 8px; background: var(--dv-bg-layer-2); }
+.dsh-vault-root .dv-restart-notice { margin: 8px 0 0; font-weight: 500; color: var(--dv-text); }
