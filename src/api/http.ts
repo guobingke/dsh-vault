@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { asVaultUserError, VaultUserError } from '../core/errors.js'
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
 
@@ -34,8 +35,13 @@ export function writeError(res: ServerResponse, error: unknown): void {
     writeJson(res, error.status, error.code ? { error: error.message, code: error.code } : { error: error.message })
     return
   }
-  if (error instanceof Error && error.name === 'VaultDecryptError') {
-    writeJson(res, 400, { error: error.message, code: (error as Error & { code?: string }).code })
+  if (error instanceof VaultUserError) {
+    writeJson(res, error.status, error.code ? { error: error.message, code: error.code } : { error: error.message })
+    return
+  }
+  const mapped = asVaultUserError(error)
+  if (mapped) {
+    writeJson(res, mapped.status, mapped.code ? { error: mapped.message, code: mapped.code } : { error: mapped.message })
     return
   }
   const message = error instanceof Error ? error.message : String(error)

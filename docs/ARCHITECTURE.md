@@ -105,10 +105,12 @@ Each snapshot contains `manifest.json` (schema v1) + `files/**` inside a `.tar.g
 2. Decrypt (if needed) + verify SHA-256 table  
 3. Preview diff (add/change/remove); optional `conflict` + per-path `conflicts` annotate each item with `resolution`  
 4. User picks a global conflict strategy (`keep-current` | `use-backup`) and optional per-path overrides in `conflicts`  
-5. Automatic pre-restore snapshot (local target) for rollback — always the live tree; independent of conflict choices  
-6. Apply files using `resolveItemConflict(path, conflict, conflicts)` (same helper as preview)  
+5. Automatic pre-restore snapshot into **`$DSH_HOME/dsh-vault/rollback/`** (`0700`, target id `local-rollback`) — never the user’s first local/USB target. When the restore would apply credentials, that rollback is encrypted (restore password reused) and includes secrets; otherwise plaintext without secrets  
+6. Apply files using `resolveItemConflict(path, conflict, conflicts)` (same helper as preview); `remove` diffs are informational only  
 7. Attempt `dsh plugin --profile <activeProfile|plugin.profile> add <pkg>` for missing plugins  
 8. Report manual actions (re-enter API keys, re-link `link:` plugins; Desktop failures append bundled-CLI notes)
+
+API responses never echo stored WebDAV/S3/GitHub secrets (`********` placeholder; masked/empty upsert keeps the previous value). User errors map to HTTP 4xx where possible.
 
 ## Storage
 

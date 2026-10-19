@@ -212,7 +212,7 @@ describe('VaultService', () => {
 
       // Re-applying the rollback snapshot with the same map restores the pre-restore tree.
       const rolled = await service.restore({
-        targetId,
+        targetId: result.rollbackTargetId ?? 'local-rollback',
         snapshotId: result.rollbackSnapshotId!,
         conflict: 'use-backup',
         conflicts: { 'settings.yaml': 'keep-current' },

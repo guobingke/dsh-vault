@@ -50,7 +50,7 @@ describe('plugin reinstall (e2e regressions)', () => {
 })
 
 describe('rollback without a local target (e2e regression)', () => {
-  it('auto-creates a local rollback target instead of failing restore', async () => {
+  it('writes rollback into the private folder even when only a remote target exists', async () => {
     const home = await makeTempHome()
     try {
       const service = new VaultService({ dshHome: home.dshHome, agentsHome: home.agentsHome, runPluginInstall: async () => ({ ok: true, detail: 'ok' }) })
@@ -75,7 +75,11 @@ describe('rollback without a local target (e2e regression)', () => {
         await service.upsertTarget({ kind: 'webdav', id: 'dav', label: 'dav', url: `http://127.0.0.1:${port}/`, pathPrefix: 'v' })
         const result = await service.restore({ targetId: 'dav', snapshotId: backup.snapshotId, conflict: 'use-backup', reinstallPlugins: false })
         assert.ok(result.rollbackSnapshotId)
-        assert.ok(service.listTargets().some((t) => t.id === 'local-rollback' && t.kind === 'local'))
+        assert.equal(result.rollbackTargetId, 'local-rollback')
+        // Private rollback folder is not a user-editable storage target.
+        assert.ok(!service.listTargets().some((t) => t.id === 'local-rollback'))
+        const rollbacks = await service.listSnapshots('local-rollback')
+        assert.ok(rollbacks.some((s) => s.id === result.rollbackSnapshotId))
       } finally {
         server.close()
       }

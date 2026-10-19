@@ -168,6 +168,8 @@ export interface RestoreResult {
   applied: string[]
   skipped: string[]
   rollbackSnapshotId?: string
+  /** Storage target id for the private rollback folder (`local-rollback`). */
+  rollbackTargetId?: string
   pluginsReinstalled: string[]
   pluginsFailed: string[]
   manualActions: string[]

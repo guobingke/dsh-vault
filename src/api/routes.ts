@@ -86,15 +86,7 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       if (body.conflict !== undefined && body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
         throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
       }
-      try {
-        writeJson(res, 200, await service.previewRestore(body))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (message.startsWith('conflicts ') || message.startsWith('invalid conflict')) {
-          throw new ApiError(message, 400)
-        }
-        throw error
-      }
+      writeJson(res, 200, await service.previewRestore(body))
     }),
   )
 
@@ -107,15 +99,7 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       if (body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
         throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
       }
-      try {
-        writeJson(res, 200, await service.restore(body))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (message.startsWith('conflicts ') || message.startsWith('invalid conflict')) {
-          throw new ApiError(message, 400)
-        }
-        throw error
-      }
+      writeJson(res, 200, await service.restore(body))
     }),
   )
 

@@ -120,9 +120,9 @@ interface ScheduleConfig {
 
 ### `GET|POST /targets`
 
-- GET → `{ targets: StorageTargetConfig[] }`
+- GET → `{ targets: StorageTargetConfig[] }` (**secrets masked**)
 - POST body → full `StorageTargetConfig` (upsert by `id`)
-- `POST /targets/delete` body `{ id }` → `{ targets }`
+- `POST /targets/delete` body `{ id }` → `{ targets }` (**secrets masked**)
 
 ```ts
 type StorageTargetConfig =
@@ -132,7 +132,15 @@ type StorageTargetConfig =
   | { kind: 's3'; id; label; endpoint; region?; bucket; accessKeyId; secretAccessKey; pathPrefix?; forcePathStyle?; encryptByDefault?: boolean }
 ```
 
-Never render raw `token` / `password` / `secretAccessKey` after save in logs. Mask inputs with `type="password"`.
+**Secret fields in responses** (`token`, `password`, `secretAccessKey`):
+
+- When a secret is stored, GET/POST responses replace it with the placeholder `********` (never the real value).
+- On POST upsert, if the client sends `********`, `""`, or omits the field, the server **keeps the previously stored secret**.
+- Sending a new non-mask string replaces the stored secret.
+- `GET /status` also returns masked targets.
+- Reserved id `local-rollback` is rejected on upsert/delete (private rollback folder; not listed in `/targets`).
+
+Never render raw `token` / `password` / `secretAccessKey` after save in logs. Mask inputs with `type="password"`. Leaving a secret field empty in the UI remains the supported “keep existing” UX (the client may also echo `********` from GET; the server treats that the same).
 
 ### `POST /backup`
 
@@ -254,11 +262,20 @@ Backward compatible: omit `conflict`/`conflicts` and the response matches the pr
   applied: string[]
   skipped: string[]
   rollbackSnapshotId?: string
+  /** Present when a pre-restore rollback was created. Always `local-rollback`. */
+  rollbackTargetId?: string
   pluginsReinstalled: string[]
   pluginsFailed: string[]
   manualActions: string[]
 }
 ```
+
+**Pre-restore rollback**
+
+- Stored only under `$DSH_HOME/dsh-vault/rollback/` (mode `0700`), never on the first user local/USB target.
+- Target id for restore/verify/list of those snapshots: `local-rollback` (not returned from `GET /targets`).
+- When the restore would **apply** credential files, the rollback is encrypted and includes secrets; the restore `password` is reused. If credentials would be overwritten and no password is available → `400` `PASSWORD_REQUIRED`.
+- When credentials are not applied (e.g. `conflicts: { ".credentials.yaml": "keep-current" }`), rollback stays plaintext without secrets.
 
 **Conflict resolution rules** (preview annotations, apply, and later rollback-of-rollback all share this helper):
 
@@ -270,9 +287,25 @@ Backward compatible: omit `conflict`/`conflicts` and the response matches the pr
 | `change` | `use-backup` | yes |
 | `change` | `keep-current` | no (skip) |
 
-Pre-restore rollback snapshots always capture the live tree before apply; conflict choices do not alter what is snapshotted for rollback. Re-applying a rollback snapshot uses the same `conflict` / `conflicts` fields.
+Preview **does** list local-only in-scope files as `change: "remove"` (compared against a live collect of the same categories as the snapshot, including secrets when the snapshot included them). Restore never deletes them unless a future explicit opt-in is added.
+
+Pre-restore rollback snapshots always capture the live tree before apply; conflict choices do not alter what is snapshotted for rollback (except whether secrets are included when credentials would be applied). Re-applying a rollback snapshot uses `rollbackTargetId` + the same `conflict` / `conflicts` fields.
 
 Invalid `conflicts` values → HTTP 400 `{ error }`. Omitting `conflicts` preserves the previous global-only behavior.
+
+### Error mapping (4xx)
+
+User-correctable failures return 4xx with `{ error, code? }` instead of 500:
+
+| Situation | Status | Example `code` |
+|---|---|---|
+| Secrets without encryption | 400 | `SECRETS_REQUIRE_ENCRYPT` |
+| Wrong / missing decrypt password | 400 | `BAD_PASSWORD` / `PASSWORD_REQUIRED` |
+| Missing storage target / snapshot | 404 | `TARGET_NOT_FOUND` / `SNAPSHOT_NOT_FOUND` |
+| Remote auth / missing object (`(401)` / `(403)` / `(404)` in adapter message) | 401 / 403 / 404 | `UNAUTHORIZED` / `FORBIDDEN` / `NOT_FOUND` |
+| Bad config / conflict payload | 400 | `BAD_CONFIG` / `BAD_REQUEST` |
+
+Unknown failures remain 500.
 
 ### `GET|PUT /schedule` and `POST /schedule/run`
 

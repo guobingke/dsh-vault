@@ -1,9 +1,9 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { isBuiltinDshBundle } from './diff.js'
 import { collectBackupFiles } from './collect.js'
-import { normalizeConflicts } from './conflict.js'
+import { normalizeConflicts, resolveItemConflict, shouldApplyChange } from './conflict.js'
 import {
   DEFAULT_SETTINGS,
   defaultLocalTarget,
@@ -13,9 +13,11 @@ import {
   saveTargets,
 } from './config-store.js'
 import { previewRestoreDiff } from './diff.js'
+import { VaultUserError } from './errors.js'
 import {
   resolveAgentsHome,
   resolveDshHome,
+  isSecretRelPath,
   vaultDataDir,
   vaultRollbackDir,
   vaultTempDir,
@@ -31,9 +33,11 @@ import {
 import { snapshotsToDelete } from './retention.js'
 import { applyRestore } from './restore-apply.js'
 import { packSnapshot, unpackSnapshot } from './snapshot-io.js'
+import { maskTargetSecrets, mergeTargetSecrets } from './target-secrets.js'
 import type {
   BackupRequest,
   BackupResult,
+  ConflictStrategy,
   ProgressCallback,
   RestorePreview,
   RestoreRequest,
@@ -41,9 +45,12 @@ import type {
   ScheduleConfig,
   SnapshotInfo,
   StorageTargetConfig,
+  VaultManifest,
   VaultSettings,
 } from './types.js'
+import { LocalStorageAdapter } from '../storage/local.js'
 import { StorageRegistry } from '../storage/index.js'
+import type { StorageAdapter } from '../storage/types.js'
 
 export interface VaultServiceOptions {
   dshHome?: string
@@ -65,6 +72,7 @@ export class VaultService {
   readonly activeProfile: string
   private settings: VaultSettings = DEFAULT_SETTINGS
   private registry: StorageRegistry
+  private rollbackAdapter: LocalStorageAdapter | null = null
   private scheduleTimer: NodeJS.Timeout | null = null
   private readonly dshVersion?: string
   private readonly runPluginInstall: NonNullable<VaultServiceOptions['runPluginInstall']>
@@ -80,14 +88,18 @@ export class VaultService {
   }
 
   async init(): Promise<void> {
-    await mkdir(this.dataDir, { recursive: true })
-    await mkdir(vaultTempDir(this.dataDir), { recursive: true })
-    await mkdir(vaultRollbackDir(this.dataDir), { recursive: true })
+    await mkdir(this.dataDir, { recursive: true, mode: 0o700 })
+    await mkdir(vaultTempDir(this.dataDir), { recursive: true, mode: 0o700 })
+    await this.ensureRollbackDir()
     this.settings = await loadSettings(this.dataDir)
     let targets = await loadTargets(this.dataDir)
+    // Drop a previously-persisted rollback target from user targets.json (now private).
+    targets = targets.filter((t) => t.id !== ROLLBACK_TARGET_ID)
     if (targets.length === 0) {
       const localDir = join(this.dataDir, 'snapshots')
       targets = [defaultLocalTarget(localDir)]
+      await saveTargets(this.dataDir, targets)
+    } else {
       await saveTargets(this.dataDir, targets)
     }
     this.registry = new StorageRegistry(targets, { resolveSecret: this.options.resolveSecret })
@@ -110,31 +122,48 @@ export class VaultService {
     return this.settings
   }
 
+  /** Stored targets with secrets masked for browser/API responses. */
   listTargets(): StorageTargetConfig[] {
+    return this.registry.list().map(maskTargetSecrets)
+  }
+
+  /** Unmasked configs (internal / CLI that already has filesystem access). */
+  listTargetsRaw(): StorageTargetConfig[] {
     return this.registry.list()
   }
 
   async upsertTarget(config: StorageTargetConfig): Promise<StorageTargetConfig[]> {
-    this.registry.upsert(config)
+    if (config.id === ROLLBACK_TARGET_ID) {
+      throw new VaultUserError('local-rollback is a reserved private target', 400, 'BAD_CONFIG')
+    }
+    const existing = this.registry.list().find((t) => t.id === config.id)
+    const merged = mergeTargetSecrets(config, existing)
+    this.registry.upsert(merged)
     const targets = this.registry.list()
     await saveTargets(this.dataDir, targets)
-    return targets
+    return targets.map(maskTargetSecrets)
   }
 
   async removeTarget(id: string): Promise<StorageTargetConfig[]> {
+    if (id === ROLLBACK_TARGET_ID) {
+      throw new VaultUserError('local-rollback is a reserved private target', 400, 'BAD_CONFIG')
+    }
     this.registry.remove(id)
     const targets = this.registry.list()
     await saveTargets(this.dataDir, targets)
-    return targets
+    return targets.map(maskTargetSecrets)
   }
 
   async backup(req: BackupRequest, onProgress?: ProgressCallback): Promise<BackupResult> {
+    if (req.targetId === ROLLBACK_TARGET_ID) {
+      throw new VaultUserError('cannot backup to the private rollback folder; use a normal storage target', 400, 'BAD_CONFIG')
+    }
     const targetConfig = this.registry.list().find((t) => t.id === req.targetId)
-    if (!targetConfig) throw new Error(`storage target not found: ${req.targetId}`)
+    if (!targetConfig) throw new VaultUserError(`storage target not found: ${req.targetId}`, 404, 'TARGET_NOT_FOUND')
     const encrypt = Boolean(req.encrypt ?? targetConfig.encryptByDefault)
     const includeSecrets = Boolean(req.includeSecrets)
     if (includeSecrets && !encrypt) {
-      throw new Error('secrets may only be included when encryption is enabled')
+      throw new VaultUserError('secrets may only be included when encryption is enabled', 400, 'SECRETS_REQUIRE_ENCRYPT')
     }
     onProgress?.({ phase: 'collect', message: 'Collecting dsh setup', percent: 5 })
     const { files, plugins } = await collectBackupFiles({
@@ -155,7 +184,7 @@ export class VaultService {
       onProgress,
     })
     onProgress?.({ phase: 'upload', message: 'Uploading snapshot', percent: 85 })
-    const adapter = this.registry.get(req.targetId)
+    const adapter = this.adapterFor(req.targetId)
     const { remoteKey } = await adapter.put(packed.snapshotId, packed.bytes)
     await this.applyRetention(req.targetId)
     onProgress?.({ phase: 'done', message: 'Backup complete', percent: 100 })
@@ -171,22 +200,29 @@ export class VaultService {
   }
 
   async listSnapshots(targetId?: string): Promise<SnapshotInfo[]> {
+    if (targetId === ROLLBACK_TARGET_ID) {
+      return this.ensureRollbackAdapter().list()
+    }
     const ids = targetId ? [targetId] : this.registry.list().map((t) => t.id)
     const all: SnapshotInfo[] = []
     for (const id of ids) {
-      const adapter = this.registry.get(id)
+      const adapter = this.adapterFor(id)
       const list = await adapter.list()
       all.push(...list)
+    }
+    if (!targetId) {
+      // Include private rollback snapshots when listing everything.
+      all.push(...(await this.ensureRollbackAdapter().list()))
     }
     return all.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
   }
 
   async deleteSnapshot(targetId: string, snapshotId: string): Promise<void> {
-    await this.registry.get(targetId).delete(snapshotId)
+    await this.adapterFor(targetId).delete(snapshotId)
   }
 
   async verify(targetId: string, snapshotId: string, password?: string): Promise<{ ok: true; manifestId: string }> {
-    const bytes = await this.registry.get(targetId).get(snapshotId)
+    const bytes = await this.adapterFor(targetId).get(snapshotId)
     const unpacked = await unpackSnapshot(bytes, password)
     return { ok: true, manifestId: unpacked.manifest.id }
   }
@@ -196,13 +232,19 @@ export class VaultService {
       conflict?: RestoreRequest['conflict']
     },
   ): Promise<RestorePreview> {
-    const bytes = await this.registry.get(req.targetId).get(req.snapshotId)
+    const bytes = await this.adapterFor(req.targetId).get(req.snapshotId)
     const unpacked = await unpackSnapshot(bytes, req.password)
     const conflicts = normalizeConflicts(req.conflicts)
+    const { files: liveFiles } = await collectBackupFiles({
+      dshHome: this.dshHome,
+      agentsHome: this.agentsHome,
+      includeSecrets: unpacked.manifest.includeSecrets,
+    })
     return previewRestoreDiff({
       manifest: unpacked.manifest,
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
+      currentScopedPaths: liveFiles.map((f) => f.relPath),
       conflict: req.conflict,
       conflicts,
     })
@@ -210,22 +252,45 @@ export class VaultService {
 
   async restore(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
     onProgress?.({ phase: 'download', message: 'Downloading snapshot', percent: 5 })
-    const bytes = await this.registry.get(req.targetId).get(req.snapshotId)
+    const bytes = await this.adapterFor(req.targetId).get(req.snapshotId)
     const unpacked = await unpackSnapshot(bytes, req.password, onProgress)
     const conflicts = normalizeConflicts(req.conflicts)
+    const includeSecrets = req.includeSecrets ?? unpacked.manifest.includeSecrets
 
     let rollbackSnapshotId: string | undefined
+    let rollbackTargetId: string | undefined
     if (req.createRollbackSnapshot !== false) {
-      // Rollback always captures the pre-restore live tree (independent of conflict choices).
-      // Applying that rollback later uses the same conflict resolution rules.
+      const willTouchSecrets = await this.restoreWillApplySecrets(
+        unpacked.manifest,
+        req.conflict,
+        conflicts,
+        includeSecrets,
+      )
       onProgress?.({ phase: 'pack', message: 'Creating pre-restore rollback snapshot', percent: 25 })
-      const rb = await this.backup({
-        targetId: await ensureLocalRollbackTarget(this),
-        encrypt: false,
-        includeSecrets: false,
-        notes: `pre-restore rollback for ${req.snapshotId}`,
-      })
-      rollbackSnapshotId = rb.snapshotId
+      if (willTouchSecrets) {
+        if (!req.password) {
+          throw new VaultUserError(
+            'password required to create an encrypted pre-restore rollback that includes credentials (reuse the restore password)',
+            400,
+            'PASSWORD_REQUIRED',
+          )
+        }
+        rollbackSnapshotId = await this.createPrivateRollbackSnapshot({
+          includeSecrets: true,
+          encrypt: true,
+          password: req.password,
+          notes: `pre-restore rollback for ${req.snapshotId}`,
+          onProgress,
+        })
+      } else {
+        rollbackSnapshotId = await this.createPrivateRollbackSnapshot({
+          includeSecrets: false,
+          encrypt: false,
+          notes: `pre-restore rollback for ${req.snapshotId}`,
+          onProgress,
+        })
+      }
+      rollbackTargetId = ROLLBACK_TARGET_ID
     }
 
     const result = await applyRestore({
@@ -235,10 +300,11 @@ export class VaultService {
       agentsHome: this.agentsHome,
       conflict: req.conflict,
       conflicts,
-      includeSecrets: req.includeSecrets ?? unpacked.manifest.includeSecrets,
+      includeSecrets,
       rollbackSnapshotId,
       onProgress,
     })
+    result.rollbackTargetId = rollbackTargetId
 
     if (req.reinstallPlugins !== false) {
       onProgress?.({ phase: 'reinstall', message: 'Reinstalling missing plugins', percent: 90 })
@@ -350,14 +416,15 @@ export class VaultService {
   }
 
   private async applyRetention(targetId: string): Promise<void> {
+    if (targetId === ROLLBACK_TARGET_ID) return
     const policy = this.settings.schedule.targetId === targetId
       ? this.settings.schedule.retention
       : this.settings.retention
-    const list = await this.registry.get(targetId).list()
+    const list = await this.adapterFor(targetId).list()
     const toDelete = snapshotsToDelete(list, policy)
     for (const id of toDelete) {
       try {
-        await this.registry.get(targetId).delete(id)
+        await this.adapterFor(targetId).delete(id)
       } catch {
         // ignore individual delete failures
       }
@@ -395,6 +462,103 @@ export class VaultService {
       recentSnapshots,
     }
   }
+
+  private adapterFor(targetId: string): StorageAdapter {
+    if (targetId === ROLLBACK_TARGET_ID) return this.ensureRollbackAdapter()
+    try {
+      return this.registry.get(targetId)
+    } catch {
+      throw new VaultUserError(`storage target not found: ${targetId}`, 404, 'TARGET_NOT_FOUND')
+    }
+  }
+
+  private async ensureRollbackDir(): Promise<string> {
+    const dir = vaultRollbackDir(this.dataDir)
+    await mkdir(dir, { recursive: true, mode: 0o700 })
+    try {
+      await chmod(dir, 0o700)
+    } catch {
+      // Windows may ignore mode; best-effort.
+    }
+    return dir
+  }
+
+  private ensureRollbackAdapter(): LocalStorageAdapter {
+    if (!this.rollbackAdapter) {
+      const directory = vaultRollbackDir(this.dataDir)
+      this.rollbackAdapter = new LocalStorageAdapter({
+        kind: 'local',
+        id: ROLLBACK_TARGET_ID,
+        label: 'Private rollback',
+        directory,
+      })
+    }
+    return this.rollbackAdapter
+  }
+
+  /**
+   * Write a pre-restore snapshot into the private 0700 rollback folder under DSH_HOME.
+   * Never uses a user-configured local target (USB/sync folders).
+   */
+  private async createPrivateRollbackSnapshot(input: {
+    includeSecrets: boolean
+    encrypt: boolean
+    password?: string
+    notes: string
+    onProgress?: ProgressCallback
+  }): Promise<string> {
+    await this.ensureRollbackDir()
+    if (input.includeSecrets && !input.encrypt) {
+      throw new VaultUserError('rollback secrets require encryption', 400, 'SECRETS_REQUIRE_ENCRYPT')
+    }
+    if (input.encrypt && !input.password) {
+      throw new VaultUserError('password required for encrypted rollback', 400, 'PASSWORD_REQUIRED')
+    }
+    const { files, plugins } = await collectBackupFiles({
+      dshHome: this.dshHome,
+      agentsHome: this.agentsHome,
+      includeSecrets: input.includeSecrets,
+    })
+    const packed = await packSnapshot({
+      files,
+      plugins,
+      includeSecrets: input.includeSecrets,
+      encrypt: input.encrypt,
+      password: input.password,
+      kdf: this.settings.preferredKdf,
+      dshVersion: this.dshVersion,
+      notes: input.notes,
+      onProgress: input.onProgress,
+    })
+    await this.ensureRollbackAdapter().put(packed.snapshotId, packed.bytes)
+    return packed.snapshotId
+  }
+
+  private async restoreWillApplySecrets(
+    manifest: VaultManifest,
+    conflict: ConflictStrategy,
+    conflicts: ReturnType<typeof normalizeConflicts>,
+    includeSecrets: boolean,
+  ): Promise<boolean> {
+    if (!includeSecrets && !manifest.includeSecrets) return false
+    const allowSecrets = includeSecrets || manifest.includeSecrets
+    if (!allowSecrets) return false
+    const preview = await previewRestoreDiff({
+      manifest,
+      dshHome: this.dshHome,
+      agentsHome: this.agentsHome,
+      conflict,
+      conflicts,
+    })
+    for (const item of preview.items) {
+      const meta = manifest.files.find((f) => f.path === item.path)
+      const secret = Boolean(meta?.secret) || isSecretRelPath(item.path)
+      if (!secret) continue
+      const strategy = item.resolution ?? resolveItemConflict(item.path, conflict, conflicts)
+      if (shouldApplyChange(item.change, strategy)) return true
+    }
+    return false
+  }
 }
 
 /** Minimum schedule interval enforced by the timer (and reflected in nextRunAt). */
@@ -405,22 +569,8 @@ export function effectiveIntervalMs(intervalMinutes: number): number {
   return Math.max(MIN_SCHEDULE_MINUTES, Number(intervalMinutes) || 0) * 60_000
 }
 
-/** Id of the local target auto-created for rollback snapshots when none exists. */
+/** Id of the private local rollback folder (not a user-editable storage target). */
 export const ROLLBACK_TARGET_ID = 'local-rollback'
-
-async function ensureLocalRollbackTarget(service: VaultService): Promise<string> {
-  const existing = service.listTargets().find((t) => t.kind === 'local')
-  if (existing) return existing.id
-  // Fresh machine with only remote targets: keep rollback snapshots under the
-  // vault data dir instead of failing the whole restore.
-  await service.upsertTarget({
-    kind: 'local',
-    id: ROLLBACK_TARGET_ID,
-    label: 'Rollback snapshots',
-    directory: vaultRollbackDir(service.dataDir),
-  })
-  return ROLLBACK_TARGET_ID
-}
 
 async function defaultPluginInstall(spec: string, profile: string, dshHome?: string): Promise<{ ok: boolean; detail: string }> {
   return new Promise((resolve) => {
