@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
+import type { ConflictMap } from './conflict.js'
+import { resolveItemConflict } from './conflict.js'
 import { categoryForRelPath } from './collect.js'
 import { joinRel } from './paths.js'
-import type { DiffItem, PluginRecord, RestorePreview, VaultManifest } from './types.js'
+import type { ConflictStrategy, DiffItem, PluginRecord, RestorePreview, VaultManifest } from './types.js'
 
 async function currentSha(abs: string): Promise<string | undefined> {
   try {
@@ -22,9 +24,14 @@ export async function previewRestoreDiff(input: {
   agentsHome: string
   /** Relative paths currently present that are in scope (optional; when omitted only backup paths are considered for remove). */
   currentScopedPaths?: string[]
+  /** When set, each item is annotated with its resolved conflict strategy. */
+  conflict?: ConflictStrategy
+  /** Optional per-path overrides for `conflict`. */
+  conflicts?: ConflictMap
 }): Promise<RestorePreview> {
   const items: DiffItem[] = []
   const backupPaths = new Set(input.manifest.files.map((f) => f.path))
+  const annotate = input.conflict !== undefined
 
   for (const file of input.manifest.files) {
     const abs = resolveLivePath(file.path, input.dshHome, input.agentsHome)
@@ -33,23 +40,31 @@ export async function previewRestoreDiff(input: {
     if (!cur) change = 'add'
     else if (cur === file.sha256) change = 'unchanged'
     else change = 'change'
-    items.push({
+    const item: DiffItem = {
       path: file.path,
       category: file.category,
       change,
       currentSha256: cur,
       backupSha256: file.sha256,
-    })
+    }
+    if (annotate) {
+      item.resolution = resolveItemConflict(file.path, input.conflict!, input.conflicts)
+    }
+    items.push(item)
   }
 
   for (const path of input.currentScopedPaths ?? []) {
     if (backupPaths.has(path)) continue
-    items.push({
+    const item: DiffItem = {
       path,
       category: categoryForRelPath(path),
       change: 'remove',
       currentSha256: await currentSha(resolveLivePath(path, input.dshHome, input.agentsHome)),
-    })
+    }
+    if (annotate) {
+      item.resolution = resolveItemConflict(path, input.conflict!, input.conflicts)
+    }
+    items.push(item)
   }
 
   const added = items.filter((i) => i.change === 'add').length
@@ -75,6 +90,12 @@ export async function previewRestoreDiff(input: {
     unchanged,
     pluginsToReinstall,
     manualActions,
+    ...(annotate
+      ? {
+          conflict: input.conflict,
+          ...(input.conflicts ? { conflicts: input.conflicts } : {}),
+        }
+      : {}),
   }
 }
 

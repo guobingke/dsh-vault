@@ -84,4 +84,70 @@ describe('VaultService', () => {
     )
     assert.deepEqual(ids, ['a'])
   })
+
+  it('honors per-path conflicts with global fallback (preview + apply)', async () => {
+    const home = await makeTempHome()
+    try {
+      const service = new VaultService({
+        dshHome: home.dshHome,
+        agentsHome: home.agentsHome,
+        runPluginInstall: async () => ({ ok: true, detail: 'ok' }),
+      })
+      await service.init()
+      const targetId = service.listTargets()[0]!.id
+
+      const backup = await service.backup({ targetId })
+      // Mutate two files so both show as "change"
+      await writeFile(join(home.dshHome, 'settings.yaml'), 'theme: light\n')
+      await writeFile(join(home.dshHome, 'mcp.json'), JSON.stringify({ servers: { demo: { command: 'changed' } } }))
+
+      const preview = await service.previewRestore({
+        targetId,
+        snapshotId: backup.snapshotId,
+        conflict: 'use-backup',
+        conflicts: { 'settings.yaml': 'keep-current' },
+      })
+      const settingsItem = preview.items.find((i) => i.path === 'settings.yaml')
+      const mcpItem = preview.items.find((i) => i.path === 'mcp.json')
+      assert.equal(settingsItem?.change, 'change')
+      assert.equal(settingsItem?.resolution, 'keep-current')
+      assert.equal(mcpItem?.change, 'change')
+      assert.equal(mcpItem?.resolution, 'use-backup') // global fallback
+      assert.equal(preview.conflict, 'use-backup')
+      assert.deepEqual(preview.conflicts, { 'settings.yaml': 'keep-current' })
+
+      const result = await service.restore({
+        targetId,
+        snapshotId: backup.snapshotId,
+        conflict: 'use-backup',
+        conflicts: { 'settings.yaml': 'keep-current' },
+        createRollbackSnapshot: true,
+        reinstallPlugins: false,
+      })
+      assert.ok(result.rollbackSnapshotId)
+      assert.ok(result.skipped.includes('settings.yaml'))
+      assert.ok(result.applied.includes('mcp.json'))
+      assert.match(await readFile(join(home.dshHome, 'settings.yaml'), 'utf8'), /light/)
+      assert.match(await readFile(join(home.dshHome, 'mcp.json'), 'utf8'), /echo/)
+
+      // Re-applying the rollback snapshot with the same map restores the pre-restore tree.
+      const rolled = await service.restore({
+        targetId,
+        snapshotId: result.rollbackSnapshotId!,
+        conflict: 'use-backup',
+        conflicts: { 'settings.yaml': 'keep-current' },
+        createRollbackSnapshot: false,
+        reinstallPlugins: false,
+      })
+      // settings was keep-current during original restore (stayed light); rollback snapshot
+      // also has light settings, so it may be unchanged/skipped — mcp was restored to echo,
+      // rollback has "changed", so use-backup reapplies "changed".
+      assert.ok(rolled.applied.includes('mcp.json') || rolled.skipped.includes('mcp.json'))
+      assert.match(await readFile(join(home.dshHome, 'mcp.json'), 'utf8'), /changed/)
+
+      service.stopSchedule()
+    } finally {
+      await home.cleanup()
+    }
+  })
 })

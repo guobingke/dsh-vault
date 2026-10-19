@@ -83,17 +83,26 @@ export function buildVaultTools(service: VaultService): VaultToolDef[] {
     },
     {
       name: 'dsh_vault_restore_preview',
-      description: 'Preview what a restore would add/change/remove without applying it.',
+      description: 'Preview what a restore would add/change/remove without applying it. Optional conflict/conflicts annotate each item with its resolved strategy.',
       parameters: {
         targetId: { type: 'string', required: true },
         snapshotId: { type: 'string', required: true },
         password: { type: 'string', description: 'Password if the snapshot is encrypted' },
+        conflict: { type: 'string', enum: ['keep-current', 'use-backup'], description: 'Global default used to annotate item resolutions' },
+        conflicts: { type: 'object', description: 'Optional map of path -> keep-current|use-backup overrides' },
       },
       async execute(args) {
+        const conflict = args.conflict === 'keep-current' || args.conflict === 'use-backup'
+          ? args.conflict
+          : undefined
         const preview = await service.previewRestore({
           targetId: String(args.targetId),
           snapshotId: String(args.snapshotId),
           password: typeof args.password === 'string' ? args.password : undefined,
+          conflict,
+          conflicts: typeof args.conflicts === 'object' && args.conflicts !== null
+            ? args.conflicts as Record<string, 'keep-current' | 'use-backup'>
+            : undefined,
         })
         return {
           snapshotId: preview.snapshotId,
@@ -103,17 +112,20 @@ export function buildVaultTools(service: VaultService): VaultToolDef[] {
           unchanged: preview.unchanged,
           pluginsToReinstall: preview.pluginsToReinstall.map((p) => p.name),
           manualActions: preview.manualActions,
+          conflict: preview.conflict,
+          conflicts: preview.conflicts,
           items: preview.items.slice(0, 100),
         }
       },
     },
     {
       name: 'dsh_vault_restore',
-      description: 'Restore a dsh-vault snapshot after preview. Creates a pre-restore rollback snapshot by default.',
+      description: 'Restore a dsh-vault snapshot after preview. Creates a pre-restore rollback snapshot by default. Optional conflicts map overrides the global conflict per path.',
       parameters: {
         targetId: { type: 'string', required: true },
         snapshotId: { type: 'string', required: true },
         conflict: { type: 'string', required: true, enum: ['keep-current', 'use-backup'] },
+        conflicts: { type: 'object', description: 'Optional map of path -> keep-current|use-backup overrides' },
         password: { type: 'string' },
         reinstallPlugins: { type: 'boolean' },
       },
@@ -123,6 +135,9 @@ export function buildVaultTools(service: VaultService): VaultToolDef[] {
           targetId: String(args.targetId),
           snapshotId: String(args.snapshotId),
           conflict,
+          conflicts: typeof args.conflicts === 'object' && args.conflicts !== null
+            ? args.conflicts as Record<string, 'keep-current' | 'use-backup'>
+            : undefined,
           password: typeof args.password === 'string' ? args.password : undefined,
           reinstallPlugins: args.reinstallPlugins !== false,
         })

@@ -71,10 +71,10 @@ Each snapshot contains `manifest.json` (schema v1) + `files/**` inside a `.tar.g
 
 1. Download snapshot from any target  
 2. Decrypt (if needed) + verify SHA-256 table  
-3. Preview diff (add/change/remove)  
-4. User picks conflict strategy: `keep-current` | `use-backup`  
-5. Automatic pre-restore snapshot (local target) for rollback  
-6. Apply files  
+3. Preview diff (add/change/remove); optional `conflict` + per-path `conflicts` annotate each item with `resolution`  
+4. User picks a global conflict strategy (`keep-current` | `use-backup`) and optional per-path overrides in `conflicts`  
+5. Automatic pre-restore snapshot (local target) for rollback — always the live tree; independent of conflict choices  
+6. Apply files using `resolveItemConflict(path, conflict, conflicts)` (same helper as preview)  
 7. Attempt `dsh plugin --profile <name> add <pkg>` for missing plugins  
 8. Report manual actions (re-enter API keys, re-link `link:` plugins)
 
