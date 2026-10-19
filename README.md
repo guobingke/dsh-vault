@@ -133,6 +133,7 @@ When the plugin is loaded in that profile:
 5. Apply files, then reinstall missing plugins via the **host `pluginManager`** when available, else Desktop’s bundled `dsh` / `pnpm install` in the profile (npm-global `dsh` refuses `--profile desktop`)  
 6. Per-plugin result list (`installed` / `already-present` / `failed` with reason). Restore reports **not OK** (HTTP 409) if any plugin failed; restart Desktop when prompted  
 7. Local `link:`/`file:` plugins are bundled into `plugin-sources/` when the source folder exists at backup time
+8. npm / GitHub plugins also pack a fallback copy of the installed package; if that exact version is later unpublished, restore installs the backup copy and reports **Installed from backup**. Plugins referenced only in `cordis.patch.yml` (not in `package.json`) are detected too
 
 ## Develop
 

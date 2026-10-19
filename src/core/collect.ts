@@ -14,6 +14,10 @@ import { isRemoteNonRegistrySpec, parseLocalSpec, resolveLocalSpecPath } from '.
 import { homeExcludeReason, isPluginDataRoot, isSecretPath, walkHome } from './home-scope.js'
 import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord } from './types.js'
 
+function isBuiltinDshBundle(name: string): boolean {
+  return name.startsWith('@deepseek-ai/dsh-') || name === '@deepseek-ai/dsh'
+}
+
 async function fileShaAndData(abs: string): Promise<{ size: number; sha256: string; data: Buffer }> {
   const data = await readFile(abs)
   const sha256 = createHash('sha256').update(data).digest('hex')
@@ -199,6 +203,19 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     }
   }
 
+  // Also pick up plugins that are installed / referenced only in cordis (e.g. dsh-vscode-bridge
+  // in cordis.patch.yml but not in package.json dependencies).
+  const profileNames = new Set<string>()
+  for (const f of files) {
+    const m = f.relPath.match(/^profiles\/([^/]+)\//)
+    if (m) profileNames.add(m[1]!)
+  }
+  for (const profileName of profileNames) {
+    for (const p of await extractPluginsFromNodeModules(join(dshHome, 'profiles', profileName), profileName)) {
+      if (!plugins.some((x) => x.name === p.name && x.profile === p.profile)) plugins.push(p)
+    }
+  }
+
   // Record the exact installed version so machine 2 gets the same one, not just the range.
   for (const plugin of plugins) {
     if (!plugin.profile || parseLocalSpec(plugin.version ?? plugin.source)) continue
@@ -263,22 +280,52 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     }
   }
 
-  // git / GitHub / tarball-URL plugins: remember machine 1's exact locked tarball and bundle
-  // the installed copy, so machine 2 can install without git — or after the repo is gone.
+  // Registry / github plugins: pack the installed copy as a fallback when that exact version
+  // is later unpublished (or git is unavailable). Nested node_modules are skipped by walkFiles.
   if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {
     const locks = new Map<string, Record<string, string>>()
     for (const plugin of plugins) {
-      if (!plugin.profile || !isRemoteNonRegistrySpec(plugin.version ?? plugin.source)) continue
-      if (!locks.has(plugin.profile)) locks.set(plugin.profile, await lockedVersions(join(dshHome, 'profiles', plugin.profile)))
-      const locked = locks.get(plugin.profile)![plugin.name]
-      if (locked && /^https?:\/\//.test(locked)) plugin.lockedTarball = locked
-      const installed = await installedPackageDir(join(dshHome, 'profiles', plugin.profile), plugin.name)
+      if (!plugin.profile || isBuiltinDshBundle(plugin.name)) continue
+      // Local file:/link: already have a primary bundledSource (or will fail with a clear reason).
+      if (plugin.bundledSource) continue
+      if (parseLocalSpec(plugin.version ?? plugin.source)?.kind === 'path') continue
+      if (parseLocalSpec(plugin.version ?? plugin.source)?.kind === 'unsupported') continue
+
+      const profileDir = join(dshHome, 'profiles', plugin.profile)
+      if (isRemoteNonRegistrySpec(plugin.version ?? plugin.source)) {
+        if (!locks.has(plugin.profile)) locks.set(plugin.profile, await lockedVersions(profileDir))
+        const locked = locks.get(plugin.profile)![plugin.name]
+        if (locked && /^https?:\/\//.test(locked)) plugin.lockedTarball = locked
+      }
+      if (plugin.fallbackBundle) continue
+      const installed = await installedPackageDir(profileDir, plugin.name)
       if (!installed) continue
       const rel = bundledSourceRel(plugin.profile, plugin.name)
       const before = files.length
       await walkFiles(installed, rel, 'plugins', false, files)
-      if (files.some((f, i) => i >= before && f.relPath === `${rel}/package.json`)) plugin.fallbackBundle = rel
-      else files.length = before
+      if (!files.some((f, i) => i >= before && f.relPath === `${rel}/package.json`)) {
+        files.length = before
+        continue
+      }
+      plugin.fallbackBundle = rel
+      const meta = {
+        name: plugin.name,
+        version: plugin.installedVersion ?? plugin.version ?? null,
+        originalSpec: plugin.source,
+        bundledFrom: 'installed' as const,
+        note: 'Fallback copy for when the registry/git no longer has this exact version',
+      }
+      const data = Buffer.from(`${JSON.stringify(meta, null, 2)}\n`, 'utf8')
+      const sha256 = createHash('sha256').update(data).digest('hex')
+      files.push({
+        absPath: join(installed, '.dsh-vault-bundle.json'),
+        relPath: `${rel}/.dsh-vault-bundle.json`,
+        category: 'plugins',
+        secret: false,
+        size: data.length,
+        sha256,
+        data,
+      })
     }
   }
 
@@ -319,6 +366,67 @@ async function isFile(p: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+
+/** Top-level packages in a profile's node_modules that look like dsh plugins. */
+export async function extractPluginsFromNodeModules(
+  profileDir: string,
+  profileName: string,
+): Promise<PluginRecord[]> {
+  const nm = join(profileDir, 'node_modules')
+  let entries
+  try {
+    entries = await readdir(nm, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const names: string[] = []
+  for (const e of entries) {
+    if (!e.isDirectory() && !e.isSymbolicLink()) continue
+    if (e.name.startsWith('.')) continue
+    if (e.name.startsWith('@')) {
+      let scoped
+      try {
+        scoped = await readdir(join(nm, e.name), { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const s of scoped) {
+        if (s.isDirectory() || s.isSymbolicLink()) names.push(`${e.name}/${s.name}`)
+      }
+    } else {
+      names.push(e.name)
+    }
+  }
+  const out: PluginRecord[] = []
+  for (const name of names) {
+    if (isBuiltinDshBundle(name)) continue
+    try {
+      const pkg = JSON.parse(await readFile(join(nm, ...name.split('/'), 'package.json'), 'utf8')) as {
+        name?: string
+        version?: string
+        keywords?: string[]
+        dsh?: unknown
+      }
+      const keywords = pkg.keywords ?? []
+      const isPlugin =
+        Boolean(pkg.dsh) ||
+        keywords.includes('dsh-plugin') ||
+        keywords.includes('dsh-plugins')
+      if (!isPlugin) continue
+      out.push({
+        name,
+        version: typeof pkg.version === 'string' ? pkg.version : undefined,
+        source: typeof pkg.version === 'string' ? `npm:${name}@${pkg.version}` : name,
+        profile: profileName,
+        installedVersion: typeof pkg.version === 'string' ? pkg.version : undefined,
+      })
+    } catch {
+      // not a package
+    }
+  }
+  return out
 }
 
 /** Real directory of an installed package in a profile, if any. */

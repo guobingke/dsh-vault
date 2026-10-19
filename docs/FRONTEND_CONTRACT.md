@@ -287,7 +287,7 @@ Backward compatible: omit `conflict`/`conflicts` and the response matches the pr
   rollbackTargetId?: string
   pluginsReinstalled: string[]
   pluginsFailed: string[]
-  pluginResults?: Array<{ name: string; profile: string; status: 'installed' | 'already-present' | 'failed' | 'skipped'; detail: string }>
+  pluginResults?: Array<{ name: string; profile: string; status: 'installed' | 'installed-from-backup' | 'already-present' | 'failed' | 'skipped'; detail: string }>
   ok?: boolean
   restartRequired?: boolean
   manualActions: string[]

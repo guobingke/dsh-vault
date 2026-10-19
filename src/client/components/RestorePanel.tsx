@@ -629,7 +629,7 @@ export function RestorePanel({
 }
 
 
-const STATUS_TONE = { installed: 'ok', 'already-present': 'ok', failed: 'danger', skipped: 'neutral' } as const
+const STATUS_TONE = { installed: 'ok', 'installed-from-backup': 'warn', 'already-present': 'ok', failed: 'danger', skipped: 'neutral' } as const
 
 /** Per-plugin outcome of the last restore — a failure is never folded into "success". */
 function PluginResults({
@@ -656,6 +656,9 @@ function PluginResults({
         ) : undefined}
       />
       <div className="dv-card-sep" aria-hidden="true" />
+      {rows.some((r) => r.status === 'installed-from-backup') ? (
+        <p className="dv-small dv-muted" style={{ margin: '0 0 8px', padding: '0 4px' }}>{tr('restore.legend.fromBackup')}</p>
+      ) : null}
       <ul className="dv-list" aria-label={tr('restore.resultTitle')}>
         {rows.map((r) => {
           const raw = pluginRawDetail(r, tr)

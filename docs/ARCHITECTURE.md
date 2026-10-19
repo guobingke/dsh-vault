@@ -109,6 +109,7 @@ Each snapshot contains `manifest.json` (schema v1) + `files/**` inside a `.tar.g
 6. Apply files using `resolveItemConflict(path, conflict, conflicts)` (same helper as preview); `remove` diffs are informational only  
 7. Attempt `dsh plugin --profile <activeProfile|plugin.profile> add <pkg>` for missing plugins  
 8. Report manual actions (re-enter API keys, re-link `link:` plugins; Desktop failures append bundled-CLI notes)
+9. npm/GitHub plugins pack a fallback copy under `plugin-sources/`; if that exact version is later unpublished, restore installs it and reports `installed-from-backup`
 
 API responses never echo stored WebDAV/S3/GitHub secrets (`********` placeholder; masked/empty upsert keeps the previous value). User errors map to HTTP 4xx where possible.
 

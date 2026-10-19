@@ -56,7 +56,10 @@ export interface PluginRecord {
   /** Snapshot-relative directory when a link:/file: plugin tree was bundled into the archive. */
   /** git/GitHub/URL plugins: machine 1's resolved tarball from pnpm-lock.yaml (no git needed). */
   lockedTarball?: string
-  /** git/GitHub/URL plugins: snapshot-relative copy of the installed package, used when the remote fails. */
+  /**
+   * Snapshot-relative copy of the installed package (npm or github:), used when the
+   * registry/git no longer has that exact version. Excludes nested node_modules.
+   */
   fallbackBundle?: string
   bundledSource?: string
   /** Original local source on the source machine, resolved to an absolute path (`link:C:/…`, `file:/…/x.tgz`). */
@@ -203,7 +206,7 @@ export interface RestoreRequest {
   includeSecrets?: boolean
 }
 
-export type PluginInstallStatus = 'installed' | 'already-present' | 'failed' | 'skipped'
+export type PluginInstallStatus = 'installed' | 'installed-from-backup' | 'already-present' | 'failed' | 'skipped'
 
 export type PluginFailureReasonCode =
   | 'local-source-missing'

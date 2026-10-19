@@ -448,7 +448,7 @@ export class VaultService {
   ): Promise<void> {
     const { results, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only })
     result.pluginResults = results
-    result.pluginsReinstalled = results.filter((r) => r.status === 'installed').map((r) => r.name)
+    result.pluginsReinstalled = results.filter((r) => r.status === 'installed' || r.status === 'installed-from-backup').map((r) => r.name)
     result.pluginsFailed = results.filter((r) => r.status === 'failed').map((r) => r.name)
     result.restartRequired = restartRequired || results.some((r) => r.status === 'installed')
   }

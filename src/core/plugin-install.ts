@@ -18,7 +18,7 @@ import { DESKTOP_PROFILE, installCommandForProfile } from './profiles.js'
 import type { PluginRecord } from './types.js'
 import { expandUserPath } from './win-paths.js'
 
-export type PluginInstallStatus = 'installed' | 'already-present' | 'failed' | 'skipped'
+export type PluginInstallStatus = 'installed' | 'installed-from-backup' | 'already-present' | 'failed' | 'skipped'
 
 export interface PluginInstallResult {
   name: string
@@ -692,19 +692,22 @@ async function installViaDshCli(
   return { ok: false, detail }
 }
 
-/** github:/git plugins when the spec itself failed (no git, repo gone, offline GitHub). */
-async function installGitFallback(
+/**
+ * When the registry/git cannot supply the exact version, install machine 1's copy from
+ * the snapshot (locked tarball first, then the packed plugin-sources/ directory).
+ */
+async function installFromBackupFallback(
   plugin: PluginRecord,
   profileDir: string,
   deps: PluginInstallDeps,
-): Promise<{ ok: boolean; detail: string }> {
+): Promise<{ ok: boolean; detail: string; fromBackup: boolean }> {
   const logs: string[] = []
   const pnpm = await resolvePnpm(deps)
   if (plugin.lockedTarball) {
     const r = await runPnpm(deps, pnpm, ['add', `${plugin.name}@${plugin.lockedTarball}`], profileDir)
-    if (r.ok) {
+    if (r.ok || (await pluginPackagePresent(deps.dshHome, plugin.profile ?? 'web', plugin.name))) {
       await ensureBundleListed(profileDir, plugin.name)
-      return { ok: true, detail: `installed machine 1's locked tarball ${plugin.lockedTarball}` }
+      return { ok: true, detail: `installed machine 1's locked tarball ${plugin.lockedTarball}${plugin.installedVersion ? ` @${plugin.installedVersion}` : ''}`, fromBackup: true }
     }
     logs.push(`locked tarball: ${r.detail}`)
   }
@@ -712,15 +715,27 @@ async function installGitFallback(
     const abs = join(deps.dshHome, ...plugin.fallbackBundle.split('/'))
     if (await pathExists(join(abs, 'package.json'))) {
       const r = await runPnpm(deps, pnpm, ['add', `link:${specPath(abs)}`], profileDir)
-      if (r.ok) {
+      const present = await pluginPackagePresent(deps.dshHome, plugin.profile ?? 'web', plugin.name)
+      if (r.ok || present) {
         await ensureBundleListed(profileDir, plugin.name)
         const d = await installBundledSourceDeps(abs, deps)
-        return { ok: d.ok, detail: d.ok ? `installed the copy from the backup (${plugin.fallbackBundle})` : d.detail }
+        if (!d.ok) return { ok: false, detail: d.detail, fromBackup: false }
+        return {
+          ok: true,
+          detail: `installed from backup copy (${plugin.fallbackBundle}); registry version unavailable${plugin.installedVersion ? ` @${plugin.installedVersion}` : ''}`,
+          fromBackup: true,
+        }
       }
       logs.push(`backup copy: ${r.detail}`)
+    } else {
+      logs.push(`backup copy missing: ${abs}`)
     }
   }
-  return { ok: false, detail: logs.join('\n\n') || 'no locked tarball or backup copy for this git plugin' }
+  return { ok: false, detail: logs.join('\n\n') || 'no backup copy for this plugin', fromBackup: false }
+}
+
+function registryOrGitUnavailable(detail: string): boolean {
+  return /ERR_PNPM_NO_MATCHING_VERSION|No matching version found|ERR_PNPM_FETCH_404|E404|is not in the npm registry|404 Not Found|Not Found - 404|spawn git ENOENT|git-missing|Command failed with ENOENT: git|不是内部或外部命令.*git|Repository not found|could not read Username|fatal:.*repository/i.test(detail)
 }
 
 async function installSpecFor(plugin: PluginRecord, dshHome: string): Promise<{ spec: string; kind: 'npm' | 'link' | 'git' | 'other' }> {
@@ -1007,13 +1022,6 @@ export async function reinstallMissingPlugins(
       if (ok) how = viaPnpm.ok ? viaPnpm.detail : 'present after pnpm add'
       else logs.push(viaPnpm.ok ? 'pnpm add exited 0 but the package is not in node_modules' : viaPnpm.detail)
     }
-    // b2) git/GitHub plugins: machine 1's locked tarball (no git needed), then the copy in the backup.
-    if (!ok && kind === 'git') {
-      const fb = await installGitFallback(plugin, profileDir, deps)
-      ok = await pluginPackagePresent(deps.dshHome, profile, plugin.name)
-      if (ok) how = fb.detail
-      else logs.push(fb.detail)
-    }
     // c) dsh CLI (Desktop-bundled carrier first).
     if (!ok) {
       const viaCli = await installViaDshCli(spec, profile, deps)
@@ -1021,11 +1029,39 @@ export async function reinstallMissingPlugins(
       if (ok) how = viaCli.ok ? viaCli.detail : 'present after CLI attempt'
       else logs.push(viaCli.ok ? 'dsh plugin add exited 0 but the package is not in node_modules' : viaCli.detail)
     }
+    // d) Exact version unpublished / git missing: install the copy packed at backup time.
+    let fromBackup = false
+    if (!ok && (plugin.fallbackBundle || plugin.lockedTarball)) {
+      const soFar = logs.join('\n')
+      const classified = classifyInstallFailure(soFar, ownPathsOf(plugin, deps.dshHome), plugin.name)
+      const fetchFail =
+        registryOrGitUnavailable(soFar) ||
+        classified.reason === 'registry-not-found' ||
+        classified.reason === 'git-missing' ||
+        classified.reason === 'git-unavailable' ||
+        classified.reason === 'network'
+      if (fetchFail) {
+        const fb = await installFromBackupFallback(plugin, profileDir, deps)
+        ok = fb.ok || (await pluginPackagePresent(deps.dshHome, profile, plugin.name))
+        if (ok) {
+          how = fb.detail
+          fromBackup = true
+        } else {
+          logs.push(fb.detail)
+        }
+      }
+    }
     // A failed attempt must not leave stray entries (e.g. a link named after a folder).
     if (!ok && manifestBefore) await writeManifest(profileDir, manifestBefore)
 
     if (ok) {
-      results.push({ name: plugin.name, profile, status: 'installed', detail: how, source: plugin.source })
+      results.push({
+        name: plugin.name,
+        profile,
+        status: fromBackup ? 'installed-from-backup' : 'installed',
+        detail: how,
+        source: plugin.source,
+      })
       done.add(key(profile, plugin.name))
       restartRequired = true
     } else {

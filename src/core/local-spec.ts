@@ -137,7 +137,7 @@ export function classifyInstallFailure(detail: string, ownPaths: string[] = [], 
   if (gitRepo && /ERR_PNPM_FETCH_404|404|Repository not found|could not read Username|Authentication failed|exit code 128|fatal:/i.test(text)) {
     return { reason: 'git-unavailable', subject: gitRepo, summary: `the git repository is not reachable: ${gitRepo}` }
   }
-  if (/ERR_PNPM_FETCH_404|E404|is not in the npm registry|404 Not Found|Not Found - 404/i.test(text)) {
+  if (/ERR_PNPM_NO_MATCHING_VERSION|No matching version found|npm ERR! 404|ERR_PNPM_FETCH_404|E404|is not in the npm registry|404 Not Found|Not Found - 404/i.test(text)) {
     const pkg = firstMatch(text, /GET https?:\/\/[^/\s]+\/([^\s:]+)/) ?? name
     let subject = pkg
     try { subject = pkg ? decodeURIComponent(pkg) : pkg } catch { /* keep */ }

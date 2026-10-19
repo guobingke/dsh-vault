@@ -331,7 +331,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                         ...(restoreResult ?? r),
                         pluginResults: rows,
                         pluginsFailed: rows.filter((row) => row.status === 'failed').map((row) => row.name),
-                        pluginsReinstalled: rows.filter((row) => row.status === 'installed').map((row) => row.name),
+                        pluginsReinstalled: rows.filter((row) => row.status === 'installed' || row.status === 'installed-from-backup').map((row) => row.name),
                         restartRequired: Boolean(restoreResult?.restartRequired || r.restartRequired),
                         ok: rows.every((row) => row.status !== 'failed'),
                         manualActions: r.manualActions,

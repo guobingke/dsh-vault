@@ -105,7 +105,7 @@ Windows 路径示例：`D:\Backups\dsh`、`C:\Users\张三\Documents\vault.dshva
 - 已配置存储位置中的快照；或
 - **导入路径**：另一台机器拷来的快照文件夹，或单个归档文件——**无需先创建存储位置**。
 
-恢复会把 `profiles/desktop`（及当前主机活跃 profile）的插件、MCP、技能、设置等写回，并尝试用 **运行中 Host 的 pluginManager**（其次 Desktop 自带的 `dsh`、`pnpm install`）按记录版本安装缺失插件。本地 `link:` / `file:` 插件若源目录在本机不存在，结果里会标明失败原因；备份时若源目录存在会打进归档的 `plugin-sources/`。任一插件失败时恢复结果为**不成功**（HTTP 409），请按列表处理后重启 Desktop。
+恢复会把 `profiles/desktop`（及当前主机活跃 profile）的插件、MCP、技能、设置等写回，并尝试用 **运行中 Host 的 pluginManager**（其次 Desktop 自带的 `dsh`、`pnpm install`）按记录版本安装缺失插件。本地 `link:` / `file:` 插件若源目录在本机不存在，结果里会标明失败原因；备份时若源目录存在会打进归档的 `plugin-sources/`。 npm / GitHub 插件也会把本机已装副本打进 `plugin-sources/`：若恢复时注册表已无该精确版本（例如被下架），会自动改用备份副本，结果标为「已从备份安装」。cordis.patch.yml 里引用、但 package.json 未列出的插件（如 dsh-vscode-bridge）同样会检测并打包。任一插件失败时恢复结果为**不成功**（HTTP 409），请按列表处理后重启 Desktop。
 
 ### CLI / 工具
 

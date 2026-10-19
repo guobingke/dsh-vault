@@ -46,6 +46,9 @@ function pluginOkText(row: PluginInstallResultRow, t: Translate): string {
   const v = /@(\S+)\s*$/.exec(d)
   const version = v ? ` @${v[1]}` : ''
   if (row.status === 'already-present' || /^already/.test(d)) return t('restore.ok.present', { version })
+  if (row.status === 'installed-from-backup' || /installed from backup|registry version unavailable|locked tarball/i.test(d)) {
+    return t('restore.ok.fromBackup', { version })
+  }
   if (row.status === 'installed') return t('restore.ok.installed', { version })
   return d
 }
