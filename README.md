@@ -1,153 +1,204 @@
-# dsh-vault
+<div align="center">
 
-Backup and restore your whole [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) setup — plugins, MCP servers, skills, settings/providers, agent presets, profile patches, and global instructions — then one-click import when you reinstall, reset a profile, or move machines.
+# dsh-vault · 大肥鱼备份
 
-Works with **`dsh web` and DeepSeek Harness Desktop** (same Settings UI / host APIs; install once per profile).
+Back up your whole DeepSeek Harness (`dsh`) setup and bring it back on another machine: same plugins, same versions, same config.
 
-中文说明见 [README.zh-CN.md](./README.zh-CN.md).
+**English** · [简体中文](./README.zh-CN.md)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+![dsh](https://img.shields.io/badge/dsh-Desktop%20%2B%20web-555)
+
+<img src="docs/screenshots/overview-dark.png" width="760" alt="大肥鱼备份 overview in dsh Settings">
+
+</div>
+
+## Why
+
+Moving `dsh` to a new computer usually means reinstalling a dozen plugins by hand, guessing which versions you had, re-adding MCP servers, copying skills and presets around, and re-entering model providers. Some plugins come from GitHub forks or local folders and won't install the same way twice.
+
+dsh-vault turns that into: back up on the old machine, restore on the new one, restart.
+
+It lives inside dsh as a Settings page (**Settings → 大肥鱼备份**), works in both DeepSeek Harness Desktop and `dsh web`, and ships a CLI that works even when the dsh UI won't start.
+
+## Features
+
+- **Whole `$DSH_HOME` backup** with sensible excludes (`node_modules`, caches, logs, chat history). Run `dsh-vault excludes` to see the exact list.
+- **Same-version plugin reinstall.** Plugins are reinstalled from their original spec (npm version, `github:` ref, `link:` path) using Desktop's bundled pnpm, so you don't need Node or pnpm installed system-wide.
+- **Plugin copies.** The installed package of each plugin can be saved into the snapshot as a fallback, for when a version gets unpublished, a GitHub repo disappears, or a local folder doesn't exist on the new machine. You choose per plugin; plugins that most likely need a copy are flagged.
+- **Storage:** local folder (plain `.tar.gz` or AES-256-GCM encrypted `.dshvault`), a private GitHub repo, WebDAV (e.g. 坚果云/Nextcloud), and S3-compatible storage (S3, R2, MinIO, OSS).
+- **Single-file export** to a USB drive or any folder, and import from any folder or file without configuring a target first.
+- **Diff preview before restore**, grouped and collapsible, with per-file conflict choices.
+- **Rollback snapshot** taken automatically before every restore.
+- **Real progress** for backup, restore and plugin installation.
+- **Retry failed plugins** without rewriting your config.
+- **Auto backup** on a schedule.
+- **Chat history and workspaces are deliberately not migrated.** They're large, machine-specific, and contain absolute paths.
+- Windows, macOS and Linux.
+
+## Screenshots
+
+| Backup: choose which plugins get a saved copy | Storage targets |
+|---|---|
+| <img src="docs/screenshots/backup-plugin-copies.png" alt="Backup page with plugin copy list"> | <img src="docs/screenshots/storage-targets.png" alt="Storage targets"> |
+| **Restore: diff preview** | **Restore in progress** |
+| <img src="docs/screenshots/restore-diff-groups.png" alt="Restore diff preview"> | <img src="docs/screenshots/restore-progress.png" alt="Restore progress bar"> |
+| **After restore** | **Built-in folder browser** |
+| <img src="docs/screenshots/restore-complete.png" alt="Restore summary with restart notice"> | <img src="docs/screenshots/folder-browser.png" alt="Folder browser"> |
+
+Light theme follows dsh: [overview-light.png](docs/screenshots/overview-light.png).
 
 ## Install
 
-Requires Node `^22.19.0 || >=24` (same floor as dsh).
+Requires Node `^22.19.0 || >=24` to build (the same floor as dsh).
 
-### DeepSeek Harness Desktop (recommended if you use the app)
-
-Desktop owns the reserved profile `$DSH_HOME/profiles/desktop`. Plugin activation is **not** shared with `web`.
-
-1. Launch Desktop once (creates the profile), then **fully quit** it.
-2. Install with **Desktop’s bundled** `dsh` (Tray → Terminal, or the `dsh` / `dsh.cmd` shipped next to the app). npm-global `dsh` refuses `--profile desktop`.
+### DeepSeek Harness Desktop
 
 ```bash
-dsh plugin --profile desktop add dsh-vault
+git clone https://github.com/guobingke/dsh-vault.git
+cd dsh-vault
+npm install
+npm run build
 ```
 
-3. Reopen Desktop → **Settings → 大肥鱼备份**.
+Then open Desktop → **Plugins** and add it by path:
 
-Alternatively, while Desktop is running: **Plugins** → add `dsh-vault` (same Web Plugin Manager).
+```
+link:/absolute/path/to/dsh-vault
+```
 
-Local checkout:
+Or, with Desktop fully quit, use Desktop's bundled `dsh` (Tray → Terminal):
 
 ```bash
 dsh plugin --profile desktop add link:/absolute/path/to/dsh-vault
 ```
 
-### Browser / `dsh web`
+The npm-global `dsh` refuses `--profile desktop`; use the one that ships with Desktop. Restart Desktop and open **Settings → 大肥鱼备份**.
+
+To update later: `git pull`, `npm run build`, restart Desktop.
+
+### `dsh web`
 
 ```bash
-dsh plugin --profile web add dsh-vault
-# local checkout:
 dsh plugin --profile web add link:/absolute/path/to/dsh-vault
 ```
 
-Restart `dsh web`, then open **Settings → 大肥鱼备份**.
+Restart `dsh web`. Profiles don't share plugins, so install into each profile you use. `dsh-vault setup --dry-run` prints the commands for your machine.
 
-### Both surfaces
+### CLI only
 
-Profiles do not share plugins. Install into each profile you use:
+After building, the CLI is `node lib/cli/index.js` (or `npm link` to get `dsh-vault` on your PATH). It reads `$DSH_HOME` directly and doesn't need dsh to be running.
+
+## Moving to a new machine
+
+**Old machine**
+
+1. Settings → 大肥鱼备份 → **备份**.
+2. Pick a destination: a USB folder, export to a single file, or a GitHub/WebDAV/S3 target.
+3. Tick **加密** if you also want API keys and credentials included.
+4. Check the plugin copy list. Keep copies for anything installed from GitHub or a local folder.
+
+**New machine**
+
+1. Install DeepSeek Harness Desktop, open it once, quit.
+2. Install dsh-vault as above.
+3. Settings → 大肥鱼备份 → **恢复**. Choose the snapshot, or point it at the folder/file you copied over.
+4. Click **预览差异**, review the changes, then **恢复**.
+5. When it says 恢复已全部完成, fully quit Desktop and reopen it.
+
+If a plugin failed (offline, registry blocked), click **重试失败的插件** once the network is fixed.
+
+CLI equivalent:
 
 ```bash
-dsh plugin --profile web add dsh-vault
-dsh plugin --profile desktop add dsh-vault   # Desktop's bundled dsh; see above
+# old machine
+dsh-vault backup --to-file /media/usb/dsh.dshvault --encrypt --secrets --password '…'
+# new machine
+dsh-vault restore --from /media/usb/dsh.dshvault --password '…' --profile all
 ```
 
-Or print / run a guided plan:
+## What gets backed up
 
-```bash
-npx dsh-vault setup --dry-run
-npx dsh-vault setup --profile web
-npx dsh-vault setup --profile desktop
+| Item | Backed up | Notes |
+|---|---|---|
+| Plugin list with exact specs and versions | Yes | Every profile's `package.json` |
+| Plugin config | Yes | `cordis.patch.yml` per profile |
+| Plugin package copies | Optional | Per-plugin choice |
+| MCP servers | Yes | `mcp.json`, `mcp/` |
+| Skills | Yes | `$DSH_HOME/skills` and `$DSH_AGENTS_HOME/skills` |
+| Settings and model providers | Yes | `settings.yaml` |
+| Agent presets | Yes | |
+| Global instructions | Yes | `AGENTS.md` |
+| API keys and credentials | Encrypted backups only | Needs `--secrets` with `--encrypt` |
+| `node_modules` | No | Reinstalled at the recorded versions |
+| Chat history | No | Intentional |
+| Workspaces | No | Intentional; they hold machine-specific paths |
+| Caches and logs | No | |
+| dsh-vault's own targets and snapshots | No | Targets hold credentials; re-add per machine |
+
+## Security
+
+- Credentials are never written to a plain backup. They're included only when you both encrypt and opt in to secrets.
+- Encryption is AES-256-GCM with a key derived from your password (scrypt by default). The password isn't stored anywhere; lose it and the snapshot can't be opened.
+- Storage target settings and tokens (GitHub, WebDAV, S3) stay on the machine and are never put in a snapshot. Re-add targets on the new machine, or restore from a file/folder.
+- The settings page never sends stored passwords or tokens back to the browser.
+- Each snapshot carries a manifest with SHA-256 checksums. `dsh-vault verify` checks them.
+
+## CLI reference
+
 ```
-
-### Standalone CLI
-
-Works even if the UI will not start (shared `$DSH_HOME` data on Windows / macOS / Linux):
-
-```bash
-npm install -g dsh-vault   # or: npx dsh-vault
+dsh-vault setup [--profile web|desktop|all] [--package <spec>] [--dry-run]
+dsh-vault backup [--target <id> | --to-file <path>] [--encrypt] [--password <pass>] [--secrets]
+                 [--no-plugin-copies] [--no-copy <profile:name>]... [--save-copy-choice]
+dsh-vault plugins [--no-registry] [--json]
+dsh-vault plugins --copy all|none | --exclude <profile:name>... | --include <profile:name>...
+                  [--restore-order source-first|copy-first]
+dsh-vault restore <snapshotId> [--target <id>] [--password <pass>] [--keep|--use-backup]
+                  [--plugin-order source-first|copy-first]
+dsh-vault restore --from <file> [--profile desktop|web|all] [--dsh-desktop-dir <dir>]
+                  [--password <pass>] [--no-plugins]
+dsh-vault retry-plugins
+dsh-vault diff <homeA> <homeB> [--agents-a <dir>] [--agents-b <dir>] [--secrets] [--json]
+dsh-vault installers [--dsh-desktop-dir <dir>]
+dsh-vault excludes
+dsh-vault list [--target <id>]
+dsh-vault verify <snapshotId> [--target <id>] [--password <pass>]
 dsh-vault status
 ```
 
-## What is backed up
+Global options: `--home <path>` uses a different `$DSH_HOME` (the agents root moves to `<home>/../.agents` unless you pass `--agents-home <dir>`), which makes sandboxed test restores easy.
 
-| Included | Notes |
-|---|---|
-| Installed plugins (name / version / source) + their config | From each profile’s `package.json` + `cordis.patch.yml` (incl. `desktop` / `web`) |
-| MCP servers | `mcp.json` / `mcp/**` |
-| Skills | `$DSH_HOME/skills` and `$DSH_AGENTS_HOME/skills` |
-| Settings & model providers | `settings.yaml` + profile patches |
-| Agent presets | `.agent-presets/**` |
-| Profile patches | `profiles/**` (skips `node_modules`) |
-| Global instructions | `AGENTS.md` |
-| Credentials / API keys | **Excluded by default**; only inside an encrypted snapshot when you opt in |
+`restore` exits with code 2 when files were restored but a plugin failed to install. `diff` exits with 1 when the homes differ. `installers` shows which node, pnpm, git and dsh a restore would use.
 
-Excluded: `node_modules`, caches, and other reinstallable artifacts. Every snapshot carries a schema-versioned manifest with SHA-256 checksums.
+## FAQ
 
-Paths follow `$DSH_HOME` / `$DSH_AGENTS_HOME` (default `~/.dsh` and `~/.agents` on all OSes; Desktop and CLI share this home for product data).
+**A plugin shows 包不可用 after restore.**
+Desktop loads plugins at startup. Fully quit Desktop (from the tray, not just the window) and reopen it.
 
-## Storage targets
+**dsh-purge (or a similar plugin) isn't doing anything on the new machine.**
+Some plugins apply their settings only when you press **应用** in their own page. Open it and press 应用 once.
 
-All implement one `StorageAdapter` interface:
+**GitHub targets or `github:` plugins time out in mainland China.**
+Configure a proxy, e.g. `git config --global http.proxy http://127.0.0.1:7897`, or set `HTTPS_PROXY` before starting dsh. A saved plugin copy also lets the restore skip GitHub entirely.
 
-1. **Local** — folder of `.tar.gz` (plain) or `.dshvault` (encrypted)
-2. **Local encrypted** — password-based scrypt (default) or argon2id + AES-256-GCM
-3. **GitHub** — push/list/pull snapshots in a private repo (token from dsh credentials / `GITHUB_TOKEN`)
-4. **Cloud** — WebDAV and S3-compatible (S3 / R2 / MinIO / OSS-style endpoints)
+**Can I restore onto a machine that already has a dsh setup?**
+Yes. The diff preview shows what will change, you choose per conflict, and a rollback snapshot is taken first.
 
-Encryption can be toggled for remote targets too (`encryptByDefault` or per-backup).
+## Contributing
 
-## Quick usage
-
-### Settings UI (web + Desktop)
-
-**Settings → 大肥鱼备份**: Dashboard / Backup / Restore / Storage / Snapshots / Settings.
-
-Desktop embeds the shared Web UI; the plugin’s browser half declares `dsh.client.platform: "web"` (required for Desktop as well).
-
-**Backup destinations (per run):** a configured storage target, **any local folder** (USB / synced drive / Windows `D:\…`), or **export to a single portable archive** (`.tar.gz` / `.dshvault`).
-
-**Restore sources:** a configured snapshot, or **import from any folder/file** (no target required). Windows cmd: use full paths or `%USERPROFILE%` — not `~`.
-
-### CLI
-
-```bash
-dsh-vault backup --target local-default
-dsh-vault backup --encrypt --password '…' --secrets
-dsh-vault list
-dsh-vault verify vault-20261019T025600Z-abc123 --password '…'
-dsh-vault restore vault-20261019T025600Z-abc123 --use-backup
-```
-
-### Model tools / slash command
-
-When the plugin is loaded in that profile:
-
-- Tools: `dsh_vault_status`, `dsh_vault_backup`, `dsh_vault_list`, `dsh_vault_restore_preview`, `dsh_vault_restore`
-- Slash: `/vault status|backup|list|restore …`
-
-## Restore flow
-
-1. Pick a snapshot from a target **or** an import path (folder / `.tar.gz` / `.dshvault`)  
-2. Preview diff (add / change / remove)  
-3. Choose global conflict policy and optional per-path `conflicts`  
-4. Automatic pre-restore rollback snapshot  
-5. Apply files, then reinstall missing plugins via the **host `pluginManager`** when available, else Desktop’s bundled `dsh` / `pnpm install` in the profile (npm-global `dsh` refuses `--profile desktop`)  
-6. Per-plugin result list (`installed` / `already-present` / `failed` with reason). Restore reports **not OK** (HTTP 409) if any plugin failed; restart Desktop when prompted  
-7. Local `link:`/`file:` plugins are bundled into `plugin-sources/` when the source folder exists at backup time
-8. npm / GitHub plugins also pack a fallback copy of the installed package; if that exact version is later unpublished, restore installs the backup copy and reports **Installed from backup**. Plugins referenced only in `cordis.patch.yml` (not in `package.json`) are detected too
-
-## Develop
+Issues and pull requests are welcome.
 
 ```bash
 npm install
-npm test
+npm test        # needs Node 24
 npm run build
 ```
 
-Docs:
+Architecture notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the UI contract is in [docs/FRONTEND_CONTRACT.md](docs/FRONTEND_CONTRACT.md).
 
-- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — backend layout, Desktop notes & limitations  
-- [docs/FRONTEND_CONTRACT.md](./docs/FRONTEND_CONTRACT.md) — API/UI contract for a later visual pass  
+If dsh-vault saved you an afternoon of reinstalling plugins, a star helps others find it.
 
 ## License
 
-MIT
+[MIT](./LICENSE) © 2026 dsh-vault contributors

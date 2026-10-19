@@ -55,7 +55,7 @@ async function readText(path: string): Promise<string | null> {
 }
 
 /** Every plugin in every profile: package.json deps, cordis.patch.yml inserts, node_modules plugins. */
-export async function detectProfilePlugins(dshHome: string): Promise<Array<PluginRecord & { cordisOnly: boolean; installed: boolean }>> {
+export async function detectProfilePlugins(dshHome: string): Promise<Array<PluginRecord & { cordisOnly: boolean; installed: boolean; localVersion?: string }>> {
   const profilesDir = join(dshHome, 'profiles')
   let profiles: string[] = []
   try {
@@ -66,7 +66,7 @@ export async function detectProfilePlugins(dshHome: string): Promise<Array<Plugi
   } catch {
     return []
   }
-  const out: Array<PluginRecord & { cordisOnly: boolean; installed: boolean }> = []
+  const out: Array<PluginRecord & { cordisOnly: boolean; installed: boolean; localVersion?: string }> = []
   for (const profile of profiles) {
     const dir = join(profilesDir, profile)
     const recs: Array<PluginRecord & { cordisOnly: boolean }> = []
@@ -90,12 +90,16 @@ export async function detectProfilePlugins(dshHome: string): Promise<Array<Plugi
     for (const r of recs) {
       if (isBuiltinDshBundle(r.name)) continue
       let installed = false
+      let installedLocal: string | undefined
       try {
         const v = (JSON.parse(await readFile(join(dir, 'node_modules', ...r.name.split('/'), 'package.json'), 'utf8')) as { version?: unknown }).version
         installed = true
-        if (typeof v === 'string' && v && !parseLocalSpec(r.version ?? r.source)) r.installedVersion = v
+        if (typeof v === 'string' && v) {
+          if (!parseLocalSpec(r.version ?? r.source)) r.installedVersion = v
+          else installedLocal = v
+        }
       } catch { /* not installed */ }
-      out.push({ ...r, installed })
+      out.push({ ...r, installed, ...(installedLocal ? { localVersion: installedLocal } : {}) })
     }
   }
   return out
@@ -174,7 +178,8 @@ export async function listDetectedPlugins(dshHome: string, lookup?: RegistryLook
       name: r.name,
       profile: r.profile ?? 'web',
       kind,
-      version: r.installedVersion ?? r.version,
+      // Local specs (link:/file:) show the installed package version, not the path.
+      version: r.installedVersion ?? r.localVersion ?? (kind === 'local' ? undefined : r.version),
       cordisOnly: r.cordisOnly,
       installed: r.installed,
       registry,

@@ -380,10 +380,22 @@ export class VaultService {
     }
     const ids = targetId ? [targetId] : this.registry.list().map((t) => t.id)
     const all: SnapshotInfo[] = []
-    for (const id of ids) {
-      const adapter = this.adapterFor(id)
-      const list = await adapter.list()
-      all.push(...list)
+    if (targetId) {
+      all.push(...(await this.adapterFor(targetId).list()))
+    } else {
+      // Listing everything: one unreachable remote (bad token, offline WebDAV/S3) must not
+      // hide the other targets' snapshots or break the overview.
+      const lists = await Promise.all(ids.map(async (id) => {
+        try {
+          return await Promise.race([
+            this.adapterFor(id).list(),
+            new Promise<SnapshotInfo[]>((_, rej) => setTimeout(() => rej(new Error('timeout')), 10_000).unref?.()),
+          ])
+        } catch {
+          return []
+        }
+      }))
+      for (const l of lists) all.push(...l)
     }
     if (!targetId) {
       // Include private rollback snapshots when listing everything.
