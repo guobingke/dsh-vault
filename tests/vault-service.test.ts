@@ -134,14 +134,19 @@ describe('VaultService', () => {
         `- insert:\n    - id: example-missing-plugin\n      name: 'example-missing-plugin'\n`,
       )
 
-      const installs: Array<{ spec: string; profile: string }> = []
+      const pluginAdds: Array<{ command: string; args: string[] }> = []
       const service = new VaultService({
         dshHome: home.dshHome,
         agentsHome: home.agentsHome,
         activeProfile: 'desktop',
-        runPluginInstall: async (spec, profile) => {
-          installs.push({ spec, profile })
-          return { ok: false, detail: 'simulated desktop carrier missing' }
+        runPluginInstall: async (command, args) => {
+          if (args.includes('add') || command === 'pnpm') {
+            pluginAdds.push({ command, args })
+          }
+          // pnpm materialize succeeds but does not create the missing package;
+          // CLI carriers refuse / fail so the plugin stays failed.
+          if (command === 'pnpm') return { ok: true, detail: 'ok', code: 0 }
+          return { ok: false, detail: 'The desktop profile is managed exclusively by the Electron app', code: 1 }
         },
       })
       await service.init()
@@ -155,10 +160,10 @@ describe('VaultService', () => {
         createRollbackSnapshot: false,
         reinstallPlugins: true,
       })
-      assert.ok(installs.length >= 1)
-      assert.ok(installs.every((i) => i.profile === 'desktop'))
+      assert.ok(pluginAdds.some((i) => i.args.includes('--profile') && i.args.includes('desktop')))
       assert.ok(result.pluginsFailed.includes('example-missing-plugin'))
-      assert.ok(result.manualActions.some((m) => /bundled|Desktop|quit|Plugins/i.test(m)))
+      assert.equal(result.ok, false)
+      assert.ok(result.manualActions.some((m) => /bundled|Desktop|quit|Plugins|Electron|restart/i.test(m)))
       service.stopSchedule()
     } finally {
       await home.cleanup()

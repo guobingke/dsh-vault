@@ -1,7 +1,5 @@
-import { chmod, mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { spawn } from 'node:child_process'
-import { isBuiltinDshBundle } from './diff.js'
+import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import { collectBackupFiles } from './collect.js'
 import { normalizeConflicts, resolveItemConflict, shouldApplyChange } from './conflict.js'
 import {
@@ -14,6 +12,7 @@ import {
 } from './config-store.js'
 import { previewRestoreDiff } from './diff.js'
 import { VaultUserError } from './errors.js'
+import { isSnapshotArchiveName, listDirectory } from './fs-browse.js'
 import {
   resolveAgentsHome,
   resolveDshHome,
@@ -24,16 +23,21 @@ import {
 } from './paths.js'
 import {
   DESKTOP_PROFILE,
-  installCommandForProfile,
   listInitializedGuiProfiles,
   multiProfileInstallPlan,
   resolveActiveProfile,
   WEB_PROFILE,
 } from './profiles.js'
+import {
+  reinstallMissingPlugins,
+  type PluginInstallDeps,
+  type PluginManagerLike,
+} from './plugin-install.js'
 import { snapshotsToDelete } from './retention.js'
 import { applyRestore } from './restore-apply.js'
 import { packSnapshot, unpackSnapshot } from './snapshot-io.js'
 import { maskTargetSecrets, mergeTargetSecrets } from './target-secrets.js'
+import { expandUserPath } from './win-paths.js'
 import type {
   BackupRequest,
   BackupResult,
@@ -48,6 +52,7 @@ import type {
   VaultManifest,
   VaultSettings,
 } from './types.js'
+import { ARCHIVE_EXTENSION, ENCRYPTED_EXTENSION } from './types.js'
 import { LocalStorageAdapter } from '../storage/local.js'
 import { StorageRegistry } from '../storage/index.js'
 import type { StorageAdapter } from '../storage/types.js'
@@ -60,8 +65,16 @@ export interface VaultServiceOptions {
   /** Override active profile (defaults to $DSH_PROFILE / desktop|web). */
   activeProfile?: string
   resolveSecret?: (ref: string) => Promise<string | undefined>
-  /** Override plugin install command runner (for tests). */
-  runPluginInstall?: (spec: string, profile: string, dshHome?: string) => Promise<{ ok: boolean; detail: string }>
+  /** In-process dsh pluginManager (preferred on Desktop / web hosts). */
+  pluginManager?: PluginManagerLike | null
+  /** Preferred pnpm binary for profile materialization. */
+  pnpmCommand?: string
+  /** Preferred npm registry (China mainland mirror by default when unset). */
+  preferredRegistry?: string | null
+  /** Native OS directory picker from host directoryPicker (optional). */
+  pickDirectory?: () => Promise<string | null>
+  /** Override plugin install runner (tests). */
+  runPluginInstall?: PluginInstallDeps['runCommand']
 }
 
 export class VaultService {
@@ -75,7 +88,11 @@ export class VaultService {
   private rollbackAdapter: LocalStorageAdapter | null = null
   private scheduleTimer: NodeJS.Timeout | null = null
   private readonly dshVersion?: string
-  private readonly runPluginInstall: NonNullable<VaultServiceOptions['runPluginInstall']>
+  private pluginManager: PluginManagerLike | null
+  private readonly pnpmCommand?: string
+  private preferredRegistry: string | null | undefined
+  private pickDirectoryFn?: () => Promise<string | null>
+  private readonly runCommand?: PluginInstallDeps['runCommand']
 
   constructor(private readonly options: VaultServiceOptions = {}) {
     this.dshHome = options.dshHome ?? resolveDshHome()
@@ -84,7 +101,29 @@ export class VaultService {
     this.activeProfile = options.activeProfile ?? resolveActiveProfile()
     this.dshVersion = options.dshVersion
     this.registry = new StorageRegistry([], { resolveSecret: options.resolveSecret })
-    this.runPluginInstall = options.runPluginInstall ?? defaultPluginInstall
+    this.pluginManager = options.pluginManager ?? null
+    this.pnpmCommand = options.pnpmCommand
+    this.preferredRegistry = options.preferredRegistry
+    this.pickDirectoryFn = options.pickDirectory
+    this.runCommand = options.runPluginInstall
+  }
+
+  /** Hot-bind host services that may activate after the vault plugin. */
+  setPluginManager(manager: PluginManagerLike | null): void {
+    this.pluginManager = manager
+  }
+
+  setPickDirectory(fn: (() => Promise<string | null>) | undefined): void {
+    this.pickDirectoryFn = fn
+  }
+
+  async listFs(path: string) {
+    return listDirectory(path)
+  }
+
+  async pickDirectory(): Promise<string | null> {
+    if (!this.pickDirectoryFn) return null
+    return this.pickDirectoryFn()
   }
 
   async init(): Promise<void> {
@@ -158,9 +197,18 @@ export class VaultService {
     if (req.targetId === ROLLBACK_TARGET_ID) {
       throw new VaultUserError('cannot backup to the private rollback folder; use a normal storage target', 400, 'BAD_CONFIG')
     }
-    const targetConfig = this.registry.list().find((t) => t.id === req.targetId)
-    if (!targetConfig) throw new VaultUserError(`storage target not found: ${req.targetId}`, 404, 'TARGET_NOT_FOUND')
-    const encrypt = Boolean(req.encrypt ?? targetConfig.encryptByDefault)
+    const exportFile = req.exportFile?.trim() ? expandUserPath(req.exportFile.trim()) : undefined
+    const directory = req.directory?.trim() ? expandUserPath(req.directory.trim()) : undefined
+    if (!req.targetId && !exportFile && !directory) {
+      throw new VaultUserError('targetId, directory, or exportFile is required', 400, 'BAD_CONFIG')
+    }
+
+    let encrypt = Boolean(req.encrypt)
+    if (req.targetId) {
+      const targetConfig = this.registry.list().find((t) => t.id === req.targetId)
+      if (!targetConfig) throw new VaultUserError(`storage target not found: ${req.targetId}`, 404, 'TARGET_NOT_FOUND')
+      encrypt = Boolean(req.encrypt ?? targetConfig.encryptByDefault)
+    }
     const includeSecrets = Boolean(req.includeSecrets)
     if (includeSecrets && !encrypt) {
       throw new VaultUserError('secrets may only be included when encryption is enabled', 400, 'SECRETS_REQUIRE_ENCRYPT')
@@ -171,6 +219,7 @@ export class VaultService {
       agentsHome: this.agentsHome,
       includeSecrets,
       categories: req.categories,
+      bundleLocalPlugins: req.bundleLocalPlugins,
     })
     const packed = await packSnapshot({
       files,
@@ -183,19 +232,52 @@ export class VaultService {
       notes: req.notes,
       onProgress,
     })
-    onProgress?.({ phase: 'upload', message: 'Uploading snapshot', percent: 85 })
-    const adapter = this.adapterFor(req.targetId)
-    const { remoteKey } = await adapter.put(packed.snapshotId, packed.bytes)
-    await this.applyRetention(req.targetId)
+    onProgress?.({ phase: 'upload', message: 'Saving snapshot', percent: 85 })
+
+    let targetId = req.targetId ?? (directory ? 'local-oneshot' : 'export-file')
+    let remoteKey = packed.snapshotId
+    let exportPath: string | undefined
+
+    if (exportFile) {
+      const ext = packed.encrypted ? ENCRYPTED_EXTENSION : ARCHIVE_EXTENSION
+      const out = exportFile.toLowerCase().endsWith('.tar.gz') || exportFile.toLowerCase().endsWith('.dshvault')
+        ? exportFile
+        : `${exportFile}${ext}`
+      await mkdir(dirname(out), { recursive: true })
+      await writeFile(out, packed.bytes, { mode: 0o600 })
+      remoteKey = basename(out)
+      exportPath = out
+      targetId = 'export-file'
+    } else if (directory) {
+      await mkdir(directory, { recursive: true })
+      const adapter = new LocalStorageAdapter({
+        kind: 'local',
+        id: 'local-oneshot',
+        label: 'One-shot folder',
+        directory,
+      })
+      const put = await adapter.put(packed.snapshotId, packed.bytes)
+      remoteKey = put.remoteKey
+      exportPath = join(directory, put.remoteKey)
+      targetId = 'local-oneshot'
+    } else if (req.targetId) {
+      const adapter = this.adapterFor(req.targetId)
+      const put = await adapter.put(packed.snapshotId, packed.bytes)
+      remoteKey = put.remoteKey
+      await this.applyRetention(req.targetId)
+      targetId = req.targetId
+    }
+
     onProgress?.({ phase: 'done', message: 'Backup complete', percent: 100 })
     return {
       snapshotId: packed.snapshotId,
-      targetId: req.targetId,
+      targetId,
       remoteKey,
       bytes: packed.bytes.length,
       encrypted: packed.encrypted,
       includeSecrets,
       manifest: packed.manifest,
+      exportPath,
     }
   }
 
@@ -228,17 +310,18 @@ export class VaultService {
   }
 
   async previewRestore(
-    req: Pick<RestoreRequest, 'targetId' | 'snapshotId' | 'password' | 'conflicts'> & {
+    req: Pick<RestoreRequest, 'targetId' | 'snapshotId' | 'importPath' | 'password' | 'conflicts'> & {
       conflict?: RestoreRequest['conflict']
     },
   ): Promise<RestorePreview> {
-    const bytes = await this.adapterFor(req.targetId).get(req.snapshotId)
+    const { bytes } = await this.resolveSnapshotBytes(req)
     const unpacked = await unpackSnapshot(bytes, req.password)
     const conflicts = normalizeConflicts(req.conflicts)
     const { files: liveFiles } = await collectBackupFiles({
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
       includeSecrets: unpacked.manifest.includeSecrets,
+      bundleLocalPlugins: false,
     })
     return previewRestoreDiff({
       manifest: unpacked.manifest,
@@ -251,11 +334,12 @@ export class VaultService {
   }
 
   async restore(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
-    onProgress?.({ phase: 'download', message: 'Downloading snapshot', percent: 5 })
-    const bytes = await this.adapterFor(req.targetId).get(req.snapshotId)
-    const unpacked = await unpackSnapshot(bytes, req.password, onProgress)
+    onProgress?.({ phase: 'download', message: 'Loading snapshot', percent: 5 })
+    const resolved = await this.resolveSnapshotBytes(req)
+    const unpacked = await unpackSnapshot(resolved.bytes, req.password, onProgress)
     const conflicts = normalizeConflicts(req.conflicts)
     const includeSecrets = req.includeSecrets ?? unpacked.manifest.includeSecrets
+    const snapshotId = unpacked.manifest.id
 
     let rollbackSnapshotId: string | undefined
     let rollbackTargetId: string | undefined
@@ -279,14 +363,14 @@ export class VaultService {
           includeSecrets: true,
           encrypt: true,
           password: req.password,
-          notes: `pre-restore rollback for ${req.snapshotId}`,
+          notes: `pre-restore rollback for ${snapshotId}`,
           onProgress,
         })
       } else {
         rollbackSnapshotId = await this.createPrivateRollbackSnapshot({
           includeSecrets: false,
           encrypt: false,
-          notes: `pre-restore rollback for ${req.snapshotId}`,
+          notes: `pre-restore rollback for ${snapshotId}`,
           onProgress,
         })
       }
@@ -307,40 +391,81 @@ export class VaultService {
     result.rollbackTargetId = rollbackTargetId
 
     if (req.reinstallPlugins !== false) {
-      onProgress?.({ phase: 'reinstall', message: 'Reinstalling missing plugins', percent: 90 })
-      const preview = await previewRestoreDiff({
-        manifest: unpacked.manifest,
+      onProgress?.({ phase: 'reinstall', message: 'Installing plugins into profile', percent: 90 })
+      const { results: pluginResults, restartRequired } = await reinstallMissingPlugins(unpacked.manifest.plugins, {
         dshHome: this.dshHome,
-        agentsHome: this.agentsHome,
+        activeProfile: this.activeProfile,
+        pluginManager: this.pluginManager,
+        pnpmCommand: this.pnpmCommand,
+        preferredRegistry: this.preferredRegistry,
+        runCommand: this.runCommand,
       })
-      for (const plugin of preview.pluginsToReinstall) {
-        // Bundles shipped inside dsh itself (e.g. @deepseek-ai/dsh-base) are
-        // profile layers, not installable plugins.
-        if (isBuiltinDshBundle(plugin.name)) continue
-        if (plugin.source.startsWith('link:') || plugin.source.startsWith('file:')) {
-          result.pluginsFailed.push(plugin.name)
-          continue
-        }
-        const profile = plugin.profile ?? this.activeProfile
-        const spec = plugin.version ? `${plugin.name}@${plugin.version}` : plugin.name
-        const install = await this.runPluginInstall(spec, profile, this.dshHome)
-        if (install.ok) result.pluginsReinstalled.push(plugin.name)
-        else result.pluginsFailed.push(plugin.name)
+      result.pluginResults = pluginResults
+      result.pluginsReinstalled = pluginResults.filter((r) => r.status === 'installed').map((r) => r.name)
+      result.pluginsFailed = pluginResults.filter((r) => r.status === 'failed').map((r) => r.name)
+      result.restartRequired = restartRequired || pluginResults.some((r) => r.status === 'installed')
+      for (const row of pluginResults.filter((r) => r.status === 'failed')) {
+        result.manualActions.push(`${row.name} (${row.profile}): ${row.detail}`)
       }
-      if (result.pluginsFailed.length) {
-        const hintProfile = this.activeProfile === DESKTOP_PROFILE ? DESKTOP_PROFILE : WEB_PROFILE
-        const hint = installCommandForProfile(hintProfile, '<pkg>')
+      if (result.restartRequired) {
         result.manualActions.push(
-          `Manually reinstall plugins: ${result.pluginsFailed.join(', ')} (e.g. ${hint.command})`,
+          this.activeProfile === DESKTOP_PROFILE
+            ? 'Restart DeepSeek Harness Desktop so newly installed plugins load.'
+            : 'Restart dsh web / the host so newly installed plugins load.',
         )
-        if (hintProfile === DESKTOP_PROFILE) {
-          result.manualActions.push(...hint.notes)
-        }
       }
     }
 
-    onProgress?.({ phase: 'done', message: 'Restore complete', percent: 100 })
+    result.ok = (result.pluginsFailed?.length ?? 0) === 0
+    if (!result.ok) {
+      result.manualActions.push('Restore finished with plugin failures — not a full success. Fix the failed plugins and retry or install them from Desktop → Plugins.')
+    }
+
+    onProgress?.({ phase: 'done', message: result.ok ? 'Restore complete' : 'Restore incomplete (plugin failures)', percent: 100 })
     return result
+  }
+
+  /** Load snapshot bytes from a configured target or an import path (file/folder). */
+  private async resolveSnapshotBytes(req: {
+    targetId?: string
+    snapshotId?: string
+    importPath?: string
+  }): Promise<{ bytes: Buffer; targetId: string; snapshotId: string }> {
+    if (req.importPath?.trim()) {
+      const path = expandUserPath(req.importPath.trim())
+      let info
+      try {
+        info = await stat(path)
+      } catch {
+        throw new VaultUserError(`import path not found: ${path}`, 404, 'SNAPSHOT_NOT_FOUND')
+      }
+      if (info.isFile()) {
+        if (!isSnapshotArchiveName(path)) {
+          throw new VaultUserError('import file must be a .tar.gz or .dshvault archive', 400, 'BAD_CONFIG')
+        }
+        const bytes = await readFile(path)
+        return { bytes, targetId: 'import-file', snapshotId: req.snapshotId ?? basename(path).replace(/\.(tar\.gz|dshvault)$/i, '') }
+      }
+      if (info.isDirectory()) {
+        const adapter = new LocalStorageAdapter({
+          kind: 'local',
+          id: 'import-folder',
+          label: 'Import folder',
+          directory: path,
+        })
+        const list = await adapter.list()
+        const snapshotId = req.snapshotId ?? list[0]?.id
+        if (!snapshotId) throw new VaultUserError(`no snapshots in folder: ${path}`, 404, 'SNAPSHOT_NOT_FOUND')
+        const bytes = await adapter.get(snapshotId)
+        return { bytes, targetId: 'import-folder', snapshotId }
+      }
+      throw new VaultUserError(`import path is neither file nor directory: ${path}`, 400, 'BAD_CONFIG')
+    }
+    if (!req.targetId || !req.snapshotId) {
+      throw new VaultUserError('targetId+snapshotId or importPath is required', 400, 'BAD_CONFIG')
+    }
+    const bytes = await this.adapterFor(req.targetId).get(req.snapshotId)
+    return { bytes, targetId: req.targetId, snapshotId: req.snapshotId }
   }
 
   getSchedule(): ScheduleConfig {
@@ -518,6 +643,7 @@ export class VaultService {
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
       includeSecrets: input.includeSecrets,
+      bundleLocalPlugins: false,
     })
     const packed = await packSnapshot({
       files,
@@ -571,34 +697,6 @@ export function effectiveIntervalMs(intervalMinutes: number): number {
 
 /** Id of the private local rollback folder (not a user-editable storage target). */
 export const ROLLBACK_TARGET_ID = 'local-rollback'
-
-async function defaultPluginInstall(spec: string, profile: string, dshHome?: string): Promise<{ ok: boolean; detail: string }> {
-  return new Promise((resolve) => {
-    // Prefer whatever `dsh` is on PATH (Desktop tray terminal = bundled carrier).
-    const child = spawn('dsh', ['plugin', '--profile', profile, 'add', spec], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // Install into the home being restored (CLI --home / plugin dataDir), not
-      // whatever DSH_HOME the current process happens to carry.
-      env: dshHome ? { ...process.env, DSH_HOME: dshHome } : process.env,
-      shell: process.platform === 'win32',
-    })
-    let detail = ''
-    child.stdout?.on('data', (c: Buffer) => {
-      detail += c.toString('utf8')
-    })
-    child.stderr?.on('data', (c: Buffer) => {
-      detail += c.toString('utf8')
-    })
-    child.on('error', (err) => resolve({ ok: false, detail: err.message }))
-    child.on('close', (code) => {
-      let text = detail.slice(0, 800)
-      if (code !== 0 && profile === DESKTOP_PROFILE) {
-        text += '\n' + installCommandForProfile(DESKTOP_PROFILE, spec).notes.join('\n')
-      }
-      resolve({ ok: code === 0, detail: text })
-    })
-  })
-}
 
 /** Write a sidecard meta file next to a local snapshot (optional helper for CLI). */
 export async function writeSidecarMeta(dir: string, snapshotId: string, meta: Record<string, unknown>): Promise<void> {

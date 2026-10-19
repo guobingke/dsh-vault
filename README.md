@@ -103,6 +103,10 @@ Encryption can be toggled for remote targets too (`encryptByDefault` or per-back
 
 Desktop embeds the shared Web UI; the plugin’s browser half declares `dsh.client.platform: "web"` (required for Desktop as well).
 
+**Backup destinations (per run):** a configured storage target, **any local folder** (USB / synced drive / Windows `D:\…`), or **export to a single portable archive** (`.tar.gz` / `.dshvault`).
+
+**Restore sources:** a configured snapshot, or **import from any folder/file** (no target required). Windows cmd: use full paths or `%USERPROFILE%` — not `~`.
+
 ### CLI
 
 ```bash
@@ -122,12 +126,13 @@ When the plugin is loaded in that profile:
 
 ## Restore flow
 
-1. Pick a snapshot from any target  
+1. Pick a snapshot from a target **or** an import path (folder / `.tar.gz` / `.dshvault`)  
 2. Preview diff (add / change / remove)  
 3. Choose global conflict policy and optional per-path `conflicts`  
 4. Automatic pre-restore rollback snapshot  
-5. Apply files + reinstall missing plugins via `dsh plugin add` (uses `$DSH_PROFILE`, so Desktop reinstalls target `desktop`)  
-6. See manual actions (e.g. re-enter API keys; Desktop may need the bundled `dsh` for plugin reinstall)
+5. Apply files, then reinstall missing plugins via the **host `pluginManager`** when available, else Desktop’s bundled `dsh` / `pnpm install` in the profile (npm-global `dsh` refuses `--profile desktop`)  
+6. Per-plugin result list (`installed` / `already-present` / `failed` with reason). Restore reports **not OK** (HTTP 409) if any plugin failed; restart Desktop when prompted  
+7. Local `link:`/`file:` plugins are bundled into `plugin-sources/` when the source folder exists at backup time
 
 ## Develop
 

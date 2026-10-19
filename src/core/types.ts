@@ -51,6 +51,10 @@ export interface PluginRecord {
   /** Install source (npm package, link:, file:, git:, etc.). */
   source: string
   profile?: string
+  /** Snapshot-relative directory when a link:/file: plugin tree was bundled into the archive. */
+  bundledSource?: string
+  /** Original link:/file: source from the source machine (for diagnostics). */
+  originalSource?: string
 }
 
 export interface VaultManifest {
@@ -93,10 +97,20 @@ export interface CollectOptions {
   categories?: BackupCategory[]
   /** Extra absolute roots to include under a relative prefix. */
   extraRoots?: Array<{ abs: string; relPrefix: string; category: BackupCategory }>
+  /** Bundle link:/file: plugin source trees into plugin-sources/. Default true. */
+  bundleLocalPlugins?: boolean
 }
 
 export interface BackupRequest {
-  targetId: string
+  /**
+   * Storage target id. Optional when `directory` or `exportFile` is set
+   * (one-shot local export without a persisted target).
+   */
+  targetId?: string
+  /** One-shot local folder (any absolute path; Windows drive letters OK). */
+  directory?: string
+  /** Write a single portable archive to this file path (.tar.gz / .dshvault). */
+  exportFile?: string
   encrypt?: boolean
   password?: string
   kdf?: KdfAlgorithm
@@ -104,6 +118,8 @@ export interface BackupRequest {
   categories?: BackupCategory[]
   notes?: string
   dshVersion?: string
+  /** When true, bundle link:/file: plugin source trees into the snapshot. Default true. */
+  bundleLocalPlugins?: boolean
 }
 
 export interface BackupResult {
@@ -114,6 +130,8 @@ export interface BackupResult {
   encrypted: boolean
   includeSecrets: boolean
   manifest: VaultManifest
+  /** Absolute path when exportFile/directory was used. */
+  exportPath?: string
 }
 
 export interface DiffItem {
@@ -146,8 +164,16 @@ export interface RestorePreview {
 }
 
 export interface RestoreRequest {
-  targetId: string
-  snapshotId: string
+  /**
+   * Storage target id. Optional when `importPath` points at a folder or archive file.
+   */
+  targetId?: string
+  snapshotId?: string
+  /**
+   * Import from a folder of snapshots or a single `.tar.gz` / `.dshvault` file
+   * without configuring a storage target first.
+   */
+  importPath?: string
   password?: string
   /** Global default conflict strategy (required; used for any path not listed in `conflicts`). */
   conflict: ConflictStrategy
@@ -158,9 +184,19 @@ export interface RestoreRequest {
   conflicts?: Record<string, ConflictStrategy>
   /** Create an automatic pre-restore snapshot before applying. Defaults to true. */
   createRollbackSnapshot?: boolean
-  /** Attempt `dsh plugin add` for missing plugins. Defaults to true. */
+  /** Attempt to reinstall missing plugins. Defaults to true. */
   reinstallPlugins?: boolean
   includeSecrets?: boolean
+}
+
+export type PluginInstallStatus = 'installed' | 'already-present' | 'failed' | 'skipped'
+
+export interface PluginInstallResultRow {
+  name: string
+  profile: string
+  status: PluginInstallStatus
+  detail: string
+  source?: string
 }
 
 export interface RestoreResult {
@@ -172,6 +208,12 @@ export interface RestoreResult {
   rollbackTargetId?: string
   pluginsReinstalled: string[]
   pluginsFailed: string[]
+  /** Per-plugin outcome (installed / already-present / failed with reason). */
+  pluginResults?: PluginInstallResultRow[]
+  /** False when any plugin failed to install — never treat as full success. */
+  ok?: boolean
+  /** Plugins were installed into a running Desktop/web host; restart recommended. */
+  restartRequired?: boolean
   manualActions: string[]
 }
 

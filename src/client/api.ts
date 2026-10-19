@@ -26,13 +26,14 @@ export class VaultApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit & { acceptConflictBody?: boolean }): Promise<T> {
+  const { acceptConflictBody, ...fetchInit } = init ?? {}
   const res = await fetch(`${BASE}${path}`, {
-    ...init,
+    ...fetchInit,
     headers: {
       accept: 'application/json',
-      ...(init?.body ? { 'content-type': 'application/json' } : {}),
-      ...init?.headers,
+      ...(fetchInit.body ? { 'content-type': 'application/json' } : {}),
+      ...fetchInit.headers,
     },
   })
   const text = await res.text()
@@ -41,6 +42,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     body = text ? JSON.parse(text) : null
   } catch {
     throw new VaultApiError(text || `HTTP ${res.status}`, res.status)
+  }
+  // Restore returns 409 with a full RestoreResult when plugins failed.
+  if (res.status === 409 && acceptConflictBody && body && typeof body === 'object' && 'snapshotId' in body) {
+    return body as T
   }
   if (!res.ok) {
     const msg = body && typeof body === 'object' && 'error' in body
@@ -94,16 +99,26 @@ export class VaultApi {
   }
 
   backup(body: {
-    targetId: string
+    targetId?: string
+    directory?: string
+    exportFile?: string
     encrypt?: boolean
     password?: string
     includeSecrets?: boolean
     notes?: string
-    /** Additive optional fields already accepted by POST /backup. */
     categories?: BackupCategory[]
     kdf?: KdfAlgorithm
+    bundleLocalPlugins?: boolean
   }): Promise<BackupResult> {
     return request('/backup', { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  listFs(path: string): Promise<{ path: string; parent: string | null; entries: Array<{ name: string; path: string; kind: 'file' | 'directory'; bytes?: number }> }> {
+    return request(`/fs/list?path=${encodeURIComponent(path)}`)
+  }
+
+  pickDirectory(): Promise<{ path: string | null }> {
+    return request('/fs/pick-directory', { method: 'POST', body: '{}' })
   }
 
   listSnapshots(targetId?: string): Promise<{ snapshots: SnapshotInfo[] }> {
@@ -124,17 +139,19 @@ export class VaultApi {
    * carries a `resolution` for that path (global default + optional overrides).
    */
   previewRestore(
-    targetId: string,
-    snapshotId: string,
+    targetId: string | undefined,
+    snapshotId: string | undefined,
     password?: string,
     conflict?: ConflictStrategy,
     conflicts?: RestoreConflicts,
+    importPath?: string,
   ): Promise<RestorePreview> {
     return request('/restore/preview', {
       method: 'POST',
       body: JSON.stringify({
         targetId,
         snapshotId,
+        importPath,
         password,
         ...(conflict ? { conflict } : {}),
         ...(hasConflicts(conflicts) ? { conflicts } : {}),
@@ -143,19 +160,17 @@ export class VaultApi {
   }
 
   restore(body: {
-    targetId: string
-    snapshotId: string
-    /** Global default for paths not listed in `conflicts`. */
+    targetId?: string
+    snapshotId?: string
+    importPath?: string
     conflict: ConflictStrategy
-    /** Optional per-path overrides; unspecified paths fall back to `conflict`. */
     conflicts?: RestoreConflicts
     password?: string
-    /** Additive optional fields already accepted by POST /restore. */
     createRollbackSnapshot?: boolean
     reinstallPlugins?: boolean
     includeSecrets?: boolean
   }): Promise<RestoreResult> {
-    return request('/restore', { method: 'POST', body: JSON.stringify(body) })
+    return request('/restore', { method: 'POST', body: JSON.stringify(body), acceptConflictBody: true })
   }
 
   getSchedule(): Promise<ScheduleConfig> {

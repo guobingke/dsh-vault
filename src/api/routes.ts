@@ -48,7 +48,9 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
   routes.push(
     endpoint({ path: `${API_PREFIX}/backup`, methods: ['POST'] }, async (req, res) => {
       const body = await readJsonBody<BackupRequest>(req)
-      if (!body.targetId) throw new ApiError('targetId is required', 400)
+      if (!body.targetId && !body.directory && !body.exportFile) {
+        throw new ApiError('targetId, directory, or exportFile is required', 400)
+      }
       const result = await service.backup(body)
       writeJson(res, 200, result)
     }),
@@ -81,8 +83,10 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
 
   routes.push(
     endpoint({ path: `${API_PREFIX}/restore/preview`, methods: ['POST'] }, async (req, res) => {
-      const body = await readJsonBody<Pick<RestoreRequest, 'targetId' | 'snapshotId' | 'password' | 'conflict' | 'conflicts'>>(req)
-      if (!body.targetId || !body.snapshotId) throw new ApiError('targetId and snapshotId are required', 400)
+      const body = await readJsonBody<Pick<RestoreRequest, 'targetId' | 'snapshotId' | 'importPath' | 'password' | 'conflict' | 'conflicts'>>(req)
+      if ((!body.targetId || !body.snapshotId) && !body.importPath) {
+        throw new ApiError('targetId+snapshotId or importPath is required', 400)
+      }
       if (body.conflict !== undefined && body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
         throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
       }
@@ -93,13 +97,37 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
   routes.push(
     endpoint({ path: `${API_PREFIX}/restore`, methods: ['POST'] }, async (req, res) => {
       const body = await readJsonBody<RestoreRequest>(req)
-      if (!body.targetId || !body.snapshotId || !body.conflict) {
-        throw new ApiError('targetId, snapshotId, and conflict are required', 400)
+      if (!body.conflict) throw new ApiError('conflict is required', 400)
+      if ((!body.targetId || !body.snapshotId) && !body.importPath) {
+        throw new ApiError('targetId+snapshotId or importPath is required', 400)
       }
       if (body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
         throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
       }
-      writeJson(res, 200, await service.restore(body))
+      const result = await service.restore(body)
+      // Never report HTTP success when plugins failed — clients must surface the failure.
+      writeJson(res, result.ok === false ? 409 : 200, result)
+    }),
+  )
+
+  routes.push(
+    endpoint({ path: `${API_PREFIX}/fs/list`, methods: ['GET', 'POST'] }, async (req, res) => {
+      let path = ''
+      if (req.method === 'GET') {
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        path = url.searchParams.get('path') ?? ''
+      } else {
+        const body = await readJsonBody<{ path?: string }>(req)
+        path = body.path ?? ''
+      }
+      writeJson(res, 200, await service.listFs(path))
+    }),
+  )
+
+  routes.push(
+    endpoint({ path: `${API_PREFIX}/fs/pick-directory`, methods: ['POST'] }, async (_req, res) => {
+      const path = await service.pickDirectory()
+      writeJson(res, 200, { path })
     }),
   )
 

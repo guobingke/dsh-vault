@@ -1,5 +1,6 @@
 import { homedir } from 'node:os'
 import { join, normalize, resolve, sep } from 'node:path'
+import { expandUserPath } from './win-paths.js'
 
 /** Resolve $DSH_HOME with the same precedence as @deepseek-ai/dsh-home-paths. */
 export function resolveDshHome(configured?: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -19,18 +20,12 @@ function resolveRoot(
 ): string {
   const raw = (configured && configured.trim()) || (env[envKey] && env[envKey]!.trim()) || ''
   if (!raw) return fallback()
-  return resolve(expandTilde(raw))
-}
-
-function expandTilde(p: string): string {
-  if (p === '~') return homedir()
-  if (p.startsWith('~/') || p.startsWith('~\\')) return join(homedir(), p.slice(2))
-  return p
+  return resolve(expandUserPath(raw, env))
 }
 
 /** Plugin-owned data directory under $DSH_HOME. */
 export function vaultDataDir(dshHome: string, override?: string): string {
-  if (override && override.trim()) return resolve(expandTilde(override.trim()))
+  if (override && override.trim()) return resolve(expandUserPath(override.trim()))
   return join(dshHome, 'dsh-vault')
 }
 

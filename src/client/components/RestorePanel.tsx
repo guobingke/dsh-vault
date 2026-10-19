@@ -11,7 +11,6 @@ import {
   Collapsible,
   ConfirmDialog,
   EmptyState,
-  ErrorState,
   Field,
   LoadingInline,
   OptionTile,
@@ -23,7 +22,10 @@ import {
   SettingRow,
   Switch,
   Tag,
+  TextInput,
 } from './ui.js'
+
+type SourceMode = 'target' | 'import'
 
 export interface RestorePanelProps {
   targets: StorageTargetConfig[]
@@ -34,15 +36,17 @@ export interface RestorePanelProps {
   error: string | null
   /** `conflict` / `conflicts` annotate the preview so the diff shows per-item `resolution`. */
   onPreview: (input: {
-    targetId: string
-    snapshotId: string
+    targetId?: string
+    snapshotId?: string
+    importPath?: string
     password?: string
     conflict?: ConflictStrategy
     conflicts?: Record<string, ConflictStrategy>
   }) => void
   onRestore: (input: {
-    targetId: string
-    snapshotId: string
+    targetId?: string
+    snapshotId?: string
+    importPath?: string
     password?: string
     conflict: ConflictStrategy
     /** Optional per-path decisions; unspecified paths fall back to `conflict`. */
@@ -55,6 +59,8 @@ export interface RestorePanelProps {
   initialTargetId?: string
   initialSnapshotId?: string
   onNavigateStorage?: () => void
+  /** Native folder picker when the host supports it. */
+  onPickDirectory?: () => Promise<string | null>
 }
 
 type ConflictChoice = ConflictStrategy
@@ -104,12 +110,17 @@ export function RestorePanel({
   initialTargetId,
   initialSnapshotId,
   onNavigateStorage,
+  onPickDirectory,
 }: RestorePanelProps) {
   const tr = useT()
   const groupId = useId()
 
+  const [sourceMode, setSourceMode] = useState<SourceMode>(
+    initialTargetId || initialSnapshotId || snapshots.length ? 'target' : 'import',
+  )
   const [targetId, setTargetId] = useState(initialTargetId ?? '')
   const [snapshotId, setSnapshotId] = useState(initialSnapshotId ?? '')
+  const [importPath, setImportPath] = useState('')
   const [search, setSearch] = useState('')
   const [password, setPassword] = useState('')
   const [showPasswordError, setShowPasswordError] = useState(false)
@@ -121,16 +132,18 @@ export function RestorePanel({
   const [diffFilter, setDiffFilter] = useState<DiffFilter>('all')
 
   const targetLabel = (id: string): string => targets.find((t) => t.id === id)?.label ?? id
+  const usingImport = sourceMode === 'import'
 
   // Keep the target filter valid.
   useEffect(() => {
+    if (usingImport) return
     if (!targetId || !snapshots.some((s) => s.targetId === targetId)) {
       const preferred = initialTargetId && snapshots.some((s) => s.targetId === initialTargetId)
         ? initialTargetId
         : snapshots[0]?.targetId ?? ''
       setTargetId(preferred)
     }
-  }, [snapshots, targetId, initialTargetId])
+  }, [snapshots, targetId, initialTargetId, usingImport])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -141,13 +154,19 @@ export function RestorePanel({
   }, [snapshots, targetId, search])
 
   useEffect(() => {
+    if (usingImport) return
     if (snapshotId && filtered.some((s) => s.id === snapshotId)) return
     setSnapshotId(filtered[0]?.id ?? '')
-  }, [filtered, snapshotId])
+  }, [filtered, snapshotId, usingImport])
 
-  const selected = snapshots.find((s) => s.id === snapshotId && (!targetId || s.targetId === targetId))
-    ?? snapshots.find((s) => s.id === snapshotId)
-  const needsPassword = Boolean(selected?.encrypted)
+  const selected = usingImport
+    ? null
+    : snapshots.find((s) => s.id === snapshotId && (!targetId || s.targetId === targetId))
+      ?? snapshots.find((s) => s.id === snapshotId)
+  /** Target snapshots declare encryption; import paths always offer an optional password field. */
+  const needsPassword = usingImport ? false : Boolean(selected?.encrypted)
+  const showPasswordField = usingImport || needsPassword
+  const canStartPreview = usingImport ? Boolean(importPath.trim()) : Boolean(selected)
 
   // Reset per-path choices whenever a new preview arrives.
   const previewKey = preview ? `${preview.snapshotId}:${preview.added}:${preview.changed}:${preview.removed}` : null
@@ -187,15 +206,16 @@ export function RestorePanel({
     if (sameConflicts(choices, requestedConflicts)) return
     const timer = setTimeout(() => {
       onPreview({
-        targetId: selected?.targetId ?? '',
-        snapshotId: preview.snapshotId,
-        password: needsPassword ? password : undefined,
+        targetId: usingImport ? undefined : selected?.targetId,
+        snapshotId: usingImport ? undefined : preview.snapshotId,
+        importPath: usingImport ? importPath.trim() : undefined,
+        password: password || undefined,
         conflict: requestedConflict,
         conflicts: choices,
       })
     }, 350)
     return () => clearTimeout(timer)
-  }, [preview, busy, choices, requestedConflicts, onPreview, selected, needsPassword, password, requestedConflict])
+  }, [preview, busy, choices, requestedConflicts, onPreview, selected, password, requestedConflict, usingImport, importPath])
 
   const applyCount = changes.filter((c) => outcomeOf(c, c.resolution ?? choiceFor(c.path)) === 'apply').length
 
@@ -218,15 +238,16 @@ export function RestorePanel({
   function startPreview() {
     setAck(false)
     setShowPasswordError(false)
-    if (!selected) return
+    if (!canStartPreview) return
     if (needsPassword && !password) {
       setShowPasswordError(true)
       return
     }
     onPreview({
-      targetId: selected.targetId,
-      snapshotId: selected.id,
-      password: needsPassword ? password : undefined,
+      targetId: usingImport ? undefined : selected?.targetId,
+      snapshotId: usingImport ? undefined : selected?.id,
+      importPath: usingImport ? importPath.trim() : undefined,
+      password: password || undefined,
       conflict: DEFAULT_CONFLICT,
       conflicts: choices,
     })
@@ -236,28 +257,15 @@ export function RestorePanel({
     if (!preview) return
     if (!ack) return
     onRestore({
-      targetId: selected?.targetId ?? '',
-      snapshotId: preview.snapshotId,
-      password: needsPassword ? password : undefined,
+      targetId: usingImport ? undefined : selected?.targetId,
+      snapshotId: usingImport ? undefined : preview.snapshotId,
+      importPath: usingImport ? importPath.trim() : undefined,
+      password: password || undefined,
       conflict: requestedConflict,
       conflicts: choices,
       createRollbackSnapshot: rollback,
       reinstallPlugins: reinstall,
     })
-  }
-
-  if (targets.length === 0) {
-    return (
-      <>
-        <p className="dv-section-desc">{tr('restore.desc')}</p>
-        {error ? <Banner tone="error" title={tr('restore.failedTitle')}>{error}</Banner> : null}
-        <EmptyState
-          title={tr('restore.noTargetsTitle')}
-          body={tr('restore.noTargetsBody')}
-          actions={onNavigateStorage ? <Button variant="primary" onClick={onNavigateStorage}>{tr('backup.goStorage')}</Button> : null}
-        />
-      </>
-    )
   }
 
   return (
@@ -272,11 +280,53 @@ export function RestorePanel({
       ) : null}
 
       <Card>
-        <CardHead
-          title={tr('restore.snapshotTitle')}
-          sub={tr('restore.snapshotDesc', { count: snapshots.length })}
-          actions={
-            <>
+        <CardHead title={tr('restore.sourceTitle')} sub={tr('restore.sourceDesc')} />
+        <div className="dv-card-sep" aria-hidden="true" />
+        <Rows>
+          <SettingRow title={tr('restore.sourceMode')} description={tr('restore.sourceModeDesc')}>
+            <select
+              className="dv-input"
+              value={sourceMode}
+              onChange={(e) => {
+                setSourceMode(e.target.value as SourceMode)
+                setAck(false)
+              }}
+              aria-label={tr('restore.sourceMode')}
+            >
+              <option value="target">{tr('restore.source.target')}</option>
+              <option value="import">{tr('restore.source.import')}</option>
+            </select>
+          </SettingRow>
+        </Rows>
+        {usingImport ? (
+          <Field label={tr('restore.importPath')} htmlFor="dv-restore-import" hint={tr('restore.importPathHint')}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <TextInput
+                id="dv-restore-import"
+                value={importPath}
+                onChange={(e) => setImportPath(e.target.value)}
+                placeholder={tr('restore.importPathPlaceholder')}
+                mono
+              />
+              {onPickDirectory ? (
+                <Button
+                  variant="quiet"
+                  onClick={() => { void onPickDirectory().then((p) => { if (p) setImportPath(p) }) }}
+                >
+                  {tr('restore.browse')}
+                </Button>
+              ) : null}
+            </div>
+          </Field>
+        ) : targets.length === 0 && snapshots.length === 0 ? (
+          <EmptyState
+            title={tr('restore.noTargetsTitle')}
+            body={tr('restore.noTargetsBody')}
+            actions={onNavigateStorage ? <Button variant="primary" onClick={onNavigateStorage}>{tr('backup.goStorage')}</Button> : null}
+          />
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
               <Select
                 aria-label={tr('restore.filterTarget')}
                 value={targetId}
@@ -290,50 +340,49 @@ export function RestorePanel({
               <div style={{ width: 180 }}>
                 <SearchInput value={search} onChange={setSearch} placeholder={tr('restore.search')} label={tr('restore.search')} />
               </div>
-            </>
-          }
-        />
-        <div className="dv-card-sep" aria-hidden="true" />
-        {loading && snapshots.length === 0 ? (
-          <LoadingInline label={tr('app.loading')} />
-        ) : filtered.length === 0 ? (
-          <EmptyState
-            title={snapshots.length === 0 ? tr('restore.emptyTitle') : tr('restore.noMatch')}
-            body={snapshots.length === 0 ? tr('restore.emptyBody') : undefined}
-          />
-        ) : (
-          <div className="dv-options" role="radiogroup" aria-label={tr('restore.select')} style={{ maxHeight: 320, overflowY: 'auto' }}>
-            {filtered.slice(0, 50).map((s) => (
-              <OptionTile
-                key={`${s.targetId}:${s.id}`}
-                name={`${groupId}-snapshot`}
-                checked={s.id === snapshotId && (!targetId || s.targetId === targetId)}
-                onChange={() => {
-                  setSnapshotId(s.id)
-                  setAck(false)
-                }}
-                title={
-                  <>
-                    <span className="dv-mono">{s.id}</span>
-                    <Tag tone={s.encrypted ? 'ok' : 'neutral'}>{s.encrypted ? tr('common.encrypted') : tr('common.plaintext')}</Tag>
-                    {s.includeSecrets ? <Tag tone="warn">{tr('common.secrets')}</Tag> : null}
-                  </>
-                }
-                description={
-                  <>
-                    {targetLabel(s.targetId)} · {formatDateTime(s.createdAt)}（{relativeLabel(tr, s.createdAt)}） · {formatBytes(s.bytes)}
-                    {s.notes ? ` · ${s.notes}` : ''}
-                  </>
-                }
+            </div>
+            {loading && snapshots.length === 0 ? (
+              <LoadingInline label={tr('app.loading')} />
+            ) : filtered.length === 0 ? (
+              <EmptyState
+                title={snapshots.length === 0 ? tr('restore.emptyTitle') : tr('restore.noMatch')}
+                body={snapshots.length === 0 ? tr('restore.emptyBody') : undefined}
               />
-            ))}
-          </div>
+            ) : (
+              <div className="dv-options" role="radiogroup" aria-label={tr('restore.select')} style={{ maxHeight: 320, overflowY: 'auto' }}>
+                {filtered.slice(0, 50).map((s) => (
+                  <OptionTile
+                    key={`${s.targetId}:${s.id}`}
+                    name={`${groupId}-snapshot`}
+                    checked={s.id === snapshotId && (!targetId || s.targetId === targetId)}
+                    onChange={() => {
+                      setSnapshotId(s.id)
+                      setAck(false)
+                    }}
+                    title={
+                      <>
+                        <span className="dv-mono">{s.id}</span>
+                        <Tag tone={s.encrypted ? 'ok' : 'neutral'}>{s.encrypted ? tr('common.encrypted') : tr('common.plaintext')}</Tag>
+                        {s.includeSecrets ? <Tag tone="warn">{tr('common.secrets')}</Tag> : null}
+                      </>
+                    }
+                    description={
+                      <>
+                        {targetLabel(s.targetId)} · {formatDateTime(s.createdAt)}（{relativeLabel(tr, s.createdAt)}） · {formatBytes(s.bytes)}
+                        {s.notes ? ` · ${s.notes}` : ''}
+                      </>
+                    }
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
-        {needsPassword ? (
+        {showPasswordField ? (
           <Field
             label={tr('restore.password')}
             htmlFor="dv-restore-password"
-            hint={tr('restore.passwordHint')}
+            hint={usingImport ? tr('restore.importPasswordHint') : tr('restore.passwordHint')}
             error={showPasswordError && !password ? tr('restore.passwordRequired') : null}
           >
             <PasswordInput
@@ -347,7 +396,7 @@ export function RestorePanel({
           </Field>
         ) : null}
         <div className="dv-card-foot">
-          <Button variant="primary" onClick={startPreview} disabled={!selected || busy} loading={busy && !preview}>
+          <Button variant="primary" onClick={startPreview} disabled={!canStartPreview || busy} loading={busy && !preview}>
             {busy && !preview ? tr('restore.previewing') : tr('restore.preview')}
           </Button>
         </div>

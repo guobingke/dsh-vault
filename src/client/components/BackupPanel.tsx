@@ -28,7 +28,9 @@ export interface BackupPanelProps {
   error: string | null
   progress?: number
   onBackup: (input: {
-    targetId: string
+    targetId?: string
+    directory?: string
+    exportFile?: string
     encrypt: boolean
     password?: string
     includeSecrets: boolean
@@ -40,7 +42,11 @@ export interface BackupPanelProps {
   /** Optional: current progress stage: collect | pack | encrypt | upload. */
   stage?: string
   onNavigateStorage?: () => void
+  /** Native folder picker when the host supports it. */
+  onPickDirectory?: () => Promise<string | null>
 }
+
+type DestMode = 'target' | 'directory' | 'file'
 
 const CATEGORIES: Array<{ id: BackupCategory; label: MessageKey; desc: MessageKey; secret?: boolean }> = [
   { id: 'plugins', label: 'backup.cat.plugins', desc: 'backup.cat.plugins.desc' },
@@ -71,9 +77,13 @@ export function BackupPanel({
   defaultTargetId,
   stage,
   onNavigateStorage,
+  onPickDirectory,
 }: BackupPanelProps) {
   const tr = useT()
+  const [destMode, setDestMode] = useState<DestMode>(targets.length ? 'target' : 'directory')
   const [targetId, setTargetId] = useState(defaultTargetId ?? targets[0]?.id ?? '')
+  const [directory, setDirectory] = useState('')
+  const [exportFile, setExportFile] = useState('')
   const [encrypt, setEncrypt] = useState(false)
   const [includeSecrets, setIncludeSecrets] = useState(false)
   const [password, setPassword] = useState('')
@@ -98,7 +108,12 @@ export function BackupPanel({
   const selectedCats = CATEGORIES.filter((c) => scope.has(c.id))
   const noScope = selectedCats.length === 0
   const passwordMissing = encrypt && password.length === 0
-  const canSubmit = Boolean(targetId) && !noScope && !passwordMissing && !busy
+  const destOk = destMode === 'target'
+    ? Boolean(targetId)
+    : destMode === 'directory'
+      ? Boolean(directory.trim())
+      : Boolean(exportFile.trim())
+  const canSubmit = destOk && !noScope && !passwordMissing && !busy
 
   const toggleCategory = (id: BackupCategory) => {
     setScope((prev) => {
@@ -114,25 +129,13 @@ export function BackupPanel({
     [tr, stage],
   )
 
-  if (targets.length === 0) {
-    return (
-      <>
-        <p className="dv-section-desc">{tr('backup.desc')}</p>
-        {error ? <Banner tone="error" title={tr('backup.failedTitle')}>{error}</Banner> : null}
-        <EmptyState
-          title={tr('backup.noTargetsTitle')}
-          body={tr('backup.noTargetsBody')}
-          actions={onNavigateStorage ? <Button variant="primary" onClick={onNavigateStorage}>{tr('backup.goStorage')}</Button> : null}
-        />
-      </>
-    )
-  }
-
   const submit = () => {
     setTouched(true)
     if (!canSubmit) return
     onBackup({
-      targetId,
+      targetId: destMode === 'target' ? targetId : undefined,
+      directory: destMode === 'directory' ? directory.trim() : undefined,
+      exportFile: destMode === 'file' ? exportFile.trim() : undefined,
       encrypt,
       password: encrypt ? password : undefined,
       includeSecrets: includeSecrets && encrypt,
@@ -150,29 +153,63 @@ export function BackupPanel({
       <Card>
         <CardHead title={tr('backup.targetTitle')} sub={tr('backup.targetDesc')} />
         <div className="dv-card-sep" aria-hidden="true" />
-        <div className="dv-options" role="radiogroup" aria-label={tr('backup.targetTitle')}>
-          {targets.map((tg) => (
-            <OptionTile
-              key={tg.id}
-              name="dv-backup-target"
-              checked={tg.id === targetId}
-              onChange={() => setTargetId(tg.id)}
-              title={
-                <>
-                  {tg.label}
-                  {tg.encryptByDefault ? <Tag tone="ok">{tr('backup.targetEncBadge')}</Tag> : null}
-                </>
-              }
-              description={
-                <>
-                  {targetKindLabel(tg, tr)}
-                  <br />
-                  <span className="dv-mono">{targetLocation(tg)}</span>
-                </>
-              }
+        <Rows>
+          <SettingRow title={tr('backup.destMode')} description={tr('backup.destModeDesc')}>
+            <select className="dv-input" value={destMode} onChange={(e) => setDestMode(e.target.value as DestMode)} aria-label={tr('backup.destMode')}>
+              <option value="target">{tr('backup.dest.target')}</option>
+              <option value="directory">{tr('backup.dest.directory')}</option>
+              <option value="file">{tr('backup.dest.file')}</option>
+            </select>
+          </SettingRow>
+        </Rows>
+        {destMode === 'target' ? (
+          targets.length === 0 ? (
+            <EmptyState
+              title={tr('backup.noTargetsTitle')}
+              body={tr('backup.noTargetsBody')}
+              actions={onNavigateStorage ? <Button variant="primary" onClick={onNavigateStorage}>{tr('backup.goStorage')}</Button> : null}
             />
-          ))}
-        </div>
+          ) : (
+            <div className="dv-options" role="radiogroup" aria-label={tr('backup.targetTitle')}>
+              {targets.map((tg) => (
+                <OptionTile
+                  key={tg.id}
+                  name="dv-backup-target"
+                  checked={tg.id === targetId}
+                  onChange={() => setTargetId(tg.id)}
+                  title={
+                    <>
+                      {tg.label}
+                      {tg.encryptByDefault ? <Tag tone="ok">{tr('backup.targetEncBadge')}</Tag> : null}
+                    </>
+                  }
+                  description={
+                    <>
+                      {targetKindLabel(tg, tr)}
+                      <br />
+                      <span className="dv-mono">{targetLocation(tg)}</span>
+                    </>
+                  }
+                />
+              ))}
+            </div>
+          )
+        ) : null}
+        {destMode === 'directory' ? (
+          <Field label={tr('backup.directory')} htmlFor="dv-backup-dir" hint={tr('backup.directoryHint')}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <TextInput id="dv-backup-dir" value={directory} onChange={(e) => setDirectory(e.target.value)} placeholder={tr('backup.directoryPlaceholder')} mono />
+              {onPickDirectory ? (
+                <Button variant="quiet" onClick={() => { void onPickDirectory().then((p) => { if (p) setDirectory(p) }) }}>{tr('backup.browse')}</Button>
+              ) : null}
+            </div>
+          </Field>
+        ) : null}
+        {destMode === 'file' ? (
+          <Field label={tr('backup.exportFile')} htmlFor="dv-backup-file" hint={tr('backup.exportFileHint')}>
+            <TextInput id="dv-backup-file" value={exportFile} onChange={(e) => setExportFile(e.target.value)} placeholder={tr('backup.exportFilePlaceholder')} mono />
+          </Field>
+        ) : null}
       </Card>
 
       <Card>

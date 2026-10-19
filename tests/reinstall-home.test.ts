@@ -19,23 +19,75 @@ describe('plugin reinstall (e2e regressions)', () => {
           dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'left-pad'] } },
         }),
       )
-      const installs: Array<{ spec: string; profile: string; dshHome?: string }> = []
+      const installs: Array<{ command: string; args: string[] }> = []
       const service = new VaultService({
         dshHome: home.dshHome,
         agentsHome: home.agentsHome,
-        runPluginInstall: async (spec, profile, dshHome) => {
-          installs.push({ spec, profile, dshHome })
-          return { ok: true, detail: 'ok' }
+        runPluginInstall: async (command, args, opts) => {
+          installs.push({ command, args })
+          if (command === 'pnpm' && args[0] === 'install' && opts.cwd) {
+            const name = 'left-pad'
+            const pkg = join(opts.cwd, 'node_modules', name)
+            await mkdir(pkg, { recursive: true })
+            await writeFile(join(pkg, 'package.json'), JSON.stringify({ name, version: '1.3.0' }))
+            return { ok: true, detail: 'ok', code: 0 }
+          }
+          if (command === 'dsh' && args.includes('add')) {
+            return { ok: true, detail: 'ok', code: 0 }
+          }
+          return { ok: true, detail: 'ok', code: 0 }
         },
       })
       await service.init()
       const targetId = service.listTargets()[0]!.id
       const backup = await service.backup({ targetId })
       const result = await service.restore({ targetId, snapshotId: backup.snapshotId, conflict: 'use-backup', createRollbackSnapshot: false })
-      assert.ok(installs.some((i) => i.spec === 'left-pad@1.3.0'))
-      assert.ok(!installs.some((i) => i.spec.startsWith('@deepseek-ai/')))
-      assert.ok(installs.every((i) => i.dshHome === home.dshHome))
+      // pnpm materialize should have made left-pad already-present (or dsh add was attempted).
+      const leftPad = result.pluginResults?.find((r) => r.name === 'left-pad')
+      assert.ok(leftPad)
+      assert.ok(leftPad!.status === 'installed' || leftPad!.status === 'already-present')
+      assert.ok(!result.pluginResults?.some((r) => r.name.startsWith('@deepseek-ai/')))
       assert.ok(!result.pluginsFailed.some((n) => n.startsWith('@deepseek-ai/')))
+      assert.equal(result.ok, true)
+      service.stopSchedule()
+    } finally {
+      await home.cleanup()
+    }
+  })
+
+  it('marks restore incomplete when a plugin install fails', async () => {
+    const home = await makeTempHome()
+    try {
+      const profileDir = join(home.dshHome, 'profiles', 'web')
+      await writeFile(
+        join(profileDir, 'package.json'),
+        JSON.stringify({
+          name: 'dsh-profile-web',
+          dependencies: { 'missing-pkg-xyz': '1.0.0' },
+          dsh: { profile: { bundles: ['missing-pkg-xyz'] } },
+        }),
+      )
+      const service = new VaultService({
+        dshHome: home.dshHome,
+        agentsHome: home.agentsHome,
+        runPluginInstall: async (command, args) => {
+          if (command === 'dsh' && args.includes('missing-pkg-xyz@1.0.0')) {
+            return { ok: false, detail: '404 Not Found', code: 1 }
+          }
+          return { ok: true, detail: 'ok', code: 0 }
+        },
+      })
+      await service.init()
+      const targetId = service.listTargets()[0]!.id
+      const backup = await service.backup({ targetId })
+      const result = await service.restore({
+        targetId,
+        snapshotId: backup.snapshotId,
+        conflict: 'use-backup',
+        createRollbackSnapshot: false,
+      })
+      assert.equal(result.ok, false)
+      assert.ok(result.pluginsFailed.includes('missing-pkg-xyz'))
       service.stopSchedule()
     } finally {
       await home.cleanup()
@@ -53,13 +105,14 @@ describe('rollback without a local target (e2e regression)', () => {
   it('writes rollback into the private folder even when only a remote target exists', async () => {
     const home = await makeTempHome()
     try {
-      const service = new VaultService({ dshHome: home.dshHome, agentsHome: home.agentsHome, runPluginInstall: async () => ({ ok: true, detail: 'ok' }) })
+      const service = new VaultService({
+        dshHome: home.dshHome,
+        agentsHome: home.agentsHome,
+        runPluginInstall: async () => ({ ok: true, detail: 'ok', code: 0 }),
+      })
       await service.init()
       const local = service.listTargets()[0]!
       const backup = await service.backup({ targetId: local.id })
-      // Simulate a "new machine" whose only target is remote-like: re-register the
-      // same storage as a non-local kind is not possible offline, so remove the
-      // local target from the list and keep a second local-dir copy under another kind.
       const { LocalStorageAdapter } = await import('../src/storage/local.js')
       const bytes = await new LocalStorageAdapter({ kind: 'local', id: 'x', label: 'x', directory: (local as { directory: string }).directory }).get(backup.snapshotId)
       const { createServer } = await import('node:http')
@@ -76,7 +129,6 @@ describe('rollback without a local target (e2e regression)', () => {
         const result = await service.restore({ targetId: 'dav', snapshotId: backup.snapshotId, conflict: 'use-backup', reinstallPlugins: false })
         assert.ok(result.rollbackSnapshotId)
         assert.equal(result.rollbackTargetId, 'local-rollback')
-        // Private rollback folder is not a user-editable storage target.
         assert.ok(!service.listTargets().some((t) => t.id === 'local-rollback'))
         const rollbacks = await service.listSnapshots('local-rollback')
         assert.ok(rollbacks.some((s) => s.id === result.rollbackSnapshotId))
@@ -97,7 +149,11 @@ describe('schedule (e2e regressions)', () => {
     assert.equal(effectiveIntervalMs(60), 60 * 60_000)
     const home = await makeTempHome()
     try {
-      const service = new VaultService({ dshHome: home.dshHome, agentsHome: home.agentsHome, runPluginInstall: async () => ({ ok: true, detail: 'ok' }) })
+      const service = new VaultService({
+        dshHome: home.dshHome,
+        agentsHome: home.agentsHome,
+        runPluginInstall: async () => ({ ok: true, detail: 'ok', code: 0 }),
+      })
       await service.init()
       await service.updateSettings({ retention: { keepLast: 7 } })
       const targetId = service.listTargets()[0]!.id

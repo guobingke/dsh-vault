@@ -15,26 +15,31 @@ import './theme.css'
 export type VaultTab = 'overview' | 'backup' | 'restore' | 'storage' | 'snapshots' | 'schedule'
 
 export interface BackupInput {
-  targetId: string
+  targetId?: string
+  directory?: string
+  exportFile?: string
   encrypt: boolean
   password?: string
   includeSecrets: boolean
   notes?: string
-  /** Categories selected on the Backup tab (omitted when everything is selected). */
   categories?: BackupCategory[]
 }
 
 export interface RestoreInput {
-  targetId: string
-  snapshotId: string
+  targetId?: string
+  snapshotId?: string
+  importPath?: string
   password?: string
   conflict: 'keep-current' | 'use-backup'
   conflicts?: Record<string, 'keep-current' | 'use-backup'>
+  reinstallPlugins?: boolean
+  createRollbackSnapshot?: boolean
 }
 
 export interface PreviewInput {
-  targetId: string
-  snapshotId: string
+  targetId?: string
+  snapshotId?: string
+  importPath?: string
   password?: string
   conflict?: 'keep-current' | 'use-backup'
   conflicts?: Record<string, 'keep-current' | 'use-backup'>
@@ -239,6 +244,14 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                 defaultTargetId={backupTargetId ?? settings?.defaultTargetId}
                 onBackup={backupTo}
                 onNavigateStorage={() => navigate('storage')}
+                onPickDirectory={async () => {
+                  try {
+                    const r = await api.pickDirectory()
+                    return r.path
+                  } catch {
+                    return null
+                  }
+                }}
               />
             ) : null}
 
@@ -262,7 +275,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                   setPreview(null)
                   // Global default + per-path overrides so every item comes back
                   // annotated with its `resolution`.
-                  void api.previewRestore(input.targetId, input.snapshotId, input.password, input.conflict, input.conflicts)
+                  void api.previewRestore(input.targetId, input.snapshotId, input.password, input.conflict, input.conflicts, input.importPath)
                     .then(setPreview)
                     .catch((err: unknown) => setError(errorText(err)))
                     .finally(() => setBusy(false))
@@ -274,22 +287,46 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                   void api.restore({
                     targetId: input.targetId,
                     snapshotId: input.snapshotId,
+                    importPath: input.importPath,
                     password: input.password,
                     conflict: input.conflict,
                     conflicts: input.conflicts,
+                    reinstallPlugins: input.reinstallPlugins,
+                    createRollbackSnapshot: input.createRollbackSnapshot,
                   })
                     .then((r) => {
-                      const parts = [t('restore.successBody', { applied: r.applied.length, skipped: r.skipped.length })]
+                      const failed = (r.pluginsFailed?.length ?? 0) > 0 || r.ok === false
+                      const parts = [
+                        failed
+                          ? t('restore.partialBody', { applied: r.applied.length, skipped: r.skipped.length })
+                          : t('restore.successBody', { applied: r.applied.length, skipped: r.skipped.length }),
+                      ]
                       if (r.rollbackSnapshotId) parts.push(t('restore.rollbackCreated', { id: r.rollbackSnapshotId }))
-                      if (r.pluginsReinstalled.length) parts.push(t('restore.pluginsReinstalled', { list: r.pluginsReinstalled.join(', ') }))
-                      if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
+                      if (r.pluginResults?.length) {
+                        for (const row of r.pluginResults) {
+                          parts.push(`${row.name}: ${row.status}${row.detail ? ` — ${row.detail}` : ''}`)
+                        }
+                      } else {
+                        if (r.pluginsReinstalled.length) parts.push(t('restore.pluginsReinstalled', { list: r.pluginsReinstalled.join(', ') }))
+                        if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
+                      }
+                      if (r.restartRequired) parts.push(t('restore.restartRequired'))
                       for (const m of r.manualActions) parts.push(m)
-                      setNotice({ kind: 'ok', text: parts.join(' · ') })
+                      setNotice({ kind: failed ? 'error' : 'ok', text: parts.join(' · ') })
+                      if (failed) setError(parts.join(' · '))
                       setPreview(null)
                       return refresh()
                     })
                     .catch((err: unknown) => setError(errorText(err)))
                     .finally(() => setBusy(false))
+                }}
+                onPickDirectory={async () => {
+                  try {
+                    const r = await api.pickDirectory()
+                    return r.path
+                  } catch {
+                    return null
+                  }
                 }}
               />
             ) : null}

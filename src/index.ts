@@ -13,14 +13,14 @@ import { VaultService } from './core/vault-service.js'
 import { registerVaultRoutes } from './api/routes.js'
 import { buildVaultTools } from './tools/register.js'
 import { buildVaultCommands } from './commands/register.js'
+import type { PluginManagerLike } from './core/plugin-install.js'
 import type { VaultPluginConfig } from './core/types.js'
 
 export const name = 'dsh-vault'
 
 /**
- * No hard inject list: webServer/tools/commands/credentials are optional and
- * probed at runtime. Declaring them as required would prevent the plugin from
- * loading in headless/CLI-only profiles.
+ * No hard inject list: webServer/tools/commands/credentials/pluginManager are
+ * optional and probed at runtime.
  */
 export const inject: string[] = []
 
@@ -31,16 +31,22 @@ export interface HostContext {
   commands?: { register: (cmd: unknown) => unknown }
   webServer?: { register: (route: { kind: string; path: string; handler: (...args: never[]) => unknown }) => (() => void) | void; port?: number }
   credentials?: { get?: (ref: string) => Promise<string | undefined> | string | undefined }
+  pluginManager?: PluginManagerLike
+  directoryPicker?: {
+    capability: () =>
+      | { kind: 'native'; pick: (signal?: AbortSignal) => Promise<string | null> }
+      | { kind: 'browse'; list: (path?: string) => Promise<unknown> }
+  }
   logger?: { info?: (m: string) => void; warn?: (m: string) => void; error?: (m: string) => void }
-  /** Cordis optional-service lookup; plain property access on an un-injected service is not allowed. */
   get?: (name: string) => unknown
-  /** Cordis: run `callback` once the listed services exist (and dispose it when they leave). */
   inject?: (deps: string[], callback: (sub: HostContext) => void) => unknown
   [key: string]: unknown
 }
 
-/** Read an optional host service without declaring it in `inject` (Cordis `ctx.get`, else plain prop for tests). */
-function optionalService<T>(ctx: HostContext, name: 'webServer' | 'tools' | 'commands' | 'credentials'): T | undefined {
+function optionalService<T>(
+  ctx: HostContext,
+  name: 'webServer' | 'tools' | 'commands' | 'credentials' | 'pluginManager' | 'directoryPicker',
+): T | undefined {
   if (typeof ctx.get === 'function') {
     try {
       return (ctx.get(name) ?? undefined) as T | undefined
@@ -51,11 +57,24 @@ function optionalService<T>(ctx: HostContext, name: 'webServer' | 'tools' | 'com
   return ctx[name] as T | undefined
 }
 
+function bindDirectoryPicker(picker: HostContext['directoryPicker']): (() => Promise<string | null>) | undefined {
+  if (!picker?.capability) return undefined
+  try {
+    const cap = picker.capability()
+    if (cap.kind === 'native') return () => cap.pick()
+  } catch {
+    return undefined
+  }
+  return undefined
+}
+
 export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
   let credentials = optionalService<HostContext['credentials']>(ctx, 'credentials')
   const webServerSvc = optionalService<HostContext['webServer']>(ctx, 'webServer')
   const toolsSvc = optionalService<HostContext['tools']>(ctx, 'tools')
   const commandsSvc = optionalService<HostContext['commands']>(ctx, 'commands')
+  const pluginManagerSvc = optionalService<PluginManagerLike>(ctx, 'pluginManager')
+  const directoryPickerSvc = optionalService<HostContext['directoryPicker']>(ctx, 'directoryPicker')
   const resolveSecret = async (ref: string): Promise<string | undefined> => {
     try {
       const v = await credentials?.get?.(ref)
@@ -67,8 +86,11 @@ export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
 
   const service = new VaultService({
     dataDir: config.dataDir,
-    // Picks up $DSH_PROFILE from the Host (desktop → "desktop", dsh web → "web").
     resolveSecret,
+    pluginManager: pluginManagerSvc ?? null,
+    pickDirectory: bindDirectoryPicker(directoryPickerSvc),
+    // Match Desktop's China mainland install source; plugin-manager still falls back.
+    preferredRegistry: 'https://registry.npmmirror.com/',
   })
 
   ctx.effect(() => {
@@ -88,15 +110,10 @@ export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
     }
   }, 'dsh-vault:service')
 
-  // Note: Cordis forbids assigning ad-hoc properties on ctx ("cannot set property
-  // without provide"), so the service is not exposed as ctx.dshVault.
-
   if (webServerSvc) {
     const webServer = webServerSvc
     ctx.effect(() => registerVaultRoutes(webServer as Parameters<typeof registerVaultRoutes>[0], service), 'dsh-vault:routes')
   } else if (typeof ctx.inject === 'function') {
-    // In a real dsh profile the webserver may activate after this plugin; Cordis
-    // `inject` runs the sub-plugin once it is available (and disposes routes with it).
     ctx.inject(['webServer'], (sub) => {
       const webServer = (typeof sub.get === 'function' ? sub.get('webServer') : sub.webServer) as Parameters<typeof registerVaultRoutes>[0]
       sub.effect(() => registerVaultRoutes(webServer, service), 'dsh-vault:routes')
@@ -109,6 +126,22 @@ export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
     ctx.inject(['credentials'], (sub) => {
       credentials = (typeof sub.get === 'function' ? sub.get('credentials') : sub.credentials) as HostContext['credentials']
       sub.effect(() => () => { credentials = undefined }, 'dsh-vault:credentials')
+    })
+  }
+
+  if (!pluginManagerSvc && typeof ctx.inject === 'function') {
+    ctx.inject(['pluginManager'], (sub) => {
+      const mgr = (typeof sub.get === 'function' ? sub.get('pluginManager') : sub.pluginManager) as PluginManagerLike
+      service.setPluginManager(mgr)
+      sub.effect(() => () => service.setPluginManager(null), 'dsh-vault:pluginManager')
+    })
+  }
+
+  if (!directoryPickerSvc && typeof ctx.inject === 'function') {
+    ctx.inject(['directoryPicker'], (sub) => {
+      const picker = (typeof sub.get === 'function' ? sub.get('directoryPicker') : sub.directoryPicker) as HostContext['directoryPicker']
+      service.setPickDirectory(bindDirectoryPicker(picker))
+      sub.effect(() => () => service.setPickDirectory(undefined), 'dsh-vault:directoryPicker')
     })
   }
 
@@ -128,8 +161,6 @@ export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
 
   if (commandsSvc) {
     for (const cmd of buildVaultCommands(service)) {
-      // @deepseek-ai/dsh-commands expects { handler(invocation) → CommandResult };
-      // adapt the plain execute(args) → string definition.
       commandsSvc.register(toDshCommand(cmd) as never)
     }
   }
@@ -154,7 +185,6 @@ export function toDshCommand(cmd: { name: string; description: string; execute: 
 
 async function loadDefineTool(): Promise<((def: unknown) => unknown) | null> {
   try {
-    // Optional peer — resolved at runtime inside a dsh profile, not at build time.
     const mod = await (Function('return import("@deepseek-ai/dsh-tools")')() as Promise<{
       defineTool?: (def: unknown) => unknown
     }>)

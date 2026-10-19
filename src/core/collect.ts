@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { access, readdir, readFile, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import {
   isSecretRelPath,
@@ -9,6 +10,8 @@ import {
   shouldSkipDir,
   toSafeRelPath,
 } from './paths.js'
+import { bundledSourceRel, localSourcePath } from './plugin-install.js'
+import { expandUserPath } from './win-paths.js'
 import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord } from './types.js'
 
 async function fileShaAndData(abs: string): Promise<{ size: number; sha256: string; data: Buffer }> {
@@ -196,6 +199,28 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
       for (const p of extractPluginsFromPatchYaml(f.data.toString('utf8'), profileName)) {
         if (!plugins.some((x) => x.name === p.name && x.profile === p.profile)) plugins.push(p)
       }
+    }
+  }
+
+  // Bundle link:/file: plugin sources so machine-2 restore can re-link them.
+  const bundleLocal = options.bundleLocalPlugins !== false
+  if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {
+    for (const plugin of plugins) {
+      const local = localSourcePath(plugin.source) ?? (plugin.version && localSourcePath(plugin.version))
+      if (!local || !plugin.profile) continue
+      const abs = resolve(expandUserPath(local))
+      try {
+        await access(abs, constants.F_OK)
+      } catch {
+        continue
+      }
+      const relPrefix = bundledSourceRel(plugin.profile, plugin.name)
+      plugin.originalSource = plugin.source.startsWith('link:') || plugin.source.startsWith('file:')
+        ? plugin.source
+        : `link:${local}`
+      plugin.bundledSource = relPrefix
+      plugin.source = `link:${relPrefix}`
+      await walkFiles(abs, relPrefix, 'plugins', includeSecrets, files)
     }
   }
 

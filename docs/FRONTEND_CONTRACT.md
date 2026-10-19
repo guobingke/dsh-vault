@@ -147,13 +147,20 @@ Never render raw `token` / `password` / `secretAccessKey` after save in logs. Ma
 ```ts
 // request
 {
-  targetId: string
+  /** One of targetId / directory / exportFile is required. */
+  targetId?: string
+  /** One-shot local folder (any path; USB / synced drive / Windows drive letter). */
+  directory?: string
+  /** Single portable archive path (.tar.gz or .dshvault). */
+  exportFile?: string
   encrypt?: boolean
   password?: string
   includeSecrets?: boolean
   notes?: string
   categories?: BackupCategory[]
   kdf?: 'scrypt' | 'argon2id'
+  /** Bundle link:/file: plugin source trees into the archive (default true). */
+  bundleLocalPlugins?: boolean
 }
 
 // response
@@ -165,6 +172,8 @@ Never render raw `token` / `password` / `secretAccessKey` after save in logs. Ma
   encrypted: boolean
   includeSecrets: boolean
   manifest: VaultManifest
+  /** Absolute path when directory/exportFile was used. */
+  exportPath?: string
 }
 ```
 
@@ -195,13 +204,23 @@ interface SnapshotInfo {
 
 `{ targetId, snapshotId, password? }` → `{ ok: true, manifestId }`
 
+### `GET /fs/list?path=` / `POST /fs/list`
+
+List one directory level for the in-app path browser (Windows-safe). Response: `{ path, parent, entries: [{ name, path, kind, bytes? }] }`.
+
+### `POST /fs/pick-directory`
+
+Native OS folder picker when the host exposes `directoryPicker`; otherwise `{ path: null }`.
+
 ### `POST /restore/preview`
 
 ```ts
 // request
 {
-  targetId: string
-  snapshotId: string
+  /** targetId+snapshotId OR importPath (folder or .tar.gz/.dshvault file). */
+  targetId?: string
+  snapshotId?: string
+  importPath?: string
   password?: string
   /** Optional. When set, each item is annotated with `resolution`. */
   conflict?: 'keep-current' | 'use-backup'
@@ -239,8 +258,10 @@ Backward compatible: omit `conflict`/`conflicts` and the response matches the pr
 ```ts
 // request
 {
-  targetId: string
-  snapshotId: string
+  targetId?: string
+  snapshotId?: string
+  /** Folder or single archive; no storage target required. */
+  importPath?: string
   password?: string
   /** Global default for any path not listed in `conflicts`. Required. */
   conflict: 'keep-current' | 'use-backup'
@@ -256,7 +277,7 @@ Backward compatible: omit `conflict`/`conflicts` and the response matches the pr
   includeSecrets?: boolean
 }
 
-// response
+// response (HTTP 409 when ok === false — plugins failed; body still full RestoreResult)
 {
   snapshotId: string
   applied: string[]
@@ -266,6 +287,9 @@ Backward compatible: omit `conflict`/`conflicts` and the response matches the pr
   rollbackTargetId?: string
   pluginsReinstalled: string[]
   pluginsFailed: string[]
+  pluginResults?: Array<{ name: string; profile: string; status: 'installed' | 'already-present' | 'failed' | 'skipped'; detail: string }>
+  ok?: boolean
+  restartRequired?: boolean
   manualActions: string[]
 }
 ```
