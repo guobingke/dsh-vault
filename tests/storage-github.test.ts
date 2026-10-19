@@ -61,4 +61,30 @@ describe('GitHubStorageAdapter', () => {
     await adapter.delete('vault-gh-1')
     assert.equal((await adapter.list()).length, 0)
   })
+
+  it('falls back to the git blobs API for files over 1 MB', async () => {
+    const big = Buffer.alloc(1_200_000, 7)
+    const calls: string[] = []
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.includes('/contents/')) {
+        // Real GitHub: content is empty and encoding "none" above 1 MB.
+        return new Response(JSON.stringify({ content: '', encoding: 'none', sha: 'bigsha', size: big.length }), { status: 200 })
+      }
+      if (url.endsWith('/git/blobs/bigsha')) {
+        return new Response(JSON.stringify({ content: big.toString('base64'), encoding: 'base64' }), { status: 200 })
+      }
+      return new Response('nope', { status: 500 })
+    }
+    const adapter = new GitHubStorageAdapter(
+      { kind: 'github', id: 'gh', label: 'GH', owner: 'acme', repo: 'vault', token: 't' },
+      {},
+      fetchImpl,
+    )
+    const got = await adapter.get('dsh-vault/vault-big.dshvault')
+    assert.equal(got.length, big.length)
+    assert.ok(got.equals(big))
+    assert.ok(calls.some((u) => u.endsWith('/git/blobs/bigsha')))
+  })
 })

@@ -110,9 +110,18 @@ export class GitHubStorageAdapter implements StorageAdapter {
       headers: await this.headers(),
     })
     if (!res.ok) throw new Error(`GitHub get failed (${res.status})`)
-    const body = (await res.json()) as { content?: string; encoding?: string }
-    if (!body.content) throw new Error('GitHub content missing')
-    return Buffer.from(body.content.replace(/\n/g, ''), (body.encoding as BufferEncoding) || 'base64')
+    const body = (await res.json()) as { content?: string; encoding?: string; sha?: string }
+    if (body.content && body.encoding !== 'none') {
+      return Buffer.from(body.content.replace(/\n/g, ''), (body.encoding as BufferEncoding) || 'base64')
+    }
+    // The contents API omits the body for files over 1 MB (encoding "none").
+    // The git blobs API serves them up to 100 MB.
+    if (!body.sha) throw new Error('GitHub content missing')
+    const blob = await this.fetchImpl(this.api(`/git/blobs/${body.sha}`), { headers: await this.headers(false) })
+    if (!blob.ok) throw new Error(`GitHub blob get failed (${blob.status})`)
+    const b = (await blob.json()) as { content?: string; encoding?: string }
+    if (typeof b.content !== 'string') throw new Error('GitHub content missing')
+    return Buffer.from(b.content.replace(/\n/g, ''), (b.encoding as BufferEncoding) || 'base64')
   }
 
   private async resolvePath(snapshotId: string): Promise<string> {
