@@ -209,6 +209,18 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     }
   }
 
+  // Record the exact installed version so machine 2 gets the same one, not just the range.
+  for (const plugin of plugins) {
+    if (!plugin.profile || localSourcePath(plugin.source) || (plugin.version && localSourcePath(plugin.version))) continue
+    try {
+      const pkgPath = join(dshHome, 'profiles', plugin.profile, 'node_modules', ...plugin.name.split('/'), 'package.json')
+      const v = (JSON.parse(await readFile(pkgPath, 'utf8')) as { version?: unknown }).version
+      if (typeof v === 'string' && v) plugin.installedVersion = v
+    } catch {
+      // not installed on this machine (or a dsh built-in) — keep the manifest range
+    }
+  }
+
   // Bundle link:/file: plugin sources so machine-2 restore can re-link them.
   const bundleLocal = options.bundleLocalPlugins !== false
   if (bundleLocal && (wanted.has('plugins') || wanted.has('profiles') || wanted.has('plugin-config'))) {

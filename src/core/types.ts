@@ -55,6 +55,8 @@ export interface PluginRecord {
   bundledSource?: string
   /** Original link:/file: source from the source machine (for diagnostics). */
   originalSource?: string
+  /** Exact version found in the profile's node_modules at backup time (npm plugins). */
+  installedVersion?: string
 }
 
 export interface VaultManifest {

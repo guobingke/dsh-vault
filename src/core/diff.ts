@@ -78,7 +78,8 @@ export async function previewRestoreDiff(input: {
   if (!input.manifest.includeSecrets) {
     manualActions.push('Re-enter API keys and other secrets in Settings → Models (credentials were excluded from this snapshot).')
   }
-  if (pluginsToReinstall.some((p) => p.source.startsWith('link:') || p.source.startsWith('file:'))) {
+  // Bundled link: sources are restored from the snapshot and re-linked automatically.
+  if (pluginsToReinstall.some((p) => !p.bundledSource && (p.source.startsWith('link:') || p.source.startsWith('file:')))) {
     manualActions.push('Some plugins used local link:/file: sources; reinstall or re-link them on this machine.')
   }
 
