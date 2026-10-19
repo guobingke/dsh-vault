@@ -1,5 +1,5 @@
 import { packTarGz, unpackTarGz } from './archive.js'
-import { decryptBytes, encryptBytes, parseEnvelope, serializeEnvelope } from './encryption.js'
+import { VaultDecryptError, decryptBytes, encryptBytes, parseEnvelope, serializeEnvelope } from './encryption.js'
 import { buildManifest, makeSnapshotId, parseManifest } from './manifest.js'
 import { sha256Buffer, verifyManifestIntegrity } from './checksum.js'
 import type { CollectedFile, KdfAlgorithm, PluginRecord, ProgressCallback, VaultManifest } from './types.js'
@@ -68,7 +68,7 @@ export async function unpackSnapshot(
   const head = bytes.toString('utf8', 0, Math.min(bytes.length, 80))
   if (head.includes('dsh-vault-encrypted')) {
     onProgress?.({ phase: 'decrypt', message: 'Decrypting snapshot', percent: 20 })
-    if (!password) throw new Error('password required to decrypt snapshot')
+    if (!password) throw new VaultDecryptError('password required to decrypt snapshot', 'PASSWORD_REQUIRED')
     archive = await decryptBytes(parseEnvelope(bytes), password)
   }
   onProgress?.({ phase: 'download', message: 'Unpacking archive', percent: 50 })

@@ -34,6 +34,10 @@ export function writeError(res: ServerResponse, error: unknown): void {
     writeJson(res, error.status, error.code ? { error: error.message, code: error.code } : { error: error.message })
     return
   }
+  if (error instanceof Error && error.name === 'VaultDecryptError') {
+    writeJson(res, 400, { error: error.message, code: (error as Error & { code?: string }).code })
+    return
+  }
   const message = error instanceof Error ? error.message : String(error)
   writeJson(res, 500, { error: message })
 }

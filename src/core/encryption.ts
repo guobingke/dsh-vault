@@ -134,6 +134,14 @@ export async function encryptBytes(plain: Buffer, options: EncryptOptions): Prom
 }
 
 /** Decrypt an envelope back to plaintext bytes. */
+/** User-facing decryption failure (wrong/missing password, corrupted payload). */
+export class VaultDecryptError extends Error {
+  constructor(message: string, readonly code: 'BAD_PASSWORD' | 'PASSWORD_REQUIRED') {
+    super(message)
+    this.name = 'VaultDecryptError'
+  }
+}
+
 export async function decryptBytes(
   envelope: EncryptedEnvelope,
   password: string,
@@ -151,7 +159,14 @@ export async function decryptBytes(
   const data = Buffer.from(envelope.cipher.data, 'base64')
   const decipher = createDecipheriv('aes-256-gcm', key, nonce)
   decipher.setAuthTag(tag)
-  const plain = Buffer.concat([decipher.update(data), decipher.final()])
+  let plain: Buffer
+  try {
+    plain = Buffer.concat([decipher.update(data), decipher.final()])
+  } catch {
+    // GCM auth failure: Node's message ("Unsupported state or unable to
+    // authenticate data") is meaningless to users.
+    throw new VaultDecryptError('wrong password or corrupted snapshot', 'BAD_PASSWORD')
+  }
   const digest = sha256Buffer(plain)
   const expected = Buffer.from(envelope.plaintextSha256, 'hex')
   const actual = Buffer.from(digest, 'hex')

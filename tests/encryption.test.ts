@@ -67,3 +67,11 @@ describe('encryption', () => {
     })
   })
 })
+
+describe('decrypt errors (e2e regression)', () => {
+  it('reports a wrong password as VaultDecryptError BAD_PASSWORD', async () => {
+    const { encryptBytes: enc, decryptBytes: dec, VaultDecryptError } = await import('../src/core/encryption.js')
+    const env = await enc(Buffer.from('hello'), { password: 'right-pass' })
+    await assert.rejects(() => dec(env, 'wrong-pass'), (err: unknown) => err instanceof VaultDecryptError && err.code === 'BAD_PASSWORD' && /wrong password/.test(err.message))
+  })
+})
