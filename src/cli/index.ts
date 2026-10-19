@@ -43,11 +43,12 @@ function has(args: string[], name: string): boolean {
   return args.includes(name)
 }
 
-function runDshPluginAdd(profile: string, packageSpec: string): Promise<{ ok: boolean; detail: string }> {
+function runDshPluginAdd(profile: string, packageSpec: string, dshHome?: string): Promise<{ ok: boolean; detail: string }> {
   return new Promise((resolvePromise) => {
     const child = spawn('dsh', ['plugin', '--profile', profile, 'add', packageSpec], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
+      // Honor --home: the child dsh must install into the same DSH_HOME.
+      env: dshHome ? { ...process.env, DSH_HOME: dshHome } : process.env,
       shell: process.platform === 'win32',
     })
     let detail = ''
@@ -92,7 +93,7 @@ async function runSetup(args: string[], home: string): Promise<number> {
       continue
     }
     process.stderr.write(`→ ${plan.command}\n`)
-    const run = await runDshPluginAdd(profile, packageSpec)
+    const run = await runDshPluginAdd(profile, packageSpec, home)
     results.push({
       profile,
       command: plan.command,

@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
+import { isBuiltinDshBundle } from './diff.js'
 import { collectBackupFiles } from './collect.js'
 import { normalizeConflicts } from './conflict.js'
 import {
@@ -53,7 +54,7 @@ export interface VaultServiceOptions {
   activeProfile?: string
   resolveSecret?: (ref: string) => Promise<string | undefined>
   /** Override plugin install command runner (for tests). */
-  runPluginInstall?: (spec: string, profile: string) => Promise<{ ok: boolean; detail: string }>
+  runPluginInstall?: (spec: string, profile: string, dshHome?: string) => Promise<{ ok: boolean; detail: string }>
 }
 
 export class VaultService {
@@ -219,7 +220,7 @@ export class VaultService {
       // Applying that rollback later uses the same conflict resolution rules.
       onProgress?.({ phase: 'pack', message: 'Creating pre-restore rollback snapshot', percent: 25 })
       const rb = await this.backup({
-        targetId: ensureLocalRollbackTarget(this),
+        targetId: await ensureLocalRollbackTarget(this),
         encrypt: false,
         includeSecrets: false,
         notes: `pre-restore rollback for ${req.snapshotId}`,
@@ -247,13 +248,16 @@ export class VaultService {
         agentsHome: this.agentsHome,
       })
       for (const plugin of preview.pluginsToReinstall) {
+        // Bundles shipped inside dsh itself (e.g. @deepseek-ai/dsh-base) are
+        // profile layers, not installable plugins.
+        if (isBuiltinDshBundle(plugin.name)) continue
         if (plugin.source.startsWith('link:') || plugin.source.startsWith('file:')) {
           result.pluginsFailed.push(plugin.name)
           continue
         }
         const profile = plugin.profile ?? this.activeProfile
         const spec = plugin.version ? `${plugin.name}@${plugin.version}` : plugin.name
-        const install = await this.runPluginInstall(spec, profile)
+        const install = await this.runPluginInstall(spec, profile, this.dshHome)
         if (install.ok) result.pluginsReinstalled.push(plugin.name)
         else result.pluginsFailed.push(plugin.name)
       }
@@ -283,7 +287,9 @@ export class VaultService {
       ...patch,
       retention: { ...this.settings.schedule.retention, ...patch.retention },
     }
-    await this.updateSettings({ schedule, retention: schedule.retention })
+    // Schedule retention applies to the schedule's target only; do not clobber
+    // the global retention policy.
+    await this.updateSettings({ schedule })
     return this.settings.schedule
   }
 
@@ -299,14 +305,14 @@ export class VaultService {
       },
       onProgress,
     )
-    const next = new Date(Date.now() + schedule.intervalMinutes * 60_000).toISOString()
+    const next = new Date(Date.now() + effectiveIntervalMs(schedule.intervalMinutes)).toISOString()
     await this.updateSchedule({ lastRunAt: new Date().toISOString(), nextRunAt: next })
     return result
   }
 
   stopSchedule(): void {
     if (this.scheduleTimer) {
-      clearInterval(this.scheduleTimer)
+      clearTimeout(this.scheduleTimer)
       this.scheduleTimer = null
     }
   }
@@ -315,13 +321,31 @@ export class VaultService {
     this.stopSchedule()
     const schedule = this.settings.schedule
     if (!schedule.enabled) return
-    const intervalMs = Math.max(15, schedule.intervalMinutes) * 60_000
-    this.scheduleTimer = setInterval(() => {
+    // Honor a persisted nextRunAt so restarts don't keep pushing the run out;
+    // overdue runs fire shortly after startup. Each run persists the next
+    // nextRunAt via updateSchedule → updateSettings → armSchedule.
+    const intervalMs = effectiveIntervalMs(schedule.intervalMinutes)
+    const due = schedule.nextRunAt ? Date.parse(schedule.nextRunAt) : NaN
+    const delay = Number.isFinite(due)
+      ? Math.min(Math.max(due - Date.now(), SCHEDULE_CATCHUP_DELAY_MS), intervalMs)
+      : intervalMs
+    this.scheduleTimer = setTimeout(() => {
+      this.scheduleTimer = null
       void this.runScheduledBackup().catch(() => {
-        // never log secrets; swallow and retry next interval
+        // never log secrets; retry on the next interval
+        this.armScheduleAfterFailure(intervalMs)
       })
-    }, intervalMs)
+    }, delay)
     // unref so CLI/tests can exit
+    this.scheduleTimer.unref?.()
+  }
+
+  private armScheduleAfterFailure(intervalMs: number): void {
+    if (this.scheduleTimer || !this.settings.schedule.enabled) return
+    this.scheduleTimer = setTimeout(() => {
+      this.scheduleTimer = null
+      this.armSchedule()
+    }, intervalMs)
     this.scheduleTimer.unref?.()
   }
 
@@ -373,18 +397,39 @@ export class VaultService {
   }
 }
 
-function ensureLocalRollbackTarget(service: VaultService): string {
-  const existing = service.listTargets().find((t) => t.kind === 'local')
-  if (existing) return existing.id
-  throw new Error('no local storage target available for rollback snapshot')
+/** Minimum schedule interval enforced by the timer (and reflected in nextRunAt). */
+export const MIN_SCHEDULE_MINUTES = 15
+const SCHEDULE_CATCHUP_DELAY_MS = 5_000
+
+export function effectiveIntervalMs(intervalMinutes: number): number {
+  return Math.max(MIN_SCHEDULE_MINUTES, Number(intervalMinutes) || 0) * 60_000
 }
 
-async function defaultPluginInstall(spec: string, profile: string): Promise<{ ok: boolean; detail: string }> {
+/** Id of the local target auto-created for rollback snapshots when none exists. */
+export const ROLLBACK_TARGET_ID = 'local-rollback'
+
+async function ensureLocalRollbackTarget(service: VaultService): Promise<string> {
+  const existing = service.listTargets().find((t) => t.kind === 'local')
+  if (existing) return existing.id
+  // Fresh machine with only remote targets: keep rollback snapshots under the
+  // vault data dir instead of failing the whole restore.
+  await service.upsertTarget({
+    kind: 'local',
+    id: ROLLBACK_TARGET_ID,
+    label: 'Rollback snapshots',
+    directory: vaultRollbackDir(service.dataDir),
+  })
+  return ROLLBACK_TARGET_ID
+}
+
+async function defaultPluginInstall(spec: string, profile: string, dshHome?: string): Promise<{ ok: boolean; detail: string }> {
   return new Promise((resolve) => {
     // Prefer whatever `dsh` is on PATH (Desktop tray terminal = bundled carrier).
     const child = spawn('dsh', ['plugin', '--profile', profile, 'add', spec], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
+      // Install into the home being restored (CLI --home / plugin dataDir), not
+      // whatever DSH_HOME the current process happens to carry.
+      env: dshHome ? { ...process.env, DSH_HOME: dshHome } : process.env,
       shell: process.platform === 'win32',
     })
     let detail = ''
@@ -410,3 +455,5 @@ export async function writeSidecarMeta(dir: string, snapshotId: string, meta: Re
   await mkdir(dir, { recursive: true })
   await writeFile(join(dir, `${snapshotId}.meta.json`), JSON.stringify(meta, null, 2) + '\n', { mode: 0o600 })
 }
+
+export { isBuiltinDshBundle } from './diff.js'

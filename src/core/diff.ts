@@ -72,7 +72,8 @@ export async function previewRestoreDiff(input: {
   const removed = items.filter((i) => i.change === 'remove').length
   const unchanged = items.filter((i) => i.change === 'unchanged').length
 
-  const pluginsToReinstall = await findMissingPlugins(input.manifest.plugins, input.dshHome)
+  // dsh's own shipped bundles (e.g. @deepseek-ai/dsh-base) are profile layers, not reinstallable plugins.
+  const pluginsToReinstall = (await findMissingPlugins(input.manifest.plugins, input.dshHome)).filter((p) => !isBuiltinDshBundle(p.name))
   const manualActions: string[] = []
   if (!input.manifest.includeSecrets) {
     manualActions.push('Re-enter API keys and other secrets in Settings → Models (credentials were excluded from this snapshot).')
@@ -118,4 +119,9 @@ async function findMissingPlugins(plugins: PluginRecord[], dshHome: string): Pro
     }
   }
   return missing
+}
+
+/** dsh ships its own bundles under the @deepseek-ai/dsh-* scope; they are never reinstalled. */
+export function isBuiltinDshBundle(name: string): boolean {
+  return name.startsWith('@deepseek-ai/dsh-') || name === '@deepseek-ai/dsh'
 }
