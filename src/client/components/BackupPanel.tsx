@@ -1,44 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { BackupCategory, StorageTargetConfig } from '../../core/types.js'
-import { useT, type MessageKey } from '../i18n.js'
+import { useT, type MessageKey, type Translate } from '../i18n.js'
 import { passwordStrength } from '../lib/format.js'
-import { formatBytes, targetKindLabel, targetLocation } from '../lib/targets.js'
+import { targetKindLabel, targetLocation } from '../lib/targets.js'
 import {
-  Badge,
+  Banner,
   Button,
   Card,
-  CardBody,
-  CardFooter,
-  CardHeader,
-  CtaButton,
-  ErrorState,
+  CardHead,
+  EmptyState,
   Field,
-  IconHelp,
-  LoadingInline,
-  Meter,
-  Banner,
   OptionTile,
-  PageHeader,
   PasswordInput,
   ProgressBar,
-  StatusDot,
+  Rows,
+  SettingRow,
   Switch,
+  Tag,
   TextArea,
-  EmptyState,
+  TextInput,
 } from './ui.js'
-import {
-  IconArchive,
-  IconFolder,
-  IconHardDrive,
-  IconKey,
-  IconLock,
-  IconShield,
-  IconShieldCheck,
-  IconUnlock,
-  IconZap,
-  storageIcon,
-} from './Icons.js'
-import type { Translate } from '../i18n.js'
 
 export interface BackupPanelProps {
   targets: StorageTargetConfig[]
@@ -52,12 +33,12 @@ export interface BackupPanelProps {
     password?: string
     includeSecrets: boolean
     notes?: string
+    categories?: BackupCategory[]
   }) => void
-  /** Optional: pre-select a target (e.g. “Back up here” on Overview). */
+  /** Optional: pre-select a target (default target from settings). */
   defaultTargetId?: string
-  /** Optional: current progress stage, one of collect | pack | encrypt | upload | done. */
+  /** Optional: current progress stage: collect | pack | encrypt | upload. */
   stage?: string
-  /** Optional: raw result message detail is not required; panels stay presentational. */
   onNavigateStorage?: () => void
 }
 
@@ -73,6 +54,8 @@ const CATEGORIES: Array<{ id: BackupCategory; label: MessageKey; desc: MessageKe
   { id: 'instructions', label: 'backup.cat.instructions', desc: 'backup.cat.instructions.desc' },
   { id: 'credentials', label: 'backup.cat.credentials', desc: 'backup.cat.credentials.desc', secret: true },
 ]
+
+const ALL_IDS = CATEGORIES.map((c) => c.id)
 
 function strengthLabel(tr: Translate, level: 0 | 1 | 2 | 3 | 4): string {
   return tr(`backup.strength.${level}` as `backup.strength.${0 | 1 | 2 | 3 | 4}`)
@@ -95,7 +78,7 @@ export function BackupPanel({
   const [includeSecrets, setIncludeSecrets] = useState(false)
   const [password, setPassword] = useState('')
   const [notes, setNotes] = useState('')
-  const [scope, setScope] = useState<Set<BackupCategory>>(() => new Set(CATEGORIES.map((c) => c.id)))
+  const [scope, setScope] = useState<Set<BackupCategory>>(() => new Set(ALL_IDS))
   const [touched, setTouched] = useState(false)
 
   // Keep the selection valid when targets load asynchronously or change.
@@ -113,15 +96,9 @@ export function BackupPanel({
 
   const strength = passwordStrength(password)
   const selectedCats = CATEGORIES.filter((c) => scope.has(c.id))
-  const secretsAllowed = encrypt && selectedCats.some((c) => c.secret)
   const noScope = selectedCats.length === 0
   const passwordMissing = encrypt && password.length === 0
   const canSubmit = Boolean(targetId) && !noScope && !passwordMissing && !busy
-
-  const progressValue = useMemo(() => {
-    if (!busy) return typeof progress === 'number' ? progress : undefined
-    return typeof progress === 'number' ? progress : undefined
-  }, [busy, progress])
 
   const toggleCategory = (id: BackupCategory) => {
     setScope((prev) => {
@@ -132,209 +109,185 @@ export function BackupPanel({
     })
   }
 
-  const stages = [
-    { key: 'collect', label: tr('backup.progress.collect') },
-    { key: 'pack', label: tr('backup.progress.pack') },
-    ...(encrypt ? [{ key: 'encrypt', label: tr('backup.progress.encrypt') }] : []),
-    { key: 'upload', label: tr('backup.progress.upload') },
-  ]
+  const progressLabel = useMemo(
+    () => (stage ? tr('backup.progressStage', { stage: tr(`backup.progress.${stage}` as MessageKey) }) : tr('backup.progress')),
+    [tr, stage],
+  )
 
   if (targets.length === 0) {
     return (
-      <div className="dv-page">
-        <PageHeader title={tr('backup.title')} subtitle={tr('backup.subtitle')} />
-        {error ? <ErrorState error={error} /> : null}
+      <>
+        <p className="dv-section-desc">{tr('backup.desc')}</p>
+        {error ? <Banner tone="error" title={tr('backup.failedTitle')}>{error}</Banner> : null}
         <EmptyState
-          icon={<IconFolder size={22} />}
           title={tr('backup.noTargetsTitle')}
           body={tr('backup.noTargetsBody')}
-          actions={
-            onNavigateStorage ? (
-              <Button variant="primary" icon={<IconHardDrive size={15} />} onClick={onNavigateStorage}>
-                {tr('backup.goStorage')}
-              </Button>
-            ) : null
-          }
+          actions={onNavigateStorage ? <Button variant="primary" onClick={onNavigateStorage}>{tr('backup.goStorage')}</Button> : null}
         />
-      </div>
+      </>
     )
   }
 
+  const submit = () => {
+    setTouched(true)
+    if (!canSubmit) return
+    onBackup({
+      targetId,
+      encrypt,
+      password: encrypt ? password : undefined,
+      includeSecrets: includeSecrets && encrypt,
+      notes: notes.trim() || undefined,
+      categories: selectedCats.length === CATEGORIES.length ? undefined : selectedCats.map((c) => c.id),
+    })
+  }
+
   return (
-    <div className="dv-page">
-      <PageHeader title={tr('backup.title')} subtitle={tr('backup.subtitle')} />
+    <>
+      <p className="dv-section-desc">{tr('backup.desc')}</p>
+      {error ? <Banner tone="error" title={tr('backup.failedTitle')}>{error}</Banner> : null}
+      {message ? <Banner tone="ok">{message}</Banner> : null}
 
-      {error ? (
-        <Banner tone="error" title={tr('backup.failedTitle')}>{error}</Banner>
-      ) : null}
-      {message ? (
-        <Banner tone="ok" title={tr('backup.successTitleShort')}>{message}</Banner>
-      ) : null}
-
-      <div className="dv-grid-2" style={{ alignItems: 'start' }}>
-        <div className="dv-stack-4">
-          <Card>
-            <CardHeader icon={<IconHardDrive size={18} />} title={tr('backup.targetTitle')} subtitle={tr('backup.targetSubtitle')} />
-            <CardBody>
-              <div className="dv-options" role="radiogroup" aria-label={tr('backup.targetTitle')}>
-                {targets.map((tg) => {
-                  const KindIcon = storageIcon(tg.kind)
-                  return (
-                    <OptionTile
-                      key={tg.id}
-                      name="dv-backup-target"
-                      checked={tg.id === targetId}
-                      onChange={() => setTargetId(tg.id)}
-                      icon={<KindIcon size={15} />}
-                      title={
-                        <span className="dv-row dv-gap-2">
-                          {tg.label}
-                          {tg.encryptByDefault ? <Badge tone="ok">{tr('backup.targetEncryptedBadge')}</Badge> : null}
-                        </span>
-                      }
-                      description={
-                        <span className="dv-stack" style={{ gap: 2 }}>
-                          <span>{targetKindLabel(tg, tr)} · {tg.id}</span>
-                          <span className="dv-mono dv-faint dv-truncate" title={targetLocation(tg)}>{targetLocation(tg)}</span>
-                        </span>
-                      }
-                    />
-                  )
-                })}
-              </div>
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardHeader
-              icon={encrypt ? <IconLock size={18} /> : <IconUnlock size={18} />}
-              title={tr('backup.encTitle')}
-              subtitle={tr('backup.encSubtitle')}
-              actions={
-                <Switch
-                  id="dv-backup-encrypt"
-                  checked={encrypt}
-                  onChange={() => {
-                    const next = !encrypt
-                    setEncrypt(next)
-                    if (!next) {
-                      setIncludeSecrets(false)
-                      setScope((prev) => {
-                        const copy = new Set(prev)
-                        copy.delete('credentials')
-                        return copy
-                      })
-                    }
-                  }}
-                />
+      <Card>
+        <CardHead title={tr('backup.targetTitle')} sub={tr('backup.targetDesc')} />
+        <div className="dv-card-sep" aria-hidden="true" />
+        <div className="dv-options" role="radiogroup" aria-label={tr('backup.targetTitle')}>
+          {targets.map((tg) => (
+            <OptionTile
+              key={tg.id}
+              name="dv-backup-target"
+              checked={tg.id === targetId}
+              onChange={() => setTargetId(tg.id)}
+              title={
+                <>
+                  {tg.label}
+                  {tg.encryptByDefault ? <Tag tone="ok">{tr('backup.targetEncBadge')}</Tag> : null}
+                </>
+              }
+              description={
+                <>
+                  {targetKindLabel(tg, tr)}
+                  <br />
+                  <span className="dv-mono">{targetLocation(tg)}</span>
+                </>
               }
             />
-            <CardBody>
-              <p className="dv-hint">{tr('backup.encToggleDesc')}</p>
-              {encrypt ? (
-                <div className="dv-stack-3">
-                  <Field
-                    label={tr('backup.password')}
-                    htmlFor="dv-backup-password"
-                    required
-                    hint={password ? tr('backup.strength', { level: strengthLabel(tr, strength.level) }) : tr('backup.passwordHint')}
-                    error={touched && passwordMissing ? tr('backup.passwordRequired') : null}
-                  >
-                    <PasswordInput
-                      id="dv-backup-password"
-                      value={password}
-                      autoComplete="new-password"
-                      placeholder={tr('backup.passwordPlaceholder')}
-                      onChange={(e) => setPassword(e.target.value)}
-                      aria-describedby="dv-backup-strength"
-                    />
-                  </Field>
-                  <div id="dv-backup-strength" className="dv-stack" style={{ gap: 6 }}>
-                    <Meter level={strength.level} label={tr('backup.strength', { level: strengthLabel(tr, strength.level) })} />
-                    <span className="dv-hint">{tr('backup.strengthHint')}</span>
-                  </div>
-                  <OptionTile
-                    shape="square"
-                    checked={includeSecrets}
-                    onChange={() => {
-                      const next = !includeSecrets
-                      setIncludeSecrets(next)
-                      if (next) setScope((prev) => new Set(prev).add('credentials'))
-                    }}
-                    title={tr('backup.secrets')}
-                    description={tr('backup.secretsDesc')}
-                    icon={<IconKey size={15} />}
-                  />
-                </div>
-              ) : (
-                <p className="dv-hint">{tr('backup.secretsBlocked')}</p>
-              )}
-            </CardBody>
-          </Card>
+          ))}
         </div>
+      </Card>
 
-        <div className="dv-stack-4">
-          <Card hero>
-            <CardHeader icon={<IconShieldCheck size={18} />} title={tr('backup.summary')} />
-            <CardBody>
-              <dl className="dv-kv">
-                <dt>{tr('common.target')}</dt>
-                <dd>{target ? `${target.label}（${target.id}）` : '—'}</dd>
-                <dt>{tr('backup.scopeTitle')}</dt>
-                <dd>{tr('backup.scopeCount', { count: selectedCats.length, total: CATEGORIES.length })}</dd>
-                <dt>{tr('backup.encTitle')}</dt>
-                <dd>
-                  <span className="dv-row dv-gap-1">
-                    <StatusDot tone={encrypt ? 'ok' : 'neutral'} />
-                    {encrypt ? tr('common.encrypted') : tr('common.plaintext')}
-                  </span>
-                </dd>
-                <dt>{tr('backup.secrets')}</dt>
-                <dd>{includeSecrets && encrypt ? tr('backup.summaryYes') : tr('backup.summaryNo')}</dd>
-              </dl>
+      <Card>
+        <CardHead
+          title={tr('backup.scopeTitle')}
+          sub={tr('backup.scopeDesc')}
+          actions={
+            <>
+              <span className="dv-small dv-muted dv-num">{tr('backup.scopeSummary', { selected: selectedCats.length, total: CATEGORIES.length })}</span>
+              <Button size="sm" variant="quiet" onClick={() => setScope(new Set(ALL_IDS))}>{tr('backup.scopeAll')}</Button>
+              <Button size="sm" variant="quiet" onClick={() => setScope(new Set())}>{tr('backup.scopeNone')}</Button>
+            </>
+          }
+        />
+        <div className="dv-card-sep" aria-hidden="true" />
+        <div className="dv-card-list" style={{ gap: 6 }}>
+          {CATEGORIES.map((c) => (
+            <OptionTile
+              key={c.id}
+              shape="square"
+              checked={scope.has(c.id)}
+              onChange={() => toggleCategory(c.id)}
+              title={tr(c.label)}
+              description={tr(c.desc)}
+            />
+          ))}
+        </div>
+      </Card>
 
-              {busy ? (
-                <ProgressBar
-                  value={progressValue}
-                  label={tr('backup.progressTitle')}
-                  detail={tr('backup.progressIndeterminate')}
-                  stages={stages}
-                  activeStage={stage}
-                />
-              ) : null}
-
-              <CtaButton
-                block
-                onClick={() => {
-                  setTouched(true)
-                  if (!canSubmit) return
-                  onBackup({
-                    targetId,
-                    encrypt,
-                    password: encrypt ? password : undefined,
-                    includeSecrets: includeSecrets && encrypt,
-                    notes: notes.trim() || undefined,
+      <Rows label={tr('backup.encTitle')}>
+        <SettingRow
+          title={tr('backup.encTitle')}
+          description={tr('backup.encDesc')}
+          htmlFor="dv-backup-encrypt"
+          control={
+            <Switch
+              id="dv-backup-encrypt"
+              checked={encrypt}
+              onChange={() => {
+                const next = !encrypt
+                setEncrypt(next)
+                if (!next) {
+                  setIncludeSecrets(false)
+                  setScope((prev) => {
+                    const copy = new Set(prev)
+                    copy.delete('credentials')
+                    return copy
                   })
-                }}
-                disabled={busy}
-                loading={busy}
-                icon={<IconZap size={18} />}
-              >
-                {busy ? tr('backup.submitting') : tr('backup.submit')}
-              </CtaButton>
-              {!busy && (passwordMissing || noScope) ? (
-                <p className="dv-hint" data-tone="error">
-                  {passwordMissing ? tr('backup.passwordRequired') : tr('backup.noScope')}
-                </p>
-              ) : null}
-              <p className="dv-hint">
-                <IconHelp size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
-                {tr('dashboard.secretsNote')}
-              </p>
-            </CardBody>
-          </Card>
-        </div>
+                }
+              }}
+            />
+          }
+        />
+        {encrypt ? (
+          <SettingRow
+            stacked
+            title={tr('backup.password')}
+            description={touched && passwordMissing ? tr('backup.passwordRequired') : tr('backup.passwordHint')}
+            htmlFor="dv-backup-password"
+          >
+            <Field
+              label={<span className="dv-sr-only">{tr('backup.password')}</span>}
+              htmlFor="dv-backup-password"
+              hint={password ? tr('backup.strength', { level: strengthLabel(tr, strength.level) }) : undefined}
+            >
+              <PasswordInput
+                id="dv-backup-password"
+                value={password}
+                autoComplete="new-password"
+                placeholder={tr('backup.passwordPlaceholder')}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </Field>
+          </SettingRow>
+        ) : null}
+        <SettingRow
+          title={tr('backup.secretsTitle')}
+          description={encrypt ? tr('backup.secretsDesc') : tr('backup.secretsBlocked')}
+          htmlFor="dv-backup-secrets"
+          control={
+            <Switch
+              id="dv-backup-secrets"
+              checked={includeSecrets && encrypt}
+              disabled={!encrypt}
+              onChange={() => {
+                const next = !includeSecrets
+                setIncludeSecrets(next)
+                if (next) setScope((prev) => new Set(prev).add('credentials'))
+              }}
+            />
+          }
+        />
+        <SettingRow title={tr('backup.notes')} htmlFor="dv-backup-notes" control={
+          <div style={{ width: 220, maxWidth: '100%' }}>
+            <TextInput
+              id="dv-backup-notes"
+              value={notes}
+              maxLength={200}
+              placeholder={tr('backup.notesPlaceholder')}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+          </div>
+        } />
+      </Rows>
+
+      {busy ? <ProgressBar value={progress} label={progressLabel} /> : null}
+
+      <div className="dv-card-foot" style={{ justifyContent: 'space-between' }}>
+        <span className="dv-hint" style={{ color: noScope ? 'var(--dv-danger)' : undefined }}>
+          {noScope ? tr('backup.noScope') : ''}
+        </span>
+        <Button variant="primary" onClick={submit} loading={busy}>
+          {busy ? tr('backup.submitting') : tr('backup.submit')}
+        </Button>
       </div>
-    </div>
+    </>
   )
 }

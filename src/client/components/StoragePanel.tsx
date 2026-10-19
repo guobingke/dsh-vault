@@ -2,53 +2,26 @@ import { useId, useMemo, useRef, useState } from 'react'
 import type { SnapshotInfo, StorageKind, StorageTargetConfig } from '../../core/types.js'
 import { VaultApiError } from '../api.js'
 import { useT, type Translate } from '../i18n.js'
+import { formatDateTime, relativeLabel } from '../lib/format.js'
+import { hasStoredSecret, summarizeSnapshotsByTarget, targetKindLabel, targetLocation } from '../lib/targets.js'
 import {
-  formatBytes,
-  formatDateTime,
-  hasStoredSecret,
-  relativeLabel,
-  summarizeSnapshotsByTarget,
-  targetKindLabel,
-  targetLocation,
-} from '../lib/targets.js'
-import {
-  Badge,
   Banner,
   Button,
   Card,
-  CardBody,
-  CardHeader,
-  Checkbox,
+  CardHead,
+  CardList,
   ConfirmDialog,
+  DotText,
   EmptyState,
-  ErrorState,
   Field,
-  IconButton,
-  LoadingInline,
   OptionTile,
-  PageHeader,
   PasswordInput,
-  SelectField,
-  SkeletonCard,
-  StatusDot,
+  Rows,
+  SettingRow,
+  Switch,
+  Tag,
   TextInput,
-  cx,
 } from './ui.js'
-import {
-  IconAlert,
-  IconCheck,
-  IconGithub,
-  IconHardDrive,
-  IconPencil,
-  IconPlus,
-  IconServer,
-  IconTrash,
-  IconWifiOff,
-  IconX,
-  IconCloud,
-  IconFolder,
-  IconZap,
-} from './Icons.js'
 
 export interface StoragePanelProps {
   targets: StorageTargetConfig[]
@@ -57,17 +30,10 @@ export interface StoragePanelProps {
   message: string | null
   onUpsert: (target: StorageTargetConfig) => void
   onDelete: (id: string) => void
-  /** Optional: all known snapshots, used for per-target counters. */
   snapshots?: SnapshotInfo[]
-  /** Optional: initial fetch in flight. */
   loading?: boolean
-  /**
-   * Optional connection probe. Performs a read-only snapshot listing for the
-   * target (existing GET /snapshots?targetId=). Must never throw raw secrets.
-   */
+  /** Read-only connection probe (GET /snapshots?targetId=). Must never throw raw secrets. */
   testConnection?: (target: StorageTargetConfig) => Promise<{ ok: boolean; count?: number; error?: string }>
-  /** Optional: called after a successful save so the parent can reload. */
-  onSaved?: (target: StorageTargetConfig) => void
 }
 
 type TestState =
@@ -122,12 +88,21 @@ const EMPTY_FORM: FormState = {
   encryptByDefault: false,
 }
 
-const KIND_OPTIONS: Array<{ kind: StorageKind; labelKey: 'kind.localPlain' | 'kind.github' | 'kind.webdav' | 'kind.s3'; icon: JSX.Element }> = [
-  { kind: 'local', labelKey: 'kind.localPlain', icon: <IconFolder size={15} /> },
-  { kind: 'github', labelKey: 'kind.github', icon: <IconGithub size={15} /> },
-  { kind: 'webdav', labelKey: 'kind.webdav', icon: <IconCloud size={15} /> },
-  { kind: 's3', labelKey: 'kind.s3', icon: <IconServer size={15} /> },
-]
+const KINDS: StorageKind[] = ['local', 'github', 'webdav', 's3']
+const KIND_LABEL: Record<StorageKind, 'storage.kind.local' | 'storage.kind.github' | 'storage.kind.webdav' | 'storage.kind.s3'> = {
+  local: 'storage.kind.local',
+  github: 'storage.kind.github',
+  webdav: 'storage.kind.webdav',
+  s3: 'storage.kind.s3',
+}
+
+/** Button labels use the shorter kind names ("添加 GitHub"), not "GitHub 仓库". */
+const KIND_ADD: Record<StorageKind, 'kind.github' | 'kind.webdav' | 'kind.s3' | 'kind.local'> = {
+  local: 'kind.local',
+  github: 'kind.github',
+  webdav: 'kind.webdav',
+  s3: 'kind.s3',
+}
 
 function blankIdFor(kind: StorageKind, existing: StorageTargetConfig[]): string {
   const base = kind === 'local' ? 'local' : kind
@@ -141,8 +116,7 @@ function blankIdFor(kind: StorageKind, existing: StorageTargetConfig[]): string 
 }
 
 function formFromTarget(t: StorageTargetConfig): FormState {
-  // Secrets (password / token / secret key) are never loaded back into the
-  // form — the user must re-enter them to rotate or change credentials.
+  // Secrets (password / token / secret key) are never loaded back into the form.
   const base: FormState = {
     ...EMPTY_FORM,
     kind: t.kind,
@@ -251,438 +225,6 @@ function requiredFields(form: FormState, tr: Translate): string[] {
   return out
 }
 
-export function StoragePanel({ targets, busy, error, message, onUpsert, onDelete, snapshots, loading, testConnection, onSaved }: StoragePanelProps) {
-  const tr = useT()
-  const ids = useId()
-  const [form, setForm] = useState<FormState | null>(null)
-  const [editing, setEditing] = useState(false)
-  const [touched, setTouched] = useState(false)
-  const [deleteId, setDeleteId] = useState<string | null>(null)
-  const [tests, setTests] = useState<Record<string, TestState>>({})
-  const editorRef = useRef<HTMLDivElement | null>(null)
-
-  const summaries = useMemo(
-    () => summarizeSnapshotsByTarget(targets, snapshots ?? []),
-    [targets, snapshots],
-  )
-  const deleteTarget = targets.find((t) => t.id === deleteId) ?? null
-  const missing = form ? requiredFields(form, tr) : []
-  const duplicate = Boolean(form && targets.some((t) => t.id === form.id.trim()) && !editing)
-
-  function openNew(kind: StorageKind = 'local') {
-    setForm({ ...EMPTY_FORM, kind, id: blankIdFor(kind, targets) })
-    setEditing(false)
-    setTouched(false)
-    requestAnimationFrame(() => editorRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
-  }
-
-  function openEdit(t: StorageTargetConfig) {
-    setForm(formFromTarget(t))
-    setEditing(true)
-    setTouched(false)
-    requestAnimationFrame(() => editorRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
-  }
-
-  function patch(part: Partial<FormState>) {
-    setForm((prev) => (prev ? { ...prev, ...part } : prev))
-  }
-
-  function save() {
-    setTouched(true)
-    if (!form) return
-    if (requiredFields(form, tr).length > 0) return
-    const target = buildTarget(form, targets.find((t) => t.id === form.id.trim()))
-    onUpsert(target)
-    onSaved?.(target)
-  }
-
-  async function runTest(t: StorageTargetConfig) {
-    if (!testConnection) return
-    setTests((prev) => ({ ...prev, [t.id]: { status: 'testing' } }))
-    try {
-      const r = await testConnection(t)
-      setTests((prev) => ({
-        ...prev,
-        [t.id]: r.ok
-          ? { status: 'ok', count: r.count ?? 0 }
-          : { status: 'fail', error: redactError(r.error ?? 'unknown error', t) },
-      }))
-    } catch (err) {
-      setTests((prev) => ({ ...prev, [t.id]: { status: 'fail', error: redactError(errorText(err), t) } }))
-    }
-  }
-
-  return (
-    <div className="dv-page">
-      <PageHeader
-        title={tr('storage.title')}
-        subtitle={tr('storage.subtitle')}
-        actions={
-          <Button variant="primary" icon={<IconPlus size={15} />} onClick={() => openNew('local')} disabled={busy}>
-            {tr('storage.add')}
-          </Button>
-        }
-      />
-
-      {error ? <ErrorState compact error={error} /> : null}
-      {message ? <Banner tone="ok" onDismiss={undefined}>{message}</Banner> : null}
-
-      {loading && targets.length === 0 ? (
-        <div className="dv-grid-2">
-          <SkeletonCard />
-          <SkeletonCard />
-        </div>
-      ) : targets.length === 0 ? (
-        <Card hero>
-          <CardHeader
-            icon={<IconHardDrive size={18} />}
-            title={tr('storage.emptyTitle')}
-            subtitle={tr('storage.emptyBody')}
-          />
-          <CardBody>
-            <div className="dv-options" data-cols="2" role="group" aria-label={tr('storage.chooseKind')}>
-              {KIND_OPTIONS.map((k) => (
-                <OptionTile
-                  key={k.kind}
-                  name={`${ids}-new-kind`}
-                  checked={false}
-                  onChange={() => openNew(k.kind)}
-                  icon={k.icon}
-                  title={k.labelKey === 'kind.localPlain' ? tr('kind.localPlain') : tr(k.labelKey)}
-                  description={tr(`storage.kindCards.${k.kind}` as 'storage.kindCards.local' | 'storage.kindCards.github' | 'storage.kindCards.webdav' | 'storage.kindCards.s3')}
-                />
-              ))}
-            </div>
-          </CardBody>
-        </Card>
-      ) : (
-        <div className="dv-grid-2">
-          {summaries.map(({ target, count, bytes, latest }) => (
-            <TargetCard
-              key={target.id}
-              target={target}
-              count={count}
-              bytes={bytes}
-              latest={latest}
-              test={tests[target.id] ?? { status: 'idle' }}
-              canTest={Boolean(testConnection)}
-              busy={busy}
-              tr={tr}
-              onTest={() => void runTest(target)}
-              onEdit={() => openEdit(target)}
-              onDelete={() => setDeleteId(target.id)}
-            />
-          ))}
-        </div>
-      )}
-
-      {form ? (
-        <div ref={editorRef}>
-          <Card hero className={cx('dv-editor')}>
-            <CardHeader
-              icon={editing ? <IconPencil size={18} /> : <IconPlus size={18} />}
-              title={editing ? tr('storage.editorEdit') : tr('storage.editorNew')}
-              subtitle={tr('storage.editorHint')}
-              actions={
-                <IconButton label={tr('storage.cancelEdit')} onClick={() => setForm(null)}>
-                  <IconX size={15} />
-                </IconButton>
-              }
-            />
-            <CardBody>
-              <div role="radiogroup" aria-label={tr('storage.kindLabel')} className="dv-options" data-cols="3">
-                {KIND_OPTIONS.map((k) => (
-                  <OptionTile
-                    key={k.kind}
-                    name={`${ids}-kind`}
-                    checked={form.kind === k.kind}
-                    disabled={editing}
-                    onChange={() => patch({ kind: k.kind, id: editing ? form.id : blankIdFor(k.kind, targets) })}
-                    icon={k.icon}
-                    title={tr(k.labelKey)}
-                  />
-                ))}
-              </div>
-
-              <div className="dv-grid-2">
-                <Field label={tr('storage.id')} htmlFor={`${ids}-id`} required hint={tr('storage.idHint')}>
-                  <TextInput
-                    id={`${ids}-id`}
-                    mono
-                    value={form.id}
-                    placeholder="local-default"
-                    maxLength={64}
-                    onChange={(e) => patch({ id: e.target.value.replace(/\s+/g, '-').toLowerCase() })}
-                    disabled={editing}
-                    aria-invalid={touched && !form.id.trim() ? true : undefined}
-                  />
-                </Field>
-                <Field label={tr('storage.label')} htmlFor={`${ids}-label`} required hint={tr('storage.labelHint')}>
-                  <TextInput
-                    id={`${ids}-label`}
-                    value={form.label}
-                    maxLength={80}
-                    onChange={(e) => patch({ label: e.target.value })}
-                    aria-invalid={touched && !form.label.trim() ? true : undefined}
-                  />
-                </Field>
-              </div>
-              {duplicate ? <Banner tone="warn" icon={<IconAlert size={16} />}>{tr('storage.idExists')}</Banner> : null}
-
-              {form.kind === 'local' ? (
-                <Field label={tr('storage.directory')} htmlFor={`${ids}-dir`} required hint={tr('storage.directoryHint')}>
-                  <TextInput
-                    id={`${ids}-dir`}
-                    mono
-                    value={form.directory}
-                    placeholder="~/dsh-vault-backups"
-                    onChange={(e) => patch({ directory: e.target.value })}
-                    aria-invalid={touched && !form.directory.trim() ? true : undefined}
-                  />
-                </Field>
-              ) : null}
-
-              {form.kind === 'github' ? (
-                <>
-                  <div className="dv-grid-3">
-                    <Field label={tr('storage.owner')} htmlFor={`${ids}-owner`} required>
-                      <TextInput id={`${ids}-owner`} mono value={form.owner} onChange={(e) => patch({ owner: e.target.value })} placeholder="octocat" />
-                    </Field>
-                    <Field label={tr('storage.repo')} htmlFor={`${ids}-repo`} required>
-                      <TextInput id={`${ids}-repo`} mono value={form.repo} onChange={(e) => patch({ repo: e.target.value })} placeholder="dsh-backups" />
-                    </Field>
-                    <Field label={tr('storage.branch')} htmlFor={`${ids}-branch`} hint={tr('storage.branchHint')} optional>
-                      <TextInput id={`${ids}-branch`} mono value={form.branch} onChange={(e) => patch({ branch: e.target.value })} placeholder="main" />
-                    </Field>
-                  </div>
-                  <div className="dv-grid-2">
-                    <Field label={tr('storage.tokenCredential')} htmlFor={`${ids}-cred`} hint={tr('storage.tokenCredentialHint')} optional>
-                      <TextInput id={`${ids}-cred`} mono value={form.tokenCredential} onChange={(e) => patch({ tokenCredential: e.target.value })} />
-                    </Field>
-                    <Field label={tr('storage.token')} htmlFor={`${ids}-token`} hint={tr('storage.tokenHint')} optional>
-                      <PasswordInput id={`${ids}-token`} value={form.token} onChange={(e) => patch({ token: e.target.value })} autoComplete="off" />
-                    </Field>
-                  </div>
-                  <Field label={tr('storage.pathPrefix')} htmlFor={`${ids}-prefix`} hint={tr('storage.pathPrefixHint')} optional>
-                    <TextInput id={`${ids}-prefix`} mono value={form.pathPrefix} onChange={(e) => patch({ pathPrefix: e.target.value })} placeholder="snapshots" />
-                  </Field>
-                </>
-              ) : null}
-
-              {form.kind === 'webdav' ? (
-                <>
-                  <Field label={tr('storage.url')} htmlFor={`${ids}-url`} required>
-                    <TextInput id={`${ids}-url`} mono value={form.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://dav.example.com/dsh" />
-                  </Field>
-                  <div className="dv-grid-2">
-                    <Field label={tr('storage.username')} htmlFor={`${ids}-user`} optional>
-                      <TextInput id={`${ids}-user`} value={form.username} onChange={(e) => patch({ username: e.target.value })} autoComplete="username" />
-                    </Field>
-                    <Field
-                      label={tr('storage.password')}
-                      htmlFor={`${ids}-pass`}
-                      hint={editing ? tr('storage.passwordKeep') : undefined}
-                      optional
-                    >
-                      <PasswordInput id={`${ids}-pass`} value={form.password} onChange={(e) => patch({ password: e.target.value })} autoComplete="new-password" />
-                    </Field>
-                  </div>
-                  <Field label={tr('storage.pathPrefix')} htmlFor={`${ids}-wprefix`} hint={tr('storage.pathPrefixHint')} optional>
-                    <TextInput id={`${ids}-wprefix`} mono value={form.pathPrefix} onChange={(e) => patch({ pathPrefix: e.target.value })} />
-                  </Field>
-                </>
-              ) : null}
-
-              {form.kind === 's3' ? (
-                <>
-                  <div className="dv-grid-2">
-                    <Field label={tr('storage.endpoint')} htmlFor={`${ids}-s3e`} required>
-                      <TextInput id={`${ids}-s3e`} mono value={form.endpoint} onChange={(e) => patch({ endpoint: e.target.value })} placeholder="https://s3.example.com" />
-                    </Field>
-                    <Field label={tr('storage.bucket')} htmlFor={`${ids}-bucket`} required>
-                      <TextInput id={`${ids}-bucket`} mono value={form.bucket} onChange={(e) => patch({ bucket: e.target.value })} placeholder="dsh-vault" />
-                    </Field>
-                  </div>
-                  <div className="dv-grid-3">
-                    <Field label={tr('storage.region')} htmlFor={`${ids}-region`} hint={tr('storage.regionHint')} optional>
-                      <TextInput id={`${ids}-region`} mono value={form.region} onChange={(e) => patch({ region: e.target.value })} placeholder="auto" />
-                    </Field>
-                    <Field label={tr('storage.accessKey')} htmlFor={`${ids}-ak`} required>
-                      <TextInput id={`${ids}-ak`} mono value={form.accessKeyId} onChange={(e) => patch({ accessKeyId: e.target.value })} autoComplete="off" />
-                    </Field>
-                    <Field label={tr('storage.secretKey')} htmlFor={`${ids}-sk`} required hint={editing ? tr('storage.secretKeep') : undefined}>
-                      <PasswordInput id={`${ids}-sk`} value={form.secretAccessKey} onChange={(e) => patch({ secretAccessKey: e.target.value })} autoComplete="new-password" />
-                    </Field>
-                  </div>
-                  <Field label={tr('storage.pathPrefix')} htmlFor={`${ids}-sprefix`} hint={tr('storage.pathPrefixHint')} optional>
-                    <TextInput id={`${ids}-sprefix`} mono value={form.pathPrefix} onChange={(e) => patch({ pathPrefix: e.target.value })} />
-                  </Field>
-                  <Checkbox
-                    title={tr('storage.forcePathStyle')}
-                    description={tr('storage.forcePathStyleDesc')}
-                    checked={form.forcePathStyle}
-                    onChange={(e) => patch({ forcePathStyle: e.target.checked })}
-                  />
-                </>
-              ) : null}
-
-              <Checkbox
-                title={tr('storage.encDefault')}
-                description={tr('storage.encDefaultDesc')}
-                checked={form.encryptByDefault}
-                onChange={(e) => patch({ encryptByDefault: e.target.checked })}
-              />
-
-              {touched && missing.length > 0 ? (
-                <Banner tone="error" icon={<IconAlert size={16} />}>{tr('storage.missing', { fields: missing.join(' / ') })}</Banner>
-              ) : null}
-
-              <div className="dv-row">
-                <Button variant="primary" onClick={save} loading={busy}>
-                  {editing ? tr('storage.saveEdit') : tr('storage.saveNew')}
-                </Button>
-                <Button variant="ghost" onClick={() => setForm(null)}>{tr('app.cancel')}</Button>
-                {busy ? <LoadingInline label={tr('app.busy')} /> : null}
-              </div>
-            </CardBody>
-          </Card>
-        </div>
-      ) : targets.length > 0 ? (
-        <div className="dv-card" style={{ boxShadow: 'none' }}>
-          <div className="dv-card-body">
-            <div className="dv-row-between">
-              <div className="dv-stack" style={{ gap: 2 }}>
-                <span className="dv-card-title">{tr('storage.add')}</span>
-                <span className="dv-card-sub">{tr('storage.kindHint')}</span>
-              </div>
-              <div className="dv-row dv-gap-2">
-                {KIND_OPTIONS.map((k) => (
-                  <Button key={k.kind} size="sm" icon={k.icon} onClick={() => openNew(k.kind)}>
-                    {tr(k.labelKey)}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <ConfirmDialog
-        open={Boolean(deleteTarget)}
-        onClose={() => setDeleteId(null)}
-        title={tr('storage.deleteTitle')}
-        description={
-          deleteTarget
-            ? tr('storage.deleteDesc', { label: deleteTarget.label })
-            : undefined
-        }
-        confirmLabel={tr('storage.deleteConfirm')}
-        busy={busy}
-        onConfirm={() => {
-          if (!deleteTarget) return
-          onDelete(deleteTarget.id)
-          setDeleteId(null)
-        }}
-      />
-    </div>
-  )
-}
-
-function TargetCard({
-  target,
-  count,
-  bytes,
-  latest,
-  test,
-  canTest,
-  busy,
-  tr,
-  onTest,
-  onEdit,
-  onDelete,
-}: {
-  target: StorageTargetConfig
-  count: number
-  bytes: number
-  latest?: SnapshotInfo
-  test: TestState
-  canTest: boolean
-  busy: boolean
-  tr: Translate
-  onTest: () => void
-  onEdit: () => void
-  onDelete: () => void
-}) {
-  const KindIcon = target.kind === 'github' ? IconGithub : target.kind === 'webdav' ? IconCloud : target.kind === 's3' ? IconServer : IconHardDrive
-  return (
-    <Card interactive className="dv-target-card">
-      <CardBody>
-        <div className="dv-row-between" style={{ alignItems: 'flex-start' }}>
-          <div className="dv-row dv-gap-3" style={{ minWidth: 0, flex: 1, flexWrap: 'nowrap' }}>
-            <span className="dv-icon-tile" data-kind={target.kind} aria-hidden="true">
-              <KindIcon size={18} />
-            </span>
-            <div className="dv-stack" style={{ gap: 3, minWidth: 0 }}>
-              <span className="dv-card-title dv-truncate" title={target.label}>{target.label}</span>
-              <span className="dv-row dv-gap-1">
-                <Badge tone="brand">{targetKindLabel(target, tr)}</Badge>
-                <Badge>{target.id}</Badge>
-              </span>
-            </div>
-          </div>
-          <span className="dv-row dv-gap-1" style={{ flex: 'none' }}>
-            <StatusDot tone={test.status === 'fail' ? 'danger' : test.status === 'ok' ? 'ok' : count > 0 ? 'ok' : 'neutral'} pulse={test.status === 'testing'} />
-          </span>
-        </div>
-
-        <div className="dv-mono dv-small dv-muted" style={{ overflowWrap: 'anywhere' }}>{targetLocation(target)}</div>
-
-        <div className="dv-grid-2" style={{ gap: 8 }}>
-          <MiniStat label={tr('storage.card.snapshots')} value={String(count)} />
-          <MiniStat label={tr('storage.card.lastBackup')} value={latest ? relativeLabel(tr, latest.createdAt) : tr('common.never')} title={latest ? formatDateTime(latest.createdAt) : undefined} />
-        </div>
-
-        <div className="dv-tag-list">
-          {target.encryptByDefault ? <span className="dv-tag" data-tone="ok">{tr('storage.card.encDefault')}</span> : <span className="dv-tag">{tr('storage.card.encNone')}</span>}
-          {hasStoredSecret(target) ? <span className="dv-tag" data-tone="brand">{tr('storage.card.secretsStored')}</span> : null}
-          {count > 0 ? <span className="dv-tag">{formatBytes(bytes)}</span> : null}
-        </div>
-
-        {test.status === 'ok' ? (
-          <Banner tone="ok" icon={<IconCheck size={16} />}>{tr('storage.testOk', { count: test.count })}</Banner>
-        ) : null}
-        {test.status === 'fail' ? (
-          <Banner tone="error" icon={<IconWifiOff size={16} />}>{tr('storage.testFail', { error: test.error })}</Banner>
-        ) : null}
-
-        <div className="dv-row dv-gap-2 dv-mt-1">
-          {canTest ? (
-            <Button size="sm" variant="outline" icon={<IconZap size={13} />} onClick={onTest} loading={test.status === 'testing'}>
-              {test.status === 'testing' ? tr('storage.testing') : tr('storage.test')}
-            </Button>
-          ) : null}
-          <Button size="sm" variant="ghost" icon={<IconPencil size={13} />} onClick={onEdit} disabled={busy}>
-            {tr('storage.edit')}
-          </Button>
-          <span className="dv-grow" />
-          <IconButton label={`${tr('common.delete')} ${target.label}`} variant="danger" onClick={onDelete} disabled={busy}>
-            <IconTrash size={14} />
-          </IconButton>
-        </div>
-      </CardBody>
-    </Card>
-  )
-}
-
-function MiniStat({ label, value, title }: { label: string; value: string; title?: string }) {
-  return (
-    <div className="dv-stack" style={{ gap: 1, padding: '8px 10px', border: '1px solid var(--dv-border)', borderRadius: 'var(--dv-radius)', minWidth: 0 }}>
-      <span className="dv-hint">{label}</span>
-      <span className="dv-small" style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={title}>{value}</span>
-    </div>
-  )
-}
-
 function errorText(err: unknown): string {
   if (err instanceof VaultApiError) return `${err.message} (HTTP ${err.status})`
   return err instanceof Error ? err.message : String(err)
@@ -705,3 +247,344 @@ function redactError(message: string, target: StorageTargetConfig): string {
   return out.length > 300 ? `${out.slice(0, 300)}…` : out
 }
 
+export function StoragePanel({ targets, busy, error, message, onUpsert, onDelete, snapshots, loading, testConnection }: StoragePanelProps) {
+  const tr = useT()
+  const ids = useId()
+  const [form, setForm] = useState<FormState | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [touched, setTouched] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [tests, setTests] = useState<Record<string, TestState>>({})
+  const editorRef = useRef<HTMLDivElement | null>(null)
+
+  const summaries = useMemo(() => summarizeSnapshotsByTarget(targets, snapshots ?? []), [targets, snapshots])
+  const deleteTarget = targets.find((t) => t.id === deleteId) ?? null
+  const missing = form ? requiredFields(form, tr) : []
+  const duplicate = Boolean(form && targets.some((t) => t.id === form.id.trim()) && !editing)
+
+  function openNew(kind: StorageKind = 'local') {
+    setForm({ ...EMPTY_FORM, kind, id: blankIdFor(kind, targets) })
+    setEditing(false)
+    setTouched(false)
+    requestAnimationFrame(() => editorRef.current?.scrollIntoView({ block: 'nearest' }))
+  }
+
+  function openEdit(t: StorageTargetConfig) {
+    setForm(formFromTarget(t))
+    setEditing(true)
+    setTouched(false)
+    requestAnimationFrame(() => editorRef.current?.scrollIntoView({ block: 'nearest' }))
+  }
+
+  function patch(part: Partial<FormState>) {
+    setForm((prev) => (prev ? { ...prev, ...part } : prev))
+  }
+
+  function save() {
+    setTouched(true)
+    if (!form) return
+    if (requiredFields(form, tr).length > 0) return
+    onUpsert(buildTarget(form, targets.find((t) => t.id === form.id.trim())))
+  }
+
+  async function runTest(t: StorageTargetConfig) {
+    if (!testConnection) return
+    setTests((prev) => ({ ...prev, [t.id]: { status: 'testing' } }))
+    try {
+      const r = await testConnection(t)
+      setTests((prev) => ({
+        ...prev,
+        [t.id]: r.ok
+          ? { status: 'ok', count: r.count ?? 0 }
+          : { status: 'fail', error: redactError(r.error ?? tr('app.error'), t) },
+      }))
+    } catch (err) {
+      setTests((prev) => ({ ...prev, [t.id]: { status: 'fail', error: redactError(errorText(err), t) } }))
+    }
+  }
+
+  return (
+    <>
+      <p className="dv-section-desc">{tr('storage.desc')}</p>
+      {error ? <Banner tone="error">{error}</Banner> : null}
+      {message ? <Banner tone="ok">{message}</Banner> : null}
+
+      {loading && targets.length === 0 ? (
+        <span className="dv-loading-inline" role="status">
+          <span className="dv-spinner" aria-hidden="true" />
+          {tr('app.loading')}
+        </span>
+      ) : targets.length === 0 ? (
+        <EmptyState
+          title={tr('storage.emptyTitle')}
+          body={tr('storage.emptyBody')}
+          actions={<Button variant="primary" onClick={() => openNew('local')}>{tr('storage.addTitle')}</Button>}
+        />
+      ) : (
+        <CardList label={tr('storage.targetsLabel')}>
+          {summaries.map(({ target, count, latest }) => {
+            const test = tests[target.id] ?? { status: 'idle' }
+            return (
+              <Card key={target.id}>
+                <CardHead
+                  title={
+                    <span className="dv-inline">
+                      <DotText tone={test.status === 'fail' ? 'danger' : count > 0 ? 'ok' : 'neutral'}>{target.label}</DotText>
+                      <span className="dv-card-sub dv-mono">{target.id}</span>
+                    </span>
+                  }
+                  sub={targetKindLabel(target, tr)}
+                  actions={
+                    <>
+                      <Tag tone={target.encryptByDefault ? 'ok' : 'neutral'}>
+                        {target.encryptByDefault ? tr('storage.encDefault') : tr('common.plaintext')}
+                      </Tag>
+                      {hasStoredSecret(target) ? <Tag>{tr('storage.storedCredentials')}</Tag> : null}
+                    </>
+                  }
+                />
+                <span className="dv-card-sub dv-mono" style={{ overflowWrap: 'anywhere' }}>{targetLocation(target)}</span>
+                <span className="dv-card-sub">
+                  {tr('storage.snapshots', { count })}
+                  {' · '}
+                  {latest
+                    ? tr('storage.lastBackup', { time: `${formatDateTime(latest.createdAt)}（${relativeLabel(tr, latest.createdAt)}）` })
+                    : tr('storage.noSnapshots')}
+                </span>
+                {test.status === 'ok' ? <span className="dv-small" style={{ color: 'var(--dv-ok-label)' }}>{tr('storage.testOk', { count: test.count })}</span> : null}
+                {test.status === 'fail' ? <span className="dv-error-text">{tr('storage.testFail', { error: test.error })}</span> : null}
+                <div className="dv-card-actions">
+                  {testConnection ? (
+                    <Button size="sm" onClick={() => void runTest(target)} loading={test.status === 'testing'}>
+                      {test.status === 'testing' ? tr('storage.testing') : tr('storage.test')}
+                    </Button>
+                  ) : null}
+                  <Button size="sm" onClick={() => openEdit(target)} disabled={busy}>{tr('storage.edit')}</Button>
+                  <Button size="sm" variant="danger" onClick={() => setDeleteId(target.id)} disabled={busy}>
+                    {tr('storage.delete')}
+                  </Button>
+                </div>
+              </Card>
+            )
+          })}
+        </CardList>
+      )}
+
+      {!form ? (
+        <div className="dv-add-row">
+          {KINDS.map((k) => (
+            <Button key={k} variant="dashed" onClick={() => openNew(k)} disabled={busy}>
+              + {tr('storage.addKind', { kind: tr(KIND_ADD[k]) })}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+
+      {form ? (
+        <div ref={editorRef}>
+          <Card>
+            <CardHead
+              title={editing ? tr('storage.editTitle') : tr('storage.addTitle')}
+              sub={tr('storage.addDesc')}
+              actions={
+                <Button size="sm" variant="quiet" onClick={() => setForm(null)}>{tr('storage.cancel')}</Button>
+              }
+            />
+            <div className="dv-card-sep" aria-hidden="true" />
+            <div className="dv-chip-row" role="radiogroup" aria-label={tr('storage.kind')}>
+              {KINDS.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="radio"
+                  className="dv-chip"
+                  aria-checked={form.kind === k}
+                  disabled={editing && form.kind !== k}
+                  onClick={() => patch({ kind: k, id: editing ? form.id : blankIdFor(k, targets) })}
+                >
+                  {tr(KIND_LABEL[k])}
+                </button>
+              ))}
+            </div>
+
+            <div className="dv-grid-2">
+              <Field label={tr('storage.id')} htmlFor={`${ids}-id`} hint={tr('storage.idHint')}>
+                <TextInput
+                  id={`${ids}-id`}
+                  mono
+                  value={form.id}
+                  placeholder="local-default"
+                  maxLength={64}
+                  onChange={(e) => patch({ id: e.target.value.replace(/\s+/g, '-').toLowerCase() })}
+                  disabled={editing}
+                  invalid={touched && !form.id.trim()}
+                />
+              </Field>
+              <Field label={tr('storage.label')} htmlFor={`${ids}-label`}>
+                <TextInput
+                  id={`${ids}-label`}
+                  value={form.label}
+                  maxLength={80}
+                  placeholder={targetLabelPlaceholder(form.kind, tr)}
+                  onChange={(e) => patch({ label: e.target.value })}
+                  invalid={touched && !form.label.trim()}
+                />
+              </Field>
+            </div>
+            {duplicate ? <span className="dv-hint" style={{ color: 'var(--dv-warn)' }}>{tr('storage.idExists')}</span> : null}
+
+            {form.kind === 'local' ? (
+              <Field label={tr('storage.directory')} htmlFor={`${ids}-dir`} hint={tr('storage.directoryHint')}>
+                <TextInput
+                  id={`${ids}-dir`}
+                  mono
+                  value={form.directory}
+                  placeholder="~/dsh-vault-backups"
+                  onChange={(e) => patch({ directory: e.target.value })}
+                  invalid={touched && !form.directory.trim()}
+                />
+              </Field>
+            ) : null}
+
+            {form.kind === 'github' ? (
+              <>
+                <div className="dv-grid-2">
+                  <Field label={tr('storage.owner')} htmlFor={`${ids}-owner`}>
+                    <TextInput id={`${ids}-owner`} mono value={form.owner} onChange={(e) => patch({ owner: e.target.value })} placeholder="octocat" />
+                  </Field>
+                  <Field label={tr('storage.repo')} htmlFor={`${ids}-repo`}>
+                    <TextInput id={`${ids}-repo`} mono value={form.repo} onChange={(e) => patch({ repo: e.target.value })} placeholder="dsh-backups" />
+                  </Field>
+                  <Field label={tr('storage.branch')} htmlFor={`${ids}-branch`} optional>
+                    <TextInput id={`${ids}-branch`} mono value={form.branch} onChange={(e) => patch({ branch: e.target.value })} placeholder="main" />
+                  </Field>
+                  <Field label={tr('storage.pathPrefix')} htmlFor={`${ids}-prefix`} optional>
+                    <TextInput id={`${ids}-prefix`} mono value={form.pathPrefix} onChange={(e) => patch({ pathPrefix: e.target.value })} />
+                  </Field>
+                  <Field label={tr('storage.tokenCredential')} htmlFor={`${ids}-cred`} optional>
+                    <TextInput id={`${ids}-cred`} mono value={form.tokenCredential} onChange={(e) => patch({ tokenCredential: e.target.value })} />
+                  </Field>
+                  <Field label={tr('storage.token')} htmlFor={`${ids}-token`} hint={tr('storage.tokenHint')} optional>
+                    <PasswordInput id={`${ids}-token`} value={form.token} onChange={(e) => patch({ token: e.target.value })} autoComplete="off" />
+                  </Field>
+                </div>
+              </>
+            ) : null}
+
+            {form.kind === 'webdav' ? (
+              <>
+                <Field label={tr('storage.url')} htmlFor={`${ids}-url`}>
+                  <TextInput id={`${ids}-url`} mono value={form.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://dav.example.com/dsh" />
+                </Field>
+                <div className="dv-grid-2">
+                  <Field label={tr('storage.username')} htmlFor={`${ids}-user`} optional>
+                    <TextInput id={`${ids}-user`} value={form.username} onChange={(e) => patch({ username: e.target.value })} autoComplete="username" />
+                  </Field>
+                  <Field
+                    label={tr('storage.password')}
+                    htmlFor={`${ids}-pass`}
+                    hint={editing ? tr('storage.passwordKeep') : undefined}
+                    optional
+                  >
+                    <PasswordInput id={`${ids}-pass`} value={form.password} onChange={(e) => patch({ password: e.target.value })} autoComplete="new-password" />
+                  </Field>
+                </div>
+                <Field label={tr('storage.pathPrefix')} htmlFor={`${ids}-wprefix`} optional>
+                  <TextInput id={`${ids}-wprefix`} mono value={form.pathPrefix} onChange={(e) => patch({ pathPrefix: e.target.value })} />
+                </Field>
+              </>
+            ) : null}
+
+            {form.kind === 's3' ? (
+              <>
+                <div className="dv-grid-2">
+                  <Field label={tr('storage.endpoint')} htmlFor={`${ids}-s3e`}>
+                    <TextInput id={`${ids}-s3e`} mono value={form.endpoint} onChange={(e) => patch({ endpoint: e.target.value })} placeholder="https://s3.example.com" />
+                  </Field>
+                  <Field label={tr('storage.bucket')} htmlFor={`${ids}-bucket`}>
+                    <TextInput id={`${ids}-bucket`} mono value={form.bucket} onChange={(e) => patch({ bucket: e.target.value })} placeholder="dsh-vault" />
+                  </Field>
+                  <Field label={tr('storage.region')} htmlFor={`${ids}-region`} optional>
+                    <TextInput id={`${ids}-region`} mono value={form.region} onChange={(e) => patch({ region: e.target.value })} placeholder="auto" />
+                  </Field>
+                  <Field label={tr('storage.pathPrefix')} htmlFor={`${ids}-sprefix`} optional>
+                    <TextInput id={`${ids}-sprefix`} mono value={form.pathPrefix} onChange={(e) => patch({ pathPrefix: e.target.value })} />
+                  </Field>
+                  <Field label={tr('storage.accessKey')} htmlFor={`${ids}-ak`}>
+                    <TextInput id={`${ids}-ak`} mono value={form.accessKeyId} onChange={(e) => patch({ accessKeyId: e.target.value })} autoComplete="off" />
+                  </Field>
+                  <Field label={tr('storage.secretKey')} htmlFor={`${ids}-sk`} hint={editing ? tr('storage.secretKeep') : undefined}>
+                    <PasswordInput id={`${ids}-sk`} value={form.secretAccessKey} onChange={(e) => patch({ secretAccessKey: e.target.value })} autoComplete="new-password" />
+                  </Field>
+                </div>
+              </>
+            ) : null}
+
+            <Rows>
+              {form.kind === 's3' ? (
+                <SettingRow
+                  title={tr('storage.forcePathStyle')}
+                  description={tr('storage.forcePathStyleDesc')}
+                  htmlFor={`${ids}-pathstyle`}
+                  control={
+                    <Switch
+                      id={`${ids}-pathstyle`}
+                      checked={form.forcePathStyle}
+                      onChange={() => patch({ forcePathStyle: !form.forcePathStyle })}
+                    />
+                  }
+                />
+              ) : null}
+              <SettingRow
+                title={tr('storage.encDefault')}
+                description={tr('storage.encDefaultDesc')}
+                htmlFor={`${ids}-enc`}
+                control={
+                  <Switch
+                    id={`${ids}-enc`}
+                    checked={form.encryptByDefault}
+                    onChange={() => patch({ encryptByDefault: !form.encryptByDefault })}
+                  />
+                }
+              />
+            </Rows>
+
+            {touched && missing.length > 0 ? (
+              <span className="dv-error-text">{tr('storage.missing', { fields: missing.join(' / ') })}</span>
+            ) : null}
+
+            <div className="dv-card-foot">
+              <Button onClick={() => setForm(null)}>{tr('storage.cancel')}</Button>
+              <Button variant="primary" onClick={save} loading={busy}>
+                {editing ? tr('storage.saveEdit') : tr('storage.saveNew')}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteId(null)}
+        title={tr('storage.deleteTitle', { label: deleteTarget?.label ?? '' })}
+        description={tr('storage.deleteBody')}
+        confirmLabel={tr('storage.deleteConfirm')}
+        busy={busy}
+        onConfirm={() => {
+          if (!deleteTarget) return
+          onDelete(deleteTarget.id)
+          setDeleteId(null)
+        }}
+      />
+    </>
+  )
+}
+
+function targetLabelPlaceholder(kind: StorageKind, tr: Translate): string {
+  switch (kind) {
+    case 'local': return tr('storage.kind.local')
+    case 'github': return tr('storage.kind.github')
+    case 'webdav': return tr('storage.kind.webdav')
+    default: return tr('storage.kind.s3')
+  }
+}

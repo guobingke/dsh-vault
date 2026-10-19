@@ -1,71 +1,55 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { VaultApi, VaultApiError, type VaultStatusResponse } from './api.js'
-import { Dashboard } from './components/Dashboard.js'
+import { Overview } from './components/Dashboard.js'
 import { BackupPanel } from './components/BackupPanel.js'
 import { RestorePanel } from './components/RestorePanel.js'
 import { StoragePanel } from './components/StoragePanel.js'
 import { SnapshotsPanel, type VerifyResult } from './components/SnapshotsPanel.js'
-import { SettingsPanel, type ThemePreference } from './components/SettingsPanel.js'
-import { IconButton } from './components/ui.js'
-import {
-  IconArchive,
-  IconDatabase,
-  IconGauge,
-  IconGlobe,
-  IconLock,
-  IconMoon,
-  IconRefresh,
-  IconRestore,
-  IconSettings,
-  IconShield,
-  IconSliders,
-  IconSun,
-} from './components/Icons.js'
-import {
-  I18nContext,
-  detectInitialLocale,
-  normalizeLocale,
-  readStoredLocale,
-  storeLocale,
-  translate,
-  type Locale,
-} from './i18n.js'
+import { SettingsPanel } from './components/SettingsPanel.js'
+import { SectionHead, SectionTabs } from './components/ui.js'
+import { I18nContext, detectInitialLocale, normalizeLocale, translate, type Locale, type MessageKey } from './i18n.js'
 import { formatBytes } from './lib/format.js'
-import type { RestorePreview, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
+import type { BackupCategory, RestorePreview, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
 import './theme.css'
 
-export type VaultTab = 'dashboard' | 'backup' | 'restore' | 'storage' | 'snapshots' | 'settings'
+export type VaultTab = 'overview' | 'backup' | 'restore' | 'storage' | 'snapshots' | 'schedule'
 
-export type { ThemePreference }
+export interface BackupInput {
+  targetId: string
+  encrypt: boolean
+  password?: string
+  includeSecrets: boolean
+  notes?: string
+  /** Categories selected on the Backup tab (omitted when everything is selected). */
+  categories?: BackupCategory[]
+}
 
-const TABS: Array<{ id: VaultTab; icon: ReactNode }> = [
-  { id: 'dashboard', icon: <IconGauge size={16} /> },
-  { id: 'backup', icon: <IconArchive size={16} /> },
-  { id: 'restore', icon: <IconRestore size={16} /> },
-  { id: 'storage', icon: <IconDatabase size={16} /> },
-  { id: 'snapshots', icon: <IconSliders size={16} /> },
-  { id: 'settings', icon: <IconSettings size={16} /> },
-]
+export interface RestoreInput {
+  targetId: string
+  snapshotId: string
+  password?: string
+  conflict: 'keep-current' | 'use-backup'
+  conflicts?: Record<string, 'keep-current' | 'use-backup'>
+}
 
-/** localStorage key for the theme preference (UI-only). */
-export const THEME_STORAGE_KEY = 'dsh-vault.theme'
+export interface PreviewInput {
+  targetId: string
+  snapshotId: string
+  password?: string
+  conflict?: 'keep-current' | 'use-backup'
+  conflicts?: Record<string, 'keep-current' | 'use-backup'>
+}
 
 export interface VaultAppProps {
   api?: VaultApi
-  /** Host locale tag e.g. "zh-CN" / "en-US"; drives the default language. */
+  /** Host locale tag e.g. "zh-CN" / "en-US"; the UI follows it. */
   hostLocale?: string
-  /** Child content (unused; composition only). */
-  children?: ReactNode
+  initialTab?: VaultTab
 }
 
-type Kind = 'ok' | 'error'
+type Notice = { kind: 'ok' | 'error'; text: string }
 
-export interface Notice {
-  kind: Kind
-  text: string
-}
-
-type TargetStatus = 'idle' | 'ok' | 'error'
+const TABS: VaultTab[] = ['overview', 'backup', 'restore', 'storage', 'snapshots', 'schedule']
 
 function errorText(err: unknown): string {
   if (err instanceof VaultApiError) {
@@ -74,72 +58,23 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function readStoredTheme(): ThemePreference {
-  try {
-    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(THEME_STORAGE_KEY) : null
-    return v === 'dark' || v === 'light' || v === 'auto' ? v : 'auto'
-  } catch {
-    return 'auto'
-  }
-}
-
-function storeTheme(theme: ThemePreference): void {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(THEME_STORAGE_KEY, theme)
-  } catch {
-    // non-fatal
-  }
-}
-
-function readHostTheme(): 'dark' | 'light' | undefined {
-  try {
-    if (typeof document === 'undefined') return undefined
-    const attr = document.documentElement.getAttribute('data-theme') ?? document.documentElement.getAttribute('data-dsw-theme')
-    if (attr === 'light' || attr === 'dark') return attr
-    if (typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches) return 'light'
-    if (typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches) return 'dark'
-  } catch {
-    // SSR / restricted env
-  }
-  return undefined
-}
-
-export function VaultApp({ api: apiProp, hostLocale }: VaultAppProps) {
+export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: VaultAppProps) {
   const api = useMemo(() => apiProp ?? new VaultApi(), [apiProp])
 
-  /* ---------------- language & theme ---------------- */
-  const [locale, setLocaleState] = useState<Locale>(() => (hostLocale ? normalizeLocale(hostLocale) : detectInitialLocale()))
-  const t = useMemo(() => (key: Parameters<typeof translate>[1], vars?: Parameters<typeof translate>[2]) => translate(locale, key, vars), [locale])
-  const [theme, setThemeState] = useState<ThemePreference>(() => readStoredTheme())
-  const [hostTheme, setHostTheme] = useState<'dark' | 'light' | undefined>(() => readHostTheme())
-  const resolvedTheme: 'dark' | 'light' = theme === 'auto' ? (hostTheme ?? 'dark') : theme
-
-  useEffect(() => {
-    if (typeof document === 'undefined') return
-    const target = document.documentElement
-    const observer = new MutationObserver(() => setHostTheme(readHostTheme()))
-    observer.observe(target, { attributes: true, attributeFilter: ['data-theme', 'data-dsw-theme', 'class'] })
-    return () => observer.disconnect()
-  }, [])
-
-  const setLocale = useCallback((next: Locale) => {
-    setLocaleState(next)
-    storeLocale(next)
-  }, [])
-
-  const setTheme = useCallback((next: ThemePreference) => {
-    setThemeState(next)
-    storeTheme(next)
-  }, [])
+  /* ---------------- locale: follow the host, no in-app switch ---------------- */
+  const locale: Locale = useMemo(() => (hostLocale ? normalizeLocale(hostLocale) : detectInitialLocale()), [hostLocale])
+  const t = useMemo(
+    () => (key: MessageKey, vars?: Record<string, string | number>) => translate(locale, key, vars),
+    [locale],
+  )
 
   /* ---------------- data ---------------- */
-  const [tab, setTab] = useState<VaultTab>('dashboard')
+  const [tab, setTab] = useState<VaultTab>(initialTab)
   const [status, setStatus] = useState<VaultStatusResponse | null>(null)
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([])
   const [preview, setPreview] = useState<RestorePreview | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [targetStatus, setTargetStatus] = useState<Record<string, TargetStatus>>({})
   const [snapshotsReliable, setSnapshotsReliable] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
@@ -157,9 +92,9 @@ export function VaultApp({ api: apiProp, hostLocale }: VaultAppProps) {
   }, [])
 
   /**
-   * Start an optimistic, time-based progress run. The HTTP API is
-   * request/response, so the bar advances asymptotically toward 92% while the
-   * request is in flight and completes when the promise settles.
+   * The HTTP API is request/response, so backup progress is optimistic: it
+   * advances asymptotically toward 92% through named stages while the request
+   * is in flight and completes when the promise settles.
    */
   const startProgress = useCallback((stages: string[], totalMs: number) => {
     if (progressTimer.current) clearInterval(progressTimer.current)
@@ -184,7 +119,7 @@ export function VaultApp({ api: apiProp, hostLocale }: VaultAppProps) {
         setSnapshots(snap.snapshots)
         setSnapshotsReliable(true)
       } catch (snapErr) {
-        // Partial failure: the dashboard still renders, snapshots surface the error.
+        // Partial failure: the overview still renders; the snapshot list shows the error.
         setSnapshotsReliable(false)
         setError(errorText(snapErr))
       }
@@ -195,9 +130,14 @@ export function VaultApp({ api: apiProp, hostLocale }: VaultAppProps) {
     }
   }, [api])
 
+  // Load once on mount, keyed by the API instance: `refresh` is re-created on
+  // every render, so depending on it here would re-run on every render.
   useEffect(() => {
     void refresh()
-  }, [refresh])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api])
+
+  useEffect(() => () => { if (progressTimer.current) clearInterval(progressTimer.current) }, [])
 
   const run = useCallback(async <T,>(fn: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true)
@@ -223,347 +163,238 @@ export function VaultApp({ api: apiProp, hostLocale }: VaultAppProps) {
     if (next !== 'restore') setPreview(null)
   }, [])
 
-  const backupTargetPreset = useCallback((id: string) => {
-    setBackupTargetId(id)
-    navigate('backup')
-  }, [navigate])
+  const tabItems = useMemo(
+    () => TABS.map((id) => ({ id, label: t(`section.tab.${id}` as MessageKey), panelId: `dv-panel-${id}` })),
+    [t],
+  )
 
-  /* ---------------- lifecycle: progress cleanup + tab title ---------------- */
-  useEffect(() => () => { if (progressTimer.current) clearInterval(progressTimer.current) }, [])
-
-  const tabLabels: Record<VaultTab, string> = useMemo(() => ({
-    dashboard: t('nav.dashboard'),
-    backup: t('nav.backup'),
-    restore: t('nav.restore'),
-    storage: t('nav.storage'),
-    snapshots: t('nav.snapshots'),
-    settings: t('nav.settings'),
-  }), [t])
-
-  const counts: Partial<Record<VaultTab, number>> = {
-    storage: targets.length,
-    snapshots: snapshots.length,
-  }
+  const backupTo = useCallback((input: BackupInput) => {
+    const stages = input.encrypt ? ['collect', 'pack', 'encrypt', 'upload'] : ['collect', 'pack', 'upload']
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    startProgress(stages, 5000)
+    void api.backup(input)
+      .then((r) => {
+        setNotice({
+          kind: 'ok',
+          text: `${t('backup.successTitle', { id: r.snapshotId })} · ${formatBytes(r.bytes)} · ${targetLabel(r.targetId)}`,
+        })
+        return refresh()
+      })
+      .catch((err: unknown) => setError(errorText(err)))
+      .finally(() => {
+        stopProgress()
+        setBusy(false)
+      })
+  }, [api, refresh, startProgress, stopProgress, t, targetLabel])
 
   const i18nValue = useMemo(() => ({ locale, t }), [locale, t])
 
   return (
     <I18nContext.Provider value={i18nValue}>
-      <div className="dsh-vault-root" data-dv-theme={resolvedTheme} lang={locale === 'zh' ? 'zh-CN' : 'en'}>
-        <a className="dv-skip-link" href="#dv-main">{t('app.skipToContent')}</a>
-        <div className="dv-shell">
-          <aside className="dv-sidebar">
-            <div className="dv-brand">
-              <span className="dv-brand-mark" aria-hidden="true"><IconShield size={19} /></span>
-              <span className="dv-brand-text">
-                <span className="dv-brand-title">{t('app.title')}</span>
-                <span className="dv-brand-sub">{t('app.subtitle')}</span>
-              </span>
-            </div>
-            <nav className="dv-nav" aria-label={t('app.navLabel')}>
-              {TABS.map((item) => {
-                const badge = counts[item.id]
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    data-active={tab === item.id ? 'true' : undefined}
-                    aria-current={tab === item.id ? 'page' : undefined}
-                    onClick={() => navigate(item.id)}
-                  >
-                    <span className="dv-nav-icon" aria-hidden="true">{item.icon}</span>
-                    <span className="dv-nav-label">{tabLabels[item.id]}</span>
-                    {typeof badge === 'number' && badge > 0 ? <span className="dv-nav-badge">{badge}</span> : null}
-                  </button>
-                )
-              })}
-            </nav>
-            <div className="dv-sidebar-foot">
-              <span className="dv-row dv-gap-1">
-                {settings?.schedule.enabled ? <IconCalendarGlyph /> : <IconLock size={12} />}
-                {settings?.schedule.enabled
-                  ? `${t('dashboard.schedule')}: ${t('common.on')}`
-                  : t('dashboard.scheduleOff')}
-              </span>
-              <span className="dv-row dv-gap-1">
-                <IconArchive size={12} />
-                {snapshots.length
-                  ? t('dashboard.snapshotsCount', { count: snapshots.length })
-                  : t('dashboard.snapshotFootEmpty')}
-              </span>
-              <div className="dv-sidebar-actions">
-                <IconButton label={t('app.refresh')} onClick={() => void refresh()} disabled={loading}>
-                  <IconRefresh size={14} />
-                </IconButton>
-                <IconButton
-                  label={t('settings.themeTitle')}
-                  onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
-                >
-                  {resolvedTheme === 'dark' ? <IconSun size={14} /> : <IconMoon size={14} />}
-                </IconButton>
-                <IconButton
-                  label={t('settings.languageTitle')}
-                  onClick={() => setLocale(locale === 'zh' ? 'en' : 'zh')}
-                >
-                  <IconGlobe size={14} />
-                </IconButton>
-              </div>
-            </div>
-          </aside>
+      <div className="dsh-vault-root" lang={locale === 'zh' ? 'zh-CN' : 'en'}>
+                <div className="dv-section">
+          <SectionHead title={t('section.title')} description={t('section.description')} id="dv-section-title" />
+          <SectionTabs label={t('section.tabs')} value={tab} onChange={navigate} items={tabItems} />
+          {/* No fixed id here: panels may mount their own regions with ids. */}
+          <main tabIndex={-1} className="dv-section-body">
+            {tab === 'overview' ? (
+              <Overview
+                status={status}
+                loading={loading}
+                error={error}
+                snapshots={snapshotsReliable ? snapshots : undefined}
+                onRefresh={() => void refresh()}
+                onBackup={() => navigate('backup')}
+                onBackupNow={() => {
+                  const targetId = settings?.defaultTargetId && targets.some((x) => x.id === settings.defaultTargetId)
+                    ? settings.defaultTargetId
+                    : targets[0]?.id
+                  if (!targetId) {
+                    navigate('storage')
+                    return
+                  }
+                  backupTo({
+                    targetId,
+                    encrypt: Boolean(targets.find((x) => x.id === targetId)?.encryptByDefault),
+                    includeSecrets: false,
+                  })
+                }}
+                backupBusy={busy}
+                onNavigate={navigate}
+                message={notice?.kind === 'ok' ? notice.text : null}
+              />
+            ) : null}
 
-          <main className="dv-workspace" id="dv-main" tabIndex={-1}>
-            {loading && !status ? (
-              <div className="dv-panel">
-                <div className="dv-page">
-                  <div className="dv-loading-state" role="status" aria-live="polite">
-                    <span className="dv-spinner" aria-hidden="true" />
-                    <span>{t('app.loadingStatus')}</span>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="dv-panel">
-                {tab === 'dashboard' ? (
-                  <Dashboard
-                    status={status}
-                    loading={loading}
-                    error={error}
-                    onRefresh={() => void refresh()}
-                    onBackup={() => navigate('backup')}
-                    onNavigate={navigate}
-                    onBackupTo={backupTargetPreset}
-                    recentSnapshots={snapshotsReliable ? snapshots.slice(0, 10) : undefined}
-                  />
-                ) : null}
-                {tab === 'backup' ? (
-                  <BackupPanel
-                    key={backupTargetId ?? 'default'}
-                    targets={targets}
-                    busy={busy}
-                    message={notice?.kind === 'ok' ? notice.text : null}
-                    error={notice?.kind === 'error' ? null : error}
-                    progress={busy ? progress?.value : undefined}
-                    stage={busy ? progress?.stage : undefined}
-                    onBackup={(input) => {
-                      setBusy(true)
-                      setError(null)
-                      setNotice(null)
-                      startProgress(input.encrypt ? ['collect', 'pack', 'encrypt', 'upload'] : ['collect', 'pack', 'upload'], 5000)
-                      void api.backup(input)
-                        .then((r) => {
-                          setNotice({
-                            kind: 'ok',
-                            text: t('backup.successBody', {
-                              id: r.snapshotId,
-                              target: targetLabel(r.targetId),
-                              size: formatBytes(r.bytes),
-                            }),
-                          })
-                          return refresh()
-                        })
-                        .catch((err: unknown) => setError(errorText(err)))
-                        .finally(() => {
-                          stopProgress()
-                          setBusy(false)
-                        })
-                    }}
-                    defaultTargetId={backupTargetId}
-                    onNavigateStorage={() => navigate('storage')}
-                  />
-                ) : null}
-                {tab === 'restore' ? (
-                  <RestorePanel
-                    key={restorePreset?.nonce ?? 'restore'}
-                    targets={targets}
-                    snapshots={snapshots}
-                    preview={preview}
-                    busy={busy}
-                    message={notice?.kind === 'ok' ? notice.text : null}
-                    error={error}
-                    loading={loading}
-                    initialTargetId={restorePreset?.targetId}
-                    initialSnapshotId={restorePreset?.snapshotId}
-                    onNavigateStorage={() => navigate('storage')}
-                    onPreview={(input) => {
-                      setBusy(true)
-                      setError(null)
-                      setNotice(null)
+            {tab === 'backup' ? (
+              <BackupPanel
+                key={backupTargetId ?? 'default'}
+                targets={targets}
+                busy={busy}
+                message={notice?.kind === 'ok' ? notice.text : null}
+                error={error}
+                progress={busy ? progress?.value : undefined}
+                stage={busy ? progress?.stage : undefined}
+                defaultTargetId={backupTargetId ?? settings?.defaultTargetId}
+                onBackup={backupTo}
+                onNavigateStorage={() => navigate('storage')}
+              />
+            ) : null}
+
+            {tab === 'restore' ? (
+              <RestorePanel
+                key={restorePreset?.nonce ?? 'restore'}
+                targets={targets}
+                snapshots={snapshotsReliable ? snapshots : []}
+                preview={preview}
+                busy={busy}
+                message={notice?.kind === 'ok' ? notice.text : null}
+                error={error}
+                loading={loading}
+                initialTargetId={restorePreset?.targetId}
+                initialSnapshotId={restorePreset?.snapshotId}
+                onNavigateStorage={() => navigate('storage')}
+                onPreview={(input) => {
+                  setBusy(true)
+                  setError(null)
+                  setNotice(null)
+                  setPreview(null)
+                  // Global default + per-path overrides so every item comes back
+                  // annotated with its `resolution`.
+                  void api.previewRestore(input.targetId, input.snapshotId, input.password, input.conflict, input.conflicts)
+                    .then(setPreview)
+                    .catch((err: unknown) => setError(errorText(err)))
+                    .finally(() => setBusy(false))
+                }}
+                onRestore={(input) => {
+                  setBusy(true)
+                  setError(null)
+                  setNotice(null)
+                  void api.restore({
+                    targetId: input.targetId,
+                    snapshotId: input.snapshotId,
+                    password: input.password,
+                    conflict: input.conflict,
+                    conflicts: input.conflicts,
+                  })
+                    .then((r) => {
+                      const parts = [t('restore.successBody', { applied: r.applied.length, skipped: r.skipped.length })]
+                      if (r.rollbackSnapshotId) parts.push(t('restore.rollbackCreated', { id: r.rollbackSnapshotId }))
+                      if (r.pluginsReinstalled.length) parts.push(t('restore.pluginsReinstalled', { list: r.pluginsReinstalled.join(', ') }))
+                      if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
+                      for (const m of r.manualActions) parts.push(m)
+                      setNotice({ kind: 'ok', text: parts.join(' · ') })
                       setPreview(null)
-                      // Send the global default plus per-path overrides so the
-                      // response annotates every item with its `resolution`.
-                      void api.previewRestore(
-                        input.targetId,
-                        input.snapshotId,
-                        input.password,
-                        input.conflict,
-                        input.conflicts,
-                      )
-                        .then(setPreview)
-                        .catch((err: unknown) => setError(errorText(err)))
-                        .finally(() => setBusy(false))
-                    }}
-                    onRestore={(input) => {
-                      setBusy(true)
-                      setError(null)
-                      setNotice(null)
-                      void api.restore({
-                        targetId: input.targetId,
-                        snapshotId: input.snapshotId,
-                        password: input.password,
-                        conflict: input.conflict,
-                        // Per-path overrides built by RestorePanel; unspecified
-                        // paths fall back to `conflict`.
-                        conflicts: input.conflicts,
-                      })
-                        .then((r) => {
-                          const parts = [t('restore.successBody', { applied: r.applied.length, skipped: r.skipped.length })]
-                          if (r.rollbackSnapshotId) parts.push(t('restore.rollbackCreated', { id: r.rollbackSnapshotId }))
-                          if (r.pluginsReinstalled.length) parts.push(t('restore.pluginsReinstalled', { list: r.pluginsReinstalled.join(', ') }))
-                          if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
-                          for (const m of r.manualActions) parts.push(m)
-                          setNotice({ kind: 'ok', text: parts.join(' · ') })
-                          setPreview(null)
-                          return refresh()
-                        })
-                        .catch((err: unknown) => setError(errorText(err)))
-                        .finally(() => setBusy(false))
-                    }}
-                  />
-                ) : null}
-                {tab === 'storage' ? (
-                  <StoragePanel
-                    targets={targets}
-                    busy={busy}
-                    error={error}
-                    message={notice?.kind === 'ok' ? notice.text : null}
-                    loading={loading}
-                    snapshots={snapshotsReliable ? snapshots : []}
-                    testConnection={async (target) => {
-                      try {
-                        const r = await api.listSnapshots(target.id)
-                        setTargetStatus((prev) => ({ ...prev, [target.id]: 'ok' }))
-                        return { ok: true, count: r.snapshots.length }
-                      } catch (err) {
-                        setTargetStatus((prev) => ({ ...prev, [target.id]: 'error' }))
-                        return { ok: false, error: errorText(err) }
-                      }
-                    }}
-                    onUpsert={(target) => {
-                      void run(async () => {
-                        await api.upsertTarget(target)
-                        setNotice({ kind: 'ok', text: t('storage.saved', { label: target.label }) })
-                        await refresh()
-                      })
-                    }}
-                    onDelete={(id) => {
-                      const label = targetLabel(id)
-                      void run(async () => {
-                        await api.deleteTarget(id)
-                        setNotice({ kind: 'ok', text: t('storage.deleted', { label }) })
-                        await refresh()
-                      })
-                    }}
-                  />
-                ) : null}
-                {tab === 'snapshots' ? (
-                  <SnapshotsPanel
-                    snapshots={snapshotsReliable ? snapshots : []}
-                    busy={busy}
-                    loading={loading}
-                    error={snapshotsReliable ? error : error}
-                    message={notice?.kind === 'ok' ? notice.text : null}
-                    targets={targets}
-                    currentRetention={settings?.retention}
-                    onRefresh={() => void refresh()}
-                    onNavigateBackup={() => navigate('backup')}
-                    onRestoreRequest={(targetId, snapshotId) => {
-                      setRestorePreset({ targetId, snapshotId, nonce: Date.now() })
-                      setPreview(null)
-                      navigate('restore')
-                    }}
-                    onDelete={(targetId, snapshotId) => {
-                      void run(async () => {
-                        await api.deleteSnapshot(targetId, snapshotId)
-                        setNotice({ kind: 'ok', text: t('snapshots.deleted', { id: snapshotId }) })
-                        if (preview?.snapshotId === snapshotId) setPreview(null)
-                        await refresh()
-                      })
-                    }}
-                    onVerify={async (targetId, snapshotId, password): Promise<VerifyResult> => {
-                      try {
-                        const r = await api.verify(targetId, snapshotId, password)
-                        setNotice({ kind: 'ok', text: t('snapshots.verifyOk', { id: snapshotId, manifest: r.manifestId }) })
-                        return { ok: true, manifestId: r.manifestId }
-                      } catch (err) {
-                        const msg = errorText(err)
-                        if (err instanceof VaultApiError && err.status === 0) return { ok: false, error: msg }
-                        setError(null)
-                        return { ok: false, error: msg }
-                      }
-                    }}
-                    onSaveRetention={(policy) => {
-                      void run(async () => {
-                        const s = await api.updateSettings({
-                          retention: policy,
-                          schedule: { ...(settings?.schedule ?? ({} as VaultSettings['schedule'])), retention: policy },
-                        })
-                        setStatus((prev) => (prev ? { ...prev, settings: s } : prev))
-                        setNotice({ kind: 'ok', text: t('snapshots.retentionSaved') })
-                      })
-                    }}
-                  />
-                ) : null}
-                {tab === 'settings' ? (
-                  <SettingsPanel
-                    settings={settings}
-                    busy={busy}
-                    loading={loading}
-                    error={error}
-                    message={notice?.kind === 'ok' ? notice.text : null}
-                    targets={targets}
-                    dshHome={status?.dshHome}
-                    dataDir={status?.dataDir}
-                    locale={locale}
-                    onLocaleChange={setLocale}
-                    theme={theme}
-                    resolvedTheme={resolvedTheme}
-                    onThemeChange={setTheme}
-                    onRetry={() => void refresh()}
-                    onSave={(patch) => {
-                      void run(async () => {
-                        const s = await api.updateSettings(patch)
-                        setStatus((prev) => (prev ? { ...prev, settings: s } : prev))
-                        setNotice({ kind: 'ok', text: t('settings.saved') })
-                      })
-                    }}
-                    onRunSchedule={() => {
-                      void run(async () => {
-                        const r = await api.runSchedule()
-                        setNotice({
-                          kind: 'ok',
-                          text: r.result ? t('settings.runDone', { id: r.result.snapshotId }) : t('settings.runSkipped'),
-                        })
-                        await refresh()
-                      })
-                    }}
-                  />
-                ) : null}
-              </div>
-            )}
+                      return refresh()
+                    })
+                    .catch((err: unknown) => setError(errorText(err)))
+                    .finally(() => setBusy(false))
+                }}
+              />
+            ) : null}
+
+            {tab === 'storage' ? (
+              <StoragePanel
+                targets={targets}
+                busy={busy}
+                error={error}
+                message={notice?.kind === 'ok' ? notice.text : null}
+                loading={loading}
+                snapshots={snapshotsReliable ? snapshots : []}
+                testConnection={async (target) => {
+                  try {
+                    const r = await api.listSnapshots(target.id)
+                    return { ok: true, count: r.snapshots.length }
+                  } catch (err) {
+                    return { ok: false, error: errorText(err) }
+                  }
+                }}
+                onUpsert={(target) => {
+                  void run(async () => {
+                    await api.upsertTarget(target)
+                    setNotice({ kind: 'ok', text: t('storage.saved', { label: target.label }) })
+                    await refresh()
+                  })
+                }}
+                onDelete={(id) => {
+                  const label = targetLabel(id)
+                  void run(async () => {
+                    await api.deleteTarget(id)
+                    setNotice({ kind: 'ok', text: t('storage.deleted', { label }) })
+                    await refresh()
+                  })
+                }}
+              />
+            ) : null}
+
+            {tab === 'snapshots' ? (
+              <SnapshotsPanel
+                snapshots={snapshotsReliable ? snapshots : []}
+                busy={busy}
+                loading={loading}
+                error={error}
+                message={notice?.kind === 'ok' ? notice.text : null}
+                targets={targets}
+                onRefresh={() => void refresh()}
+                onNavigateBackup={() => navigate('backup')}
+                onRestoreRequest={(targetId, snapshotId) => {
+                  setRestorePreset({ targetId, snapshotId, nonce: Date.now() })
+                  setPreview(null)
+                  navigate('restore')
+                }}
+                onDelete={(targetId, snapshotId) => {
+                  void run(async () => {
+                    await api.deleteSnapshot(targetId, snapshotId)
+                    setNotice({ kind: 'ok', text: t('snapshots.deleted', { id: snapshotId }) })
+                    if (preview?.snapshotId === snapshotId) setPreview(null)
+                    await refresh()
+                  })
+                }}
+                onVerify={async (targetId, snapshotId, password): Promise<VerifyResult> => {
+                  try {
+                    await api.verify(targetId, snapshotId, password)
+                    setNotice({ kind: 'ok', text: t('snapshots.verifyOk') })
+                    return { ok: true }
+                  } catch (err) {
+                    return { ok: false, error: errorText(err) }
+                  }
+                }}
+              />
+            ) : null}
+
+            {tab === 'schedule' ? (
+              <SettingsPanel
+                settings={settings}
+                busy={busy}
+                loading={loading}
+                error={error}
+                message={notice?.kind === 'ok' ? notice.text : null}
+                targets={targets}
+                locale={locale}
+                onRetry={() => void refresh()}
+                onSave={(patch) => {
+                  void run(async () => {
+                    const s = await api.updateSettings(patch)
+                    setStatus((prev) => (prev ? { ...prev, settings: s } : prev))
+                    setNotice({ kind: 'ok', text: t('schedule.saved') })
+                  })
+                }}
+                onRunSchedule={() => {
+                  void run(async () => {
+                    const r = await api.runSchedule()
+                    setNotice({
+                      kind: 'ok',
+                      text: r.result ? t('schedule.runDone', { id: r.result.snapshotId }) : t('schedule.runSkipped'),
+                    })
+                    await refresh()
+                  })
+                }}
+              />
+            ) : null}
           </main>
         </div>
       </div>
     </I18nContext.Provider>
   )
 }
-
-function IconCalendarGlyph() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-      <rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4" />
-    </svg>
-  )
-}
-
-// Re-exported locale helpers so host code can bind the same namespace.
-export { readStoredLocale }

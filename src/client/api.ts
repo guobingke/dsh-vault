@@ -58,6 +58,11 @@ function hasConflicts(conflicts: RestoreConflicts | undefined): conflicts is Res
 export interface VaultStatusResponse {
   dshHome: string
   dataDir: string
+  /** Host process profile (`web`, `desktop`, …) — optional on older hosts. */
+  activeProfile?: string
+  /** Derived surface: `desktop` | `web` | `other` — optional on older hosts. */
+  surface?: 'desktop' | 'web' | 'other'
+  guiProfiles?: string[]
   targets: StorageTargetConfig[]
   settings: VaultSettings
   recentSnapshots: SnapshotInfo[]

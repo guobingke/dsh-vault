@@ -1,197 +1,193 @@
-# dsh-vault UI — design system & component map
+# dsh-vault UI — native settings section
 
-This document describes the redesigned Settings UI. It stays inside the
-boundary of [`FRONTEND_CONTRACT.md`](./FRONTEND_CONTRACT.md): no backend, API,
-storage or encryption code changed, and no panel props were removed.
+The dsh-vault interface is **part of the dsh Settings modal**, not a standalone
+app. It registers one section (`settings.section`, id `dsh-vault`) and renders
+into the modal's right content column (≈450–520 px, on `dsh web` and
+DeepSeek Harness Desktop alike). The host owns the modal frame, the left
+navigation ("dsh Vault" is one entry there), the colors and the light/dark
+theme; the section only supplies its own content.
+
+This document describes the design rules. It stays inside the boundary of
+[`FRONTEND_CONTRACT.md`](./FRONTEND_CONTRACT.md): no backend, API or storage
+code changed, every panel prop from the contract is still accepted, and every
+API call is unchanged.
 
 ---
 
 ## 1. Principles
 
-1. **Calm, high-contrast, dark-first.** Deep neutral surfaces, one blue-violet
-   accent, status colour used only where it carries meaning. A light theme with
-   the same hierarchy is available and follows the dsh theme by default.
-2. **One job per screen.** Six tabs mirror the backup lifecycle:
-   Overview → Backup → Restore → Storage → Snapshots → Settings.
-3. **Every state is designed.** Loading, empty, error, in-progress and success
-   are explicit UI states — never a blank panel.
-4. **Safety is visible.** Restore is a four-step flow with a diff, per-path
-   conflict choices and a confirmation dialog. Destructive actions
-   (delete target / snapshot, restore) always confirm in a dialog.
-5. **Secrets never echo.** Passwords, tokens and secret keys are masked
-   (`type="password"` with a show/hide toggle) and are never rendered back from
-   saved configuration; edit forms keep the stored value when a secret field is
-   left empty.
-6. **Accessible by default.** Semantic landmarks, labelled form fields, real
-   radio/checkbox inputs for keyboard users, a focus trap and Escape handling
-   in dialogs, `aria-live` status regions, and focus-visible rings everywhere.
+1. **Look like the host.** Rows, gray pickers, black primary buttons,
+   provider cards, switches — the same shapes and tokens as dsh's own
+   General / Models pages. Nothing in this section should read as "a plugin's
+   own little app".
+2. **No shell, no branding.** No sidebar, no logo, no "dsh Vault" brand block,
+   no hero banner, no gradient / glow / shadow, no KPI tile grid, no
+   decorative icons before headings, no theme switch (the host theme applies),
+   no marketing copy.
+3. **One flat hierarchy.** Section title → sub-section tabs → setting rows
+   (or provider cards for grouped things). Everything else is plain text.
+4. **Every state is designed.** Loading, empty, error, busy/progress and
+   success are explicit and inline — never a blank panel.
+5. **Safety stays visible.** Restore is preview → per-item conflicts →
+   confirm dialog. Deleting a snapshot, deleting a storage location and
+   restoring all go through a second confirmation.
+6. **Secrets never echo.** Passwords, tokens and secret keys are masked
+   (`type="password"` with a reveal toggle) and are never rendered back from
+   saved configuration; leaving a secret field empty keeps the stored value.
 
 ---
 
-## 2. Tokens (`src/client/theme.css`)
+## 2. Layout
 
-All styling goes through `--dv-*` custom properties defined on
-`.dsh-vault-root`. Components never hard-code colours.
+```
+┌──────────────────────────────────────────────────────────┐
+│ dsh Vault                                  16px, regular│
+│ Back up and restore dsh plugins, …          14px, secondary│
+│                                                          │
+│ [Overview] [Backup] [Restore] [Storage] [Snapshots] [Auto backup]
+│    ^selected = gray pill (bg-document-preview, radius 12) │
+│                                                          │
+│ Last backup                                  Local · today 10:21
+│ ─────────────────────────────────────────────────────────│
+│ Snapshots                      1 encrypted, 0 plaintext  │
+│                                            5 · 12.4 MB   │
+│ ─────────────────────────────────────────────────────────│
+│ Auto backup                              daily, next …   │
+│ ─────────────────────────────────────────────────────────│
+│ ● Local           default        last today 10:21     3  │
+│ ─────────────────────────────────────────────────────────│
+│ Back up now                            [ Back up ] primary│
+└──────────────────────────────────────────────────────────┘
+```
 
-### Layers
+- **Section head**: title 16 px / 24 px, weight 400, no icon; one plain
+  description at 14 px in `label-secondary`.
+- **Sub-section tabs**: a single row of small tabs, `role="tablist"`. Selected
+  tab = `--dsw-alias-bg-document-preview` / radius 12; unselected = transparent.
+  Roving tabindex + ←/→/Home/End keyboard support.
+- **Setting row** (`SettingRow`):
+  `display:flex; justify-content:space-between; align-items:center; padding:16px 0; gap:8px; border-bottom:1px solid border-l2` — the last row has no
+  divider. Left column: title 14 px/22 px (`label-primary`) + description
+  12 px/18 px (`label-tertiary`). Right column: the control. Rows whose
+  control is wide (long selects, chip groups, inputs) use `stacked`, which
+  puts the control below the text. Below 420 px rows stack automatically.
+- **Provider card** (`Card`): `bg-module-platform`, radius 16, no shadow,
+  padding 12–14. Used for storage locations, the backup target picker, the
+  scope list, the restore snapshot picker, the diff and the conflict list.
+  Cards are separated by 8 px; links inside a card are full-width picker
+  buttons with a small chevron.
 
-| Layer | Examples | Notes |
+---
+
+## 3. Tokens
+
+All styling goes through `--dv-*` aliases defined on `.dsh-vault-root` in
+`src/client/theme.css`, and every one maps onto a host `--dsw-*` token with a
+light-theme fallback:
+
+| Alias | Host token |
+|---|---|
+| `--dv-text` | `--dsw-alias-label-primary` |
+| `--dv-text-secondary` / `-tertiary` / `-caption` | `--dsw-alias-label-secondary` / `-tertiary` / `-caption` |
+| `--dv-bg-layer-1` / `-2` / `-3` | `--dsw-alias-bg-layer-1` / `-2` / `-3` |
+| `--dv-bg-module` | `--dsw-alias-bg-module-platform` |
+| `--dv-bg-selected` | `--dsw-alias-bg-document-preview` |
+| `--dv-bg-skeleton` | `--dsw-alias-bg-skeleton` |
+| `--dv-border-l1…l4` | `--dsw-alias-border-l1…l4` |
+| `--dv-ok` / `-warn` / `-danger` / `-info` | `--dsw-alias-state-success/warn/error/business-primary` |
+| `--dv-on-primary` | `--dsw-alias-bg-layer-3` |
+| `--dv-focus` / `--dv-focus-width` | `--dsw-focus-ring-color` / `--dsw-focus-ring-width` |
+| `--dv-radius-xs/sm/md/lg/xl` | `--dsw-radius-xs/sm/md/lg/xl` (4/8/12/16/20) |
+| `--dv-font` / `--dv-mono` | `--dsw-font-family` / `--dsw-font-markdown-code-font-family` |
+| `--dv-warn-bg` / `--dv-info-bg` | `--dsw-alias-state-warn-tertiary` / `--dsw-alias-state-business-tertiary` |
+
+There is no own palette, gradient, shadow or glow. When the host switches
+theme, the fallbacks are never used and every surface follows automatically.
+
+### Controls
+
+| Control | Appearance |
+|---|---|
+| Primary button | `label-primary` fill, `bg-layer-3` text (white on light, dark on dark), radius 12, `5px 14px`. Used for *Save*, *Back up*, *Create snapshot*, *Preview diff*, *Restore*. |
+| Secondary button | `bg-layer-1` fill + 1 px `border-l3` (native Cancel). |
+| Quiet / text button | transparent, `label-secondary`, gray hover. Used for row links (*Select all*, *Edit*, *Verify*…). |
+| Danger button | neutral fill, `border-l3`, error-colored **text only**. A danger confirm (`danger-solid`) fills with `state-error-primary` and is only used inside the confirmation dialog. |
+| Danger text | `state-error-primary`, used for inline error text and thin borders only — never as a large fill. |
+| Dashed button | full-width (or wrapping) dashed `border-l3`, radius 12 — "+ Add storage location". |
+| Select | native `<select>` restyled: `bg-module-platform`, radius 12, small chevron, 32 px high. |
+| Input | white `bg-layer-1`, 1 px `border-l3`, radius 8, 32 px; numbers right-aligned in a 72 px field. |
+| Switch | 28×16 capsule; on = `label-primary` fill, knob `bg-layer-3`. |
+| Checkbox / radio tile | native inputs (keyboard + SR); custom 16 px mark. Tiles use `bg-module-platform` when selected, `border-l4`. |
+| Chips | radius 12, 1 px border; pressed = `bg-module-platform` + `border-l4`. |
+| Segmented | gray track, white segment for the active option (used for diff filter, per-item conflict choice, KDF). |
+| Focus | `outline: var(--dv-focus-width) solid var(--dv-focus)` on every interactive element (`:focus-visible`), plus a ring on tile focus-within. |
+| Status | 6 px dot (`success` / `warn` / `error` / `label-caption`) + text. |
+
+---
+
+## 4. Sub-sections
+
+| Tab | Component | Content |
 |---|---|---|
-| Palette | `--dv-brand-400…700`, `--dv-accent-alt`, `--dv-ok-h`, `--dv-warn-h`, `--dv-danger-h`, `--dv-info-h` | Accent + status hues. Status colours are generated with `hsl()` so light/dark can shift lightness only. |
-| Semantic | `--dv-bg`, `--dv-surface`, `--dv-surface-raised`, `--dv-surface-2`, `--dv-surface-hover`, `--dv-border`, `--dv-border-strong`, `--dv-text`, `--dv-text-muted`, `--dv-text-faint`, `--dv-scrim` | What components consume. |
-| Status | `--dv-ok`, `--dv-warn`, `--dv-danger`, `--dv-info`, `--dv-add` / `--dv-change` / `--dv-remove` + `*-soft` | Diff colours are re-exported here so the restore diff and badges agree. |
-| Accent | `--dv-accent`, `--dv-accent-hover`, `--dv-accent-soft`, `--dv-brand-gradient`, `--dv-ring`, `--dv-glow`, `--dv-focus` | Gradient is reserved for the primary CTA / brand mark only. |
-| Geometry | `--dv-space-1…8`, `--dv-radius-sm…xl`, `--dv-shadow-xs…lg` | 4-pt spacing scale, 6/10/14/18 px radii, three elevation steps (+ modal). |
-| Type | `--dv-font`, `--dv-mono` | Host `--dsw-font-family*` first, then Inter / PingFang SC / Segoe UI / system stack. |
+| Overview / `overview` | `Dashboard` → `Overview` | Plain status rows: **Last backup** (location · "today 10:21"), **Snapshots** (`5 · 12.4 MB`, "1 encrypted, 0 plaintext"), **Auto backup** ("daily, next tomorrow 10:21"), one dot+name row per storage location (`● Local … default … 3 snapshots`), then **Back up now** with its primary button on the right (uses the default location's settings; jumps to Storage when none exists). A one-line note states the credential policy. |
+| Backup / `backup` | `BackupPanel` | Provider card for the storage location, card for the 10 backup categories (select all / clear), rows for *Encryption* (switch; password field, credentials switch and notes appear when on). Progress bar while running, success/error banners. |
+| Restore / `restore` | `RestorePanel` | Snapshot picker card (location select + search, max 50) + password when encrypted → **Preview diff**. Diff card: counts, filter segmented, table (path / category / change / result). Conflict card: bulk *Use backup* / *Keep current* plus one segmented pair per changed item, with a summary ("3 use backup, 1 keep current"). Plugin list (`<details>`), manual-action banner. Confirmation rows: *Confirm*, *Rollback snapshot*, *Reinstall plugins*, then a danger **Restore** button that opens the confirmation dialog. Per-item choices are sent with `preview` (debounced) and with `restore` as `conflicts`; the global `conflict` remains `use-backup`. |
+| Storage / `storage` | `StoragePanel` | One provider card per storage location: dot + name + id, kind, location, counts/last backup, tags (encrypt-by-default, stored credentials), *Test connection* / *Edit* / *Delete*, per-card test result. Add row with four dashed buttons (+ Add Local folder / GitHub / WebDAV / S3). Editor replaces the add row with fields per kind, native checkboxes/switches, *Cancel* / *Save*. Delete goes through the confirmation dialog. |
+| Snapshots / `snapshots` | `SnapshotsPanel` | Search, location select, encryption segmented, count, refresh; plain list rows (id, location · date · size, tags, verify result) with *Restore* / *Verify* / *Delete* on the right. Encrypted verify asks for the password in a dialog. |
+| Auto backup / `schedule` | `SettingsPanel` | Rows: *Enable auto backup*, *Interval* (preset chips + custom minutes), *Back up to*, *Encrypt*, *Include credentials*, *Last run*, *Run now*; *Retention* (keep last N + presets), *Default storage location*, *Key derivation*, and **Language** — a plain read-only row that follows the host locale (`Language — Simplified Chinese · Follow dsh`). Save / Discard at the bottom with an "Unsaved changes" hint. |
 
-### Theming
-
-- **Default = dark.** The root paints a subtle dual radial glow over
-  `--dv-bg`.
-- **Light** = `.dsh-vault-root[data-dv-theme='light']`, toggled by `VaultApp`
-  (Settings → Appearance: *Follow dsh / Dark / Light*; stored in
-  `dsh-vault.theme`).
-- **Follow dsh**: `VaultApp` observes `<html data-theme>` / `data-dsw-theme`,
-  falling back to `prefers-color-scheme`.
-- Host `--dsw-*` tokens are used as adaptive fallbacks so the panel blends into
-  the host shell while keeping its own spacing/elevation.
-- Motion respects `prefers-reduced-motion`.
-
-Contrast was checked programmatically against every panel in both themes:
-body text ≥ 4.5:1 and the lowest tier (`--dv-text-faint`) ≥ 4.5:1 on surface.
-
-### Responsive
-
-- ≥ 760 px: fixed sidebar (232 px) + scrolling workspace.
-- < 760 px: sidebar collapses into a scrollable pill navigation under the
-  brand; grids collapse to one column.
-- Panel grids use **container queries** (`dv-workspace`), so they stack by the
-  settings pane's real width, not the viewport. Tables that must keep their
-  columns sit in horizontal scrollers with a min-width.
+Language: the UI follows the host locale (`ctx.locale.getLocale().active`,
+then `navigator.language`, then Simplified Chinese). There is no in-app
+language or theme switch.
 
 ---
 
-## 3. Component structure
+## 5. Files
 
 ```
 src/client/
-  index.ts                 # Cordis apply(); registers settings.section + full zh/en dictionary
-  VaultApp.tsx             # Shell: sidebar nav, i18n/theme providers, API orchestration, progress
-  api.ts                   # VaultApi (unchanged endpoints; additive optional body fields)
-  theme.css                # tokens + component styles (all `.dv-*`)
-  i18n.ts                  # zh/en dictionaries, translate(), I18nContext, useT()/useLocale()
+  index.ts          # Cordis apply(); registers settings.section
+  VaultApp.tsx      # Section head + sub-section tabs + state orchestration
+  api.ts            # VaultApi (unchanged endpoints)
+  i18n.ts           # zh/en dictionaries (same key set), translate(), useT()
+  theme.css         # --dv-* aliases of --dsw-* + section styles
   lib/
-    format.ts              # bytes, dates, relative time, intervals, passwordStrength()
-    targets.ts             # target labels/locations, secret redaction helpers
-    useNow.ts              # minute ticker for relative timestamps
+    format.ts       # bytes, dates ("today 10:21"), relative time, intervals, password strength
+    targets.ts      # target labels/locations/counters (no secrets)
   components/
-    ui.tsx                 # shared primitives (below)
-    Icons.tsx              # ~55 inline SVG icons (no icon dependency)
-    Dashboard.tsx          # Overview
-    BackupPanel.tsx        # Backup
-    RestorePanel.tsx       # Restore
-    StoragePanel.tsx       # Storage targets
-    SnapshotsPanel.tsx     # Snapshots
-    SettingsPanel.tsx      # Settings
+    ui.tsx          # SectionHead, SectionTabs, SettingRow, Card, Button, Select,
+                    # Switch, Checkbox, OptionTile, Segmented, Chips, Banner,
+                    # states, ProgressBar, Dialog, ConfirmDialog
+    Icons.tsx       # only chevrons, alert mark and password reveal
+    Dashboard.tsx   # Overview
+    BackupPanel.tsx
+    RestorePanel.tsx
+    StoragePanel.tsx
+    SnapshotsPanel.tsx
+    SettingsPanel.tsx
 ```
 
-### Primitives (`components/ui.tsx`)
-
-| Component | Purpose |
-|---|---|
-| `PageHeader` | Title / subtitle / actions row. |
-| `Card`, `CardHeader`, `CardBody`, `CardFooter` | Surface with optional icon tile, hero tint, selected ring. |
-| `Button`, `IconButton`, `CtaButton` | Variants `default · primary · ghost · outline · danger · danger-solid · ok · info`; sizes `sm · md · lg`; loading spinner + `aria-busy`. `CtaButton` is the gradient hero action. |
-| `Field`, `TextInput`, `PasswordInput`, `TextArea`, `SelectField`, `Checkbox`, `Switch`, `OptionTile`, `Segmented`, `SearchInput` | Forms. `Field` always renders a `<label for>` plus hint or error text. `OptionTile` is a styled radio/checkbox that keeps the native input for keyboard/SR use. `PasswordInput` adds a show/hide toggle. |
-| `Badge`, `StatusDot`, `Tag` | Pills and status indicators (`tone`: neutral/brand/ok/warn/danger/info/add/change/remove). |
-| `Banner` | Inline alert, `data-tone="info|ok|warn|error"`; the contract's `data-tone` values are preserved. |
-| `LoadingState`, `LoadingInline`, `SkeletonLines`, `SkeletonCard` | Loading. |
-| `EmptyState` | Guided empty state with icon, copy and actions. |
-| `ErrorState` | Error with message and Retry. |
-| `ProgressBar` | Determinate/indeterminate bar with stage chips and `role="progressbar"`. |
-| `Meter` | 4-segment password-strength meter. |
-| `Stat` | KPI tile. |
-| `Collapsible` | `<details>`-based disclosure. |
-| `Dialog`, `ConfirmDialog` | Portal modal with focus trap, Escape, focus restore; `ConfirmDialog` is the standard destructive-action gate. |
-| `CopyButton` | Copy-to-clipboard for ids and paths. |
-
-### Icons
-
-`Icons.tsx` holds small inline SVGs (24×24, `currentColor`, `1em` default
-size). No icon package is added. `storageIcon(kind)` maps local / GitHub /
-WebDAV / S3 to their icon.
+`src/client` imports `src/core` **types only** (`import type`) so no
+`node:*` module ever reaches the browser bundle, and it does not import host
+primitive packages — the native look is reproduced locally from tokens.
 
 ---
 
-## 4. Screens
-
-| Tab | Component | Highlights |
-|---|---|---|
-| Overview | `Dashboard` | Last backup + relative age, snapshot count & size, schedule and encryption KPIs; one-click gradient **Back up now**; per-target status cards (kind, location, snapshot count, last backup, encryption) with “Back up here”; recent snapshots; environment paths. |
-| Backup | `BackupPanel` | Scope tiles for all 10 `BackupCategory` values with select all/clear; target radio cards; encryption switch with strength meter (length + character-class heuristic), credentials switch locked until encryption is on; notes; summary card; stage progress bar; success/error banners. |
-| Restore | `RestorePanel` | Step indicator ①…④. Snapshot picker (target filter + search). **Diff preview** with add/change/remove/unchanged colours, counts and filters; a **Resolution** column shows each item's strategy (Use backup / Keep current) plus its outcome (Will apply / Will skip / No change). **Per-path conflict** radio pairs (use backup / keep current) + bulk set; per-path choices are sent with the preview (`conflict` + `conflicts`) so `items[].resolution` refreshes, and are forwarded to `POST /restore`. Plugin reinstall and manual-action notices. **Double confirmation**: two checkboxes (rollback note, risk acknowledgement) plus a confirm dialog. Encrypted snapshots ask for the password inline. |
-| Storage | `StoragePanel` | Target cards for local plaintext / local encrypted / GitHub / WebDAV / S3 with location, snapshot count, last backup, stored-credential and default-encryption tags. **Test connection** lists a target's snapshots read-only (`GET /snapshots?targetId=`), shows found count or a redacted error. Editor with labelled fields per kind, masked secrets, default-encryption switch, delete confirmation. |
-| Snapshots | `SnapshotsPanel` | Totals, search, target filter and mode filter (all / encrypted / plaintext / with secrets). Verify per row (password dialog for encrypted snapshots), delete with confirmation, jump to Restore. Retention editor with a live “would prune ~N” preview. |
-| Settings | `SettingsPanel` | Schedule enable switch, interval presets + custom minutes (min 15), target picker, encrypt / include-secrets, last/next run, **Run now**. Retention + preset chips, default target, preferred KDF, language (zh / en), appearance (follow dsh / dark / light), About block with data dirs and the secrets policy. Save is explicit with an “unsaved changes” badge and discard. |
-
-### State coverage
+## 6. States
 
 | State | Where |
 |---|---|
-| loading | Dashboard full-page → skeletons/spinner; Snapshots/Settings loading states; Restore preview spinner. |
-| empty | No targets, no snapshots, no search matches, nothing-to-restore — each with guidance and a next action. |
-| error | Inline `Banner data-tone="error"` with Retry on data loads; dialog/row-level verify errors. |
-| busy / progress | Primary actions disabled & spinners; backup stage progress; restore in-dialog progress. |
-| success | `Banner data-tone="ok"` with snapshot id / counts / rollback id. |
-| warn | Restore manual actions and removals; “no target” schedule warning. |
+| loading | Overview / Auto backup / Snapshots / Storage show an inline spinner line. |
+| empty | No storage locations (Overview, Backup, Restore), no snapshots, no search matches, nothing to restore — each with one sentence and a next action. |
+| error | Inline error text / banner with `role="alert"`; retry on the Overview and Auto backup load. |
+| busy / progress | Primary buttons disable and show a spinner; Backup shows an optimistic progress bar with a stage label. |
+| success | Green-tinted `Banner tone="ok"` with snapshot id / counts / rollback id. |
+| warn | Restore manual actions, removals note, unsaved-changes hint. |
 
-Because the HTTP API is request/response, backup/restore progress is
-**optimistic**: `VaultApp` advances a time-based bar toward ~92% through named
-stages and completes when the promise settles. If the backend later adds
-progress streaming, only `VaultApp` needs to consume it.
-
----
-
-## 5. Internationalisation
-
-- `i18n.ts` ships complete `zh` and `en` dictionaries (same key set).
-  **Chinese is the default**: a stored choice wins, then the host locale
-  (`ctx.locale.getLocale().active`), then `navigator.language`.
-- `VaultApp` provides `I18nContext`; components use `useT()` (translator) and
-  `useLocale()` (date/interval formatting). Interpolation: `t('key', { n })`
-  with `{n}` placeholders.
-- The full dictionary is also registered with the host locale namespace
-  (`dsh-vault`) in `index.ts`.
-- The sidebar footer and Settings let users switch language at any time.
-
----
-
-## 6. Data & API usage
-
-The UI only calls the routes in the contract via `VaultApi`:
-
-| Flow | Calls |
-|---|---|
-| Load | `GET /status`, `GET /snapshots` |
-| Backup | `POST /backup` (`targetId`, `encrypt`, `password?`, `includeSecrets`, `notes?`) → `GET /status` + `/snapshots` |
-| Restore | `POST /restore/preview` (`conflict` + optional `conflicts` → per-item `resolution`) → `POST /restore` (`conflict` + `conflicts`) → refresh |
-| Storage | `POST /targets` (upsert), `POST /targets/delete`; test = `GET /snapshots?targetId=` |
-| Snapshots | `POST /verify`, `POST /snapshots/delete`; retention = `PUT /settings` |
-| Settings | `PUT /settings`, `POST /schedule/run` |
-
-**Per-path conflicts:** both `POST /restore` and `POST /restore/preview` accept
-`conflicts?: Record<path, 'keep-current' | 'use-backup'>` as a per-path override
-of the global `conflict`. The UI sends `conflict: 'use-backup'` as the global
-default plus the per-path map collected in the conflict panel; preview responses
-are annotated with `items[].resolution`, which drives the diff table's
-Resolution column (and its apply/skip counts). Changing a per-path choice
-re-requests the preview (debounced) so badges stay in sync with what
-`POST /restore` will do. `GET /targets` is not used because `/status` already
-returns targets.
-
-Secrets: backup passwords are never stored; the password is only used for the
-in-flight request and for preview/verify of the selected session. Error text
-shown for connection tests strips configured secret values.
+Backup/restore progress is optimistic: the API is request/response, so
+`VaultApp` advances the bar toward ~92 % through named stages and finishes
+when the promise settles. Only `VaultApp` would change if the backend later
+streamed progress.
 
 ---
 
@@ -203,7 +199,9 @@ npm run build
 npm test
 ```
 
-UI checks done during the redesign: every panel rendered to string in both
-locales (zh/en) and in loading/empty/error/busy states; headless-Chrome layout
-probe for horizontal overflow, clipped text and contrast at 1180 px and 390 px
-widths in dark and light themes.
+During this pass every panel was server-rendered in zh and en (loading,
+empty, error, busy, populated) and exercised in headless Chrome at 460 px and
+500 px content width in light and dark host themes: no horizontal overflow,
+labels fit, tab keyboard navigation moves selection and focus, switches and
+per-item conflict choices reach the API with the expected payloads, and
+destructive actions require the confirmation dialog.

@@ -1,9 +1,13 @@
 /**
  * dsh-vault browser client — registers a Settings section.
  *
- * Uses the same slots.inject('settings.section') pattern as community plugins
- * (dsh-config-manager / dsh-backup). Host packages are optional peers; when
- * unavailable this module still typechecks and exports VaultApp for tests.
+ * Renders inside the host's Settings modal (slot `settings.section`, id
+ * `dsh-vault`); the host supplies the left navigation and the theme. The UI
+ * follows the host locale and has no shell, sidebar, branding or theme switch
+ * of its own.
+ *
+ * Host packages are optional peers; when unavailable this module still
+ * typechecks and exports VaultApp for tests.
  */
 import { createElement, type ReactNode } from 'react'
 import { VaultApp } from './VaultApp.js'
