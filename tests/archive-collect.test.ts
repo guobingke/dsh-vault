@@ -71,3 +71,10 @@ describe('archive + collect', () => {
     }
   })
 })
+
+describe('collect skips dsh plugin-manager logs (e2e regression)', () => {
+  it('does not back up profiles/*/.plugin-manager', async () => {
+    const { shouldSkipDir } = await import('../src/core/paths.js')
+    assert.equal(shouldSkipDir('.plugin-manager'), true)
+  })
+})

@@ -111,6 +111,8 @@ export const SKIP_DIR_NAMES = new Set([
   'dsh-vault',
   'dsh-config-manager',
   'config-backups',
+  // dsh plugin-manager operation logs (profiles/*/.plugin-manager/logs) — noise, not config.
+  '.plugin-manager',
 ])
 
 export function shouldSkipDir(name: string): boolean {

@@ -1,3 +1,4 @@
+import { snapshotTimeFromId } from '../core/manifest.js'
 import type { GitHubTargetConfig, SnapshotInfo } from '../core/types.js'
 import type { StorageAdapter, StorageAdapterFactoryContext } from './types.js'
 import { ENCRYPTED_EXTENSION, ARCHIVE_EXTENSION } from '../core/types.js'
@@ -139,7 +140,8 @@ export class GitHubStorageAdapter implements StorageAdapter {
           id,
           targetId: this.id,
           remoteKey: i.path,
-          createdAt: new Date(0).toISOString(),
+          // Contents API listings carry no timestamps; the id encodes creation time.
+          createdAt: snapshotTimeFromId(id) ?? new Date(0).toISOString(),
           bytes: i.size,
           encrypted,
           includeSecrets: false,

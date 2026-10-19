@@ -15,6 +15,14 @@ export function makeSnapshotId(date = new Date()): string {
   return `vault-${iso}-${suffix}`
 }
 
+/** Recover the creation time encoded in a `vault-YYYYMMDDTHHMMSSZ-xxxxxx` id (undefined if not parseable). */
+export function snapshotTimeFromId(id: string): string | undefined {
+  const m = /^vault-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-/.exec(id)
+  if (!m) return undefined
+  const t = Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!, +m[6]!)
+  return Number.isNaN(t) ? undefined : new Date(t).toISOString()
+}
+
 export function buildManifest(input: {
   id: string
   files: CollectedFile[]

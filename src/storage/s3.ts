@@ -1,3 +1,4 @@
+import { snapshotTimeFromId } from '../core/manifest.js'
 import { createHash, createHmac } from 'node:crypto'
 import type { S3TargetConfig, SnapshotInfo } from '../core/types.js'
 import { ARCHIVE_EXTENSION, ENCRYPTED_EXTENSION } from '../core/types.js'
@@ -233,7 +234,7 @@ export function parseListObjects(xml: string, targetId: string, prefix: string):
       id,
       targetId,
       remoteKey: name,
-      createdAt: modified[i] ? new Date(modified[i]!).toISOString() : new Date(0).toISOString(),
+      createdAt: modified[i] ? new Date(modified[i]!).toISOString() : (snapshotTimeFromId(id) ?? new Date(0).toISOString()),
       bytes: sizes[i] ?? 0,
       encrypted: name.endsWith(ENCRYPTED_EXTENSION),
       includeSecrets: false,

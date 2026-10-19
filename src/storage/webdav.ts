@@ -1,3 +1,4 @@
+import { snapshotTimeFromId } from '../core/manifest.js'
 import type { SnapshotInfo, WebDavTargetConfig } from '../core/types.js'
 import { ARCHIVE_EXTENSION, ENCRYPTED_EXTENSION } from '../core/types.js'
 import type { StorageAdapter } from './types.js'
@@ -125,7 +126,7 @@ export function parsePropfind(xml: string, targetId: string): SnapshotInfo[] {
       id,
       targetId,
       remoteKey: name,
-      createdAt: modified ? new Date(modified).toISOString() : new Date(0).toISOString(),
+      createdAt: modified ? new Date(modified).toISOString() : (snapshotTimeFromId(id) ?? new Date(0).toISOString()),
       bytes: size,
       encrypted: name.endsWith(ENCRYPTED_EXTENSION),
       includeSecrets: false,

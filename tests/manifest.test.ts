@@ -52,3 +52,12 @@ describe('manifest', () => {
     assert.throws(() => parseManifest(JSON.stringify({ schemaVersion: 99, id: 'x', files: [] })))
   })
 })
+
+describe('snapshotTimeFromId (e2e regression: GitHub listings had createdAt=1970)', () => {
+  it('parses ids created by makeSnapshotId', async () => {
+    const { makeSnapshotId, snapshotTimeFromId } = await import('../src/core/manifest.js')
+    const d = new Date('2026-10-19T04:21:31.000Z')
+    assert.equal(snapshotTimeFromId(makeSnapshotId(d)), '2026-10-19T04:21:31.000Z')
+    assert.equal(snapshotTimeFromId('not-a-vault-id'), undefined)
+  })
+})
