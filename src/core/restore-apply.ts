@@ -1,5 +1,7 @@
 import { mkdir, writeFile, unlink } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import type { ConflictMap } from './conflict.js'
+import { resolveItemConflict, shouldApplyChange } from './conflict.js'
 import { previewRestoreDiff, resolveLivePath } from './diff.js'
 import type {
   ConflictStrategy,
@@ -15,6 +17,8 @@ export async function applyRestore(input: {
   dshHome: string
   agentsHome: string
   conflict: ConflictStrategy
+  /** Optional per-path overrides; unspecified paths use `conflict`. */
+  conflicts?: ConflictMap
   includeSecrets?: boolean
   rollbackSnapshotId?: string
   onProgress?: ProgressCallback
@@ -23,6 +27,8 @@ export async function applyRestore(input: {
     manifest: input.manifest,
     dshHome: input.dshHome,
     agentsHome: input.agentsHome,
+    conflict: input.conflict,
+    conflicts: input.conflicts,
   })
   input.onProgress?.({ phase: 'apply', message: 'Applying files', percent: 10, total: preview.items.length })
 
@@ -31,16 +37,11 @@ export async function applyRestore(input: {
   let i = 0
   for (const item of preview.items) {
     i++
-    if (item.change === 'remove') {
-      // One-click restore does not delete local-only files unless conflict=use-backup and we later add prune mode.
-      skipped.push(item.path)
-      continue
-    }
-    if (item.change === 'unchanged') {
-      skipped.push(item.path)
-      continue
-    }
-    if (item.change === 'change' && input.conflict === 'keep-current') {
+    const strategy = item.resolution
+      ?? resolveItemConflict(item.path, input.conflict, input.conflicts)
+    if (!shouldApplyChange(item.change, strategy)) {
+      // remove / unchanged always skipped; change+keep-current skipped.
+      // (Prune-on-remove is intentionally not implemented.)
       skipped.push(item.path)
       continue
     }

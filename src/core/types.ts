@@ -122,6 +122,12 @@ export interface DiffItem {
   change: 'add' | 'change' | 'remove' | 'unchanged'
   currentSha256?: string
   backupSha256?: string
+  /**
+   * Effective conflict strategy for this path after merging the global default
+   * with an optional per-path `conflicts` map. Present when preview/restore
+   * was called with a global `conflict` (and optional overrides).
+   */
+  resolution?: ConflictStrategy
 }
 
 export interface RestorePreview {
@@ -133,13 +139,23 @@ export interface RestorePreview {
   unchanged: number
   pluginsToReinstall: PluginRecord[]
   manualActions: string[]
+  /** Global default used when computing `items[].resolution` (if provided). */
+  conflict?: ConflictStrategy
+  /** Per-path overrides that were applied when computing resolutions. */
+  conflicts?: Record<string, ConflictStrategy>
 }
 
 export interface RestoreRequest {
   targetId: string
   snapshotId: string
   password?: string
+  /** Global default conflict strategy (required; used for any path not listed in `conflicts`). */
   conflict: ConflictStrategy
+  /**
+   * Optional per-path overrides. Keys are snapshot-relative paths (same as
+   * `DiffItem.path` / manifest file paths). Unspecified paths fall back to `conflict`.
+   */
+  conflicts?: Record<string, ConflictStrategy>
   /** Create an automatic pre-restore snapshot before applying. Defaults to true. */
   createRollbackSnapshot?: boolean
   /** Attempt `dsh plugin add` for missing plugins. Defaults to true. */

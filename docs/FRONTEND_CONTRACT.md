@@ -174,9 +174,19 @@ interface SnapshotInfo {
 
 ### `POST /restore/preview`
 
-`{ targetId, snapshotId, password? }` → `RestorePreview`
-
 ```ts
+// request
+{
+  targetId: string
+  snapshotId: string
+  password?: string
+  /** Optional. When set, each item is annotated with `resolution`. */
+  conflict?: 'keep-current' | 'use-backup'
+  /** Optional per-path overrides (same shape as restore). */
+  conflicts?: Record<string, 'keep-current' | 'use-backup'>
+}
+
+// response
 interface RestorePreview {
   snapshotId: string
   items: Array<{
@@ -185,6 +195,8 @@ interface RestorePreview {
     change: 'add' | 'change' | 'remove' | 'unchanged'
     currentSha256?: string
     backupSha256?: string
+    /** Present when request included `conflict`. */
+    resolution?: 'keep-current' | 'use-backup'
   }>
   added: number
   changed: number
@@ -192,8 +204,12 @@ interface RestorePreview {
   unchanged: number
   pluginsToReinstall: Array<{ name: string; version?: string; source: string; profile?: string }>
   manualActions: string[]
+  conflict?: 'keep-current' | 'use-backup'
+  conflicts?: Record<string, 'keep-current' | 'use-backup'>
 }
 ```
+
+Backward compatible: omit `conflict`/`conflicts` and the response matches the previous shape (no `resolution` fields).
 
 ### `POST /restore`
 
@@ -203,7 +219,15 @@ interface RestorePreview {
   targetId: string
   snapshotId: string
   password?: string
+  /** Global default for any path not listed in `conflicts`. Required. */
   conflict: 'keep-current' | 'use-backup'
+  /**
+   * Optional per-path overrides. Keys are snapshot-relative paths
+   * (same as `DiffItem.path` / manifest file paths).
+   * Unspecified paths fall back to `conflict`.
+   * Example: { "settings.yaml": "keep-current", "mcp.json": "use-backup" }
+   */
+  conflicts?: Record<string, 'keep-current' | 'use-backup'>
   createRollbackSnapshot?: boolean  // default true
   reinstallPlugins?: boolean        // default true
   includeSecrets?: boolean
@@ -220,6 +244,20 @@ interface RestorePreview {
   manualActions: string[]
 }
 ```
+
+**Conflict resolution rules** (preview annotations, apply, and later rollback-of-rollback all share this helper):
+
+| `change` | resolved strategy | apply? |
+|---|---|---|
+| `unchanged` | (any) | no (skip) |
+| `remove` | (any) | no (reported only; not auto-deleted) |
+| `add` | (any) | yes |
+| `change` | `use-backup` | yes |
+| `change` | `keep-current` | no (skip) |
+
+Pre-restore rollback snapshots always capture the live tree before apply; conflict choices do not alter what is snapshotted for rollback. Re-applying a rollback snapshot uses the same `conflict` / `conflicts` fields.
+
+Invalid `conflicts` values → HTTP 400 `{ error }`. Omitting `conflicts` preserves the previous global-only behavior.
 
 ### `GET|PUT /schedule` and `POST /schedule/run`
 
@@ -238,6 +276,8 @@ Redesigns should keep these prop contracts (or adapt `VaultApp` wiring in the sa
 - `DashboardProps`: `status`, `loading`, `error`, `onRefresh`, `onBackup`
 - `BackupPanelProps`: `targets`, `busy`, `message`, `error`, `progress?`, `onBackup`
 - `RestorePanelProps`: `targets`, `snapshots`, `preview`, `busy`, `message`, `error`, `onPreview`, `onRestore`
+  - `onRestore` may pass `conflicts?: Record<path, 'keep-current' | 'use-backup'>` alongside required `conflict`
+  - `onPreview` may optionally pass `conflict` / `conflicts` to receive `items[].resolution`
 - `StoragePanelProps`: `targets`, `busy`, `error`, `message`, `onUpsert`, `onDelete`
 - `SnapshotsPanelProps`: `snapshots`, `busy`, `error`, `onRefresh`, `onDelete`, `onVerify`
 - `SettingsPanelProps`: `settings`, `busy`, `error`, `message`, `onSave`, `onRunSchedule`

@@ -81,9 +81,20 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
 
   routes.push(
     endpoint({ path: `${API_PREFIX}/restore/preview`, methods: ['POST'] }, async (req, res) => {
-      const body = await readJsonBody<{ targetId: string; snapshotId: string; password?: string }>(req)
+      const body = await readJsonBody<Pick<RestoreRequest, 'targetId' | 'snapshotId' | 'password' | 'conflict' | 'conflicts'>>(req)
       if (!body.targetId || !body.snapshotId) throw new ApiError('targetId and snapshotId are required', 400)
-      writeJson(res, 200, await service.previewRestore(body))
+      if (body.conflict !== undefined && body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
+        throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
+      }
+      try {
+        writeJson(res, 200, await service.previewRestore(body))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.startsWith('conflicts ') || message.startsWith('invalid conflict')) {
+          throw new ApiError(message, 400)
+        }
+        throw error
+      }
     }),
   )
 
@@ -93,7 +104,18 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       if (!body.targetId || !body.snapshotId || !body.conflict) {
         throw new ApiError('targetId, snapshotId, and conflict are required', 400)
       }
-      writeJson(res, 200, await service.restore(body))
+      if (body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
+        throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
+      }
+      try {
+        writeJson(res, 200, await service.restore(body))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.startsWith('conflicts ') || message.startsWith('invalid conflict')) {
+          throw new ApiError(message, 400)
+        }
+        throw error
+      }
     }),
   )
 

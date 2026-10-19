@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { collectBackupFiles } from './collect.js'
+import { normalizeConflicts } from './conflict.js'
 import {
   DEFAULT_SETTINGS,
   defaultLocalTarget,
@@ -176,13 +177,20 @@ export class VaultService {
     return { ok: true, manifestId: unpacked.manifest.id }
   }
 
-  async previewRestore(req: Pick<RestoreRequest, 'targetId' | 'snapshotId' | 'password'>): Promise<RestorePreview> {
+  async previewRestore(
+    req: Pick<RestoreRequest, 'targetId' | 'snapshotId' | 'password' | 'conflicts'> & {
+      conflict?: RestoreRequest['conflict']
+    },
+  ): Promise<RestorePreview> {
     const bytes = await this.registry.get(req.targetId).get(req.snapshotId)
     const unpacked = await unpackSnapshot(bytes, req.password)
+    const conflicts = normalizeConflicts(req.conflicts)
     return previewRestoreDiff({
       manifest: unpacked.manifest,
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
+      conflict: req.conflict,
+      conflicts,
     })
   }
 
@@ -190,9 +198,12 @@ export class VaultService {
     onProgress?.({ phase: 'download', message: 'Downloading snapshot', percent: 5 })
     const bytes = await this.registry.get(req.targetId).get(req.snapshotId)
     const unpacked = await unpackSnapshot(bytes, req.password, onProgress)
+    const conflicts = normalizeConflicts(req.conflicts)
 
     let rollbackSnapshotId: string | undefined
     if (req.createRollbackSnapshot !== false) {
+      // Rollback always captures the pre-restore live tree (independent of conflict choices).
+      // Applying that rollback later uses the same conflict resolution rules.
       onProgress?.({ phase: 'pack', message: 'Creating pre-restore rollback snapshot', percent: 25 })
       const rb = await this.backup({
         targetId: ensureLocalRollbackTarget(this),
@@ -209,6 +220,7 @@ export class VaultService {
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
       conflict: req.conflict,
+      conflicts,
       includeSecrets: req.includeSecrets ?? unpacked.manifest.includeSecrets,
       rollbackSnapshotId,
       onProgress,
