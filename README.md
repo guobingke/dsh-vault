@@ -51,9 +51,41 @@ If some plugins fail to install, the summary says how many and offers a retry in
 
 ## Install
 
-Requires Node `^22.19.0 || >=24` to build (the same floor as dsh).
+### From the plugin page (recommended)
 
-### DeepSeek Harness Desktop
+In DeepSeek Harness Desktop (or `dsh web`), open **Plugins → 添加插件** and enter:
+
+```
+github:guobingke/dsh-vault
+```
+
+Restart Desktop when it finishes, then open **Settings → 大肥鱼备份**. No Node, git or build step is needed: the built files are committed to the repo and dsh downloads them as a tarball from GitHub.
+
+Don't enter just `dsh-vault`. That name on npm belongs to an unrelated package.
+
+On networks in mainland China, GitHub may be unreachable. Set a system proxy (or `HTTPS_PROXY`) before starting Desktop.
+
+**Updating.** dsh's plugin page doesn't update plugins in place. To get the latest version, uninstall 大肥鱼备份 on the plugin page, add `github:guobingke/dsh-vault` again, and restart Desktop. Your targets, settings and snapshots live in `$DSH_HOME/dsh-vault` and are kept. To pin a version, add a branch, tag or commit, e.g. `github:guobingke/dsh-vault#main`.
+
+### From the command line
+
+With Desktop fully quit, use Desktop's bundled `dsh` (Tray → Terminal):
+
+```bash
+dsh plugin --profile desktop add github:guobingke/dsh-vault
+```
+
+For `dsh web`:
+
+```bash
+dsh plugin --profile web add github:guobingke/dsh-vault
+```
+
+The npm-global `dsh` refuses `--profile desktop`. Profiles don't share plugins, so install into each profile you use.
+
+### From a local clone (for development)
+
+Requires Node `^22.19.0 || >=24`.
 
 ```bash
 git clone https://github.com/guobingke/dsh-vault.git
@@ -62,33 +94,11 @@ npm install
 npm run build
 ```
 
-Then open Desktop → **Plugins** and add it by path:
-
-```
-link:/absolute/path/to/dsh-vault
-```
-
-Or, with Desktop fully quit, use Desktop's bundled `dsh` (Tray → Terminal):
-
-```bash
-dsh plugin --profile desktop add link:/absolute/path/to/dsh-vault
-```
-
-The npm-global `dsh` refuses `--profile desktop`; use the one that ships with Desktop. Restart Desktop and open **Settings → 大肥鱼备份**.
-
-To update later: `git pull`, `npm run build`, restart Desktop.
-
-### `dsh web`
-
-```bash
-dsh plugin --profile web add link:/absolute/path/to/dsh-vault
-```
-
-Restart `dsh web`. Profiles don't share plugins, so install into each profile you use. `dsh-vault setup --dry-run` prints the commands for your machine.
+Then add `link:/absolute/path/to/dsh-vault` on the plugin page, or with `dsh plugin --profile desktop add link:…`. To update: `git pull`, `npm run build`, restart Desktop.
 
 ### CLI only
 
-After building, the CLI is `node lib/cli/index.js` (or `npm link` to get `dsh-vault` on your PATH). It reads `$DSH_HOME` directly and doesn't need dsh to be running.
+The CLI is `node lib/cli/index.js` inside the installed package or a clone (`npm link` puts `dsh-vault` on your PATH). It reads `$DSH_HOME` directly and doesn't need dsh to be running.
 
 ## Moving to a new machine
 
@@ -102,7 +112,7 @@ After building, the CLI is `node lib/cli/index.js` (or `npm link` to get `dsh-va
 **New machine**
 
 1. Install DeepSeek Harness Desktop, open it once, quit.
-2. Install dsh-vault as above.
+2. Install dsh-vault from the plugin page (`github:guobingke/dsh-vault`).
 3. Settings → 大肥鱼备份 → **恢复**. Choose the snapshot, or point it at the folder/file you copied over.
 4. Click **预览差异**, review the changes, then **恢复**.
 5. Fully quit Desktop and reopen it when the summary asks you to.
@@ -186,7 +196,7 @@ Configure a proxy, e.g. `git config --global http.proxy http://127.0.0.1:7897`, 
 The backup only saw the plugin's name (in the bundle list or `cordis.patch.yml`), not where it was installed from, and had no saved copy. dsh-vault won't install a plugin from npm by name alone, because a different package with the same name could be installed instead. Install it by hand, or back up again with plugin copies turned on.
 
 **Does a restore update dsh-vault itself?**
-No. The restore skips dsh-vault and keeps this machine's own installation, including its `link:` path. Update it with `git pull` and `npm run build`.
+No. The restore skips dsh-vault and keeps this machine's own installation, including its `link:` path. Update it from the plugin page (uninstall, then add `github:guobingke/dsh-vault` again).
 
 **Can I restore onto a machine that already has a dsh setup?**
 Yes. The diff preview shows what will change, you choose per conflict, and a rollback snapshot is taken first.
@@ -199,6 +209,7 @@ Issues and pull requests are welcome.
 npm install
 npm test        # needs Node 24
 npm run build
+npm run check:lib   # lib/ is committed; commit the rebuilt lib/ with your change
 ```
 
 Architecture notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the UI contract is in [docs/FRONTEND_CONTRACT.md](docs/FRONTEND_CONTRACT.md).

@@ -817,7 +817,7 @@ export class VaultService {
       activeProfile: this.activeProfile,
       guiProfiles: listInitializedGuiProfiles(this.dshHome),
       surface,
-      installPlan: multiProfileInstallPlan('dsh-vault', this.dshHome),
+      installPlan: multiProfileInstallPlan(undefined, this.dshHome),
       targets: this.listTargets(),
       settings: this.settings,
       recentSnapshots,

@@ -13,6 +13,7 @@ import { bundledDshCandidates, desktopResourceRoots, findBundledPnpm, findDshCli
 import {
   DESKTOP_PROFILE,
   GUI_PROFILES,
+  DSH_VAULT_INSTALL_SPEC,
   installCommandForProfile,
   listInitializedGuiProfiles,
   multiProfileInstallPlan,
@@ -50,8 +51,9 @@ Usage:
 sandbox restore never writes into your real ~/.agents.
 
 Desktop: use DeepSeek Harness Desktop's bundled \`dsh\` (Tray → Terminal) for
-\`dsh plugin --profile desktop add dsh-vault\`, or install from Desktop → Plugins.
-npm-global \`dsh\` refuses --profile desktop. Web: \`dsh plugin --profile web add dsh-vault\`.
+\`dsh plugin --profile desktop add github:guobingke/dsh-vault\`, or Desktop → Plugins → 添加插件.
+npm-global \`dsh\` refuses --profile desktop. Web: \`dsh plugin --profile web add github:guobingke/dsh-vault\`.
+(Not on npm: the npm package named dsh-vault is unrelated.)
 
 Works even when the dsh UI is broken. Secrets are excluded unless --secrets
 is combined with --encrypt.
@@ -130,7 +132,7 @@ function runDshPluginAdd(profile: string, packageSpec: string, dshHome?: string)
 }
 
 async function runSetup(args: string[], home: string): Promise<number> {
-  const packageSpec = getFlag(args, '--package') ?? 'dsh-vault'
+  const packageSpec = getFlag(args, '--package') ?? DSH_VAULT_INSTALL_SPEC
   const profileFlag = (getFlag(args, '--profile') ?? 'all').toLowerCase()
   const dryRun = has(args, '--dry-run')
 

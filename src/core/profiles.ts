@@ -48,13 +48,16 @@ export function listInitializedGuiProfiles(dshHome?: string): GuiProfile[] {
   return GUI_PROFILES.filter((p) => isProfileInitialized(p, home))
 }
 
+/** Install spec for this plugin. Not on npm: the npm name `dsh-vault` is an unrelated package. */
+export const DSH_VAULT_INSTALL_SPEC = 'github:guobingke/dsh-vault'
+
 /**
  * User-facing install guidance for a profile.
  * Desktop cannot be initialized by npm `dsh`; the Electron app must create it first,
  * and only Desktop's bundled CLI (or in-app Plugins page) may mutate it when
  * `manageDesktopProfile` is enabled.
  */
-export function installCommandForProfile(profile: string, packageSpec = 'dsh-vault'): {
+export function installCommandForProfile(profile: string, packageSpec = DSH_VAULT_INSTALL_SPEC): {
   profile: string
   command: string
   notes: string[]
@@ -66,7 +69,7 @@ export function installCommandForProfile(profile: string, packageSpec = 'dsh-vau
       notes: [
         'Launch DeepSeek Harness Desktop once so `$DSH_HOME/profiles/desktop` is created, then fully quit it.',
         'Run the command with Desktop\'s bundled `dsh` (Tray → Terminal, or the `dsh`/`dsh.cmd` next to the app). npm-global `dsh` refuses `--profile desktop`.',
-        'Or install from Desktop → Plugins (same Web Plugin Manager) while Desktop is running.',
+        'Or, while Desktop is running: Plugins → 添加插件 → enter the spec above.',
         'Reopen Desktop after installing so the bundle loads.',
       ],
     }
@@ -81,7 +84,7 @@ export function installCommandForProfile(profile: string, packageSpec = 'dsh-vau
 }
 
 /** Guidance for installing into every initialized GUI profile (web + desktop when present). */
-export function multiProfileInstallPlan(packageSpec = 'dsh-vault', dshHome?: string): Array<ReturnType<typeof installCommandForProfile>> {
+export function multiProfileInstallPlan(packageSpec = DSH_VAULT_INSTALL_SPEC, dshHome?: string): Array<ReturnType<typeof installCommandForProfile>> {
   const initialized = listInitializedGuiProfiles(dshHome)
   const targets = initialized.length > 0 ? initialized : ([WEB_PROFILE] as GuiProfile[])
   // Always mention desktop when the directory exists OR as an optional second step.

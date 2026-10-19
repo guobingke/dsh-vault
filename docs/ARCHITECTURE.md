@@ -25,17 +25,17 @@ Install:
 
 ```bash
 # Browser
-dsh plugin --profile web add dsh-vault
+dsh plugin --profile web add github:guobingke/dsh-vault
 
 # Desktop — reserved profile; npm-global `dsh` refuses this unless the carrier
 # enables manageDesktopProfile (Desktop's bundled dsh / Tray → Terminal).
 # Launch Desktop once, fully quit, then:
-dsh plugin --profile desktop add dsh-vault
+dsh plugin --profile desktop add github:guobingke/dsh-vault
 
-# Or: while Desktop is running → Plugins → add dsh-vault
+# Or: while Desktop is running → Plugins → add github:guobingke/dsh-vault
 # Guided CLI (prints commands; can invoke dsh when available):
-npx dsh-vault setup --dry-run
-npx dsh-vault setup --profile desktop
+node lib/cli/index.js setup --dry-run
+node lib/cli/index.js setup --profile desktop
 ```
 
 Local checkout uses `link:/absolute/path` (POSIX and Windows absolute paths both work).

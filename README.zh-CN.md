@@ -51,9 +51,41 @@ dsh-vault 把这件事变成三步：旧电脑上备份，新电脑上恢复，�
 
 ## 安装
 
-构建需要 Node `^22.19.0 || >=24`（与 dsh 要求一致）。
+### 在插件页添加（推荐）
 
-### DeepSeek Harness Desktop
+在 DeepSeek Harness Desktop（或 `dsh web`）中打开 **插件 → 添加插件**，填入：
+
+```
+github:guobingke/dsh-vault
+```
+
+安装完成后重启 Desktop，打开 **设置 → 大肥鱼备份**。不需要 Node、git，也不需要构建：构建产物已提交在仓库里，dsh 会直接从 GitHub 下载压缩包。
+
+不要只填 `dsh-vault`，npm 上这个名字是另一个无关的包。
+
+国内网络可能连不上 GitHub，请先开系统代理（或设置 `HTTPS_PROXY`）再启动 Desktop。
+
+**更新。** dsh 的插件页目前不支持原地更新。要升级到最新版：在插件页卸载大肥鱼备份，再添加一次 `github:guobingke/dsh-vault`，然后重启 Desktop。存储位置、设置和快照保存在 `$DSH_HOME/dsh-vault`，卸载不会丢。想固定版本，可以在后面加分支、标签或提交，例如 `github:guobingke/dsh-vault#main`。
+
+### 命令行安装
+
+完全退出 Desktop 后，用 Desktop 自带的 `dsh`（托盘 → 终端）：
+
+```bash
+dsh plugin --profile desktop add github:guobingke/dsh-vault
+```
+
+`dsh web`：
+
+```bash
+dsh plugin --profile web add github:guobingke/dsh-vault
+```
+
+npm 全局安装的 `dsh` 不接受 `--profile desktop`。不同 profile 之间插件不共享，用哪个就装到哪个。
+
+### 从本地克隆安装（开发用）
+
+需要 Node `^22.19.0 || >=24`。
 
 ```bash
 git clone https://github.com/guobingke/dsh-vault.git
@@ -62,33 +94,11 @@ npm install
 npm run build
 ```
 
-然后打开 Desktop → **插件**，按路径添加：
-
-```
-link:/absolute/path/to/dsh-vault
-```
-
-也可以在完全退出 Desktop 后，用 Desktop 自带的 `dsh`（托盘 → 终端）：
-
-```bash
-dsh plugin --profile desktop add link:/absolute/path/to/dsh-vault
-```
-
-npm 全局安装的 `dsh` 不接受 `--profile desktop`，请用 Desktop 自带的那个。重启 Desktop，打开 **设置 → 大肥鱼备份**。
-
-以后更新：`git pull`，`npm run build`，重启 Desktop。国内网络拉 GitHub 慢的话：`git -c http.proxy=http://127.0.0.1:7897 pull`（端口换成你自己的代理）。
-
-### `dsh web`
-
-```bash
-dsh plugin --profile web add link:/absolute/path/to/dsh-vault
-```
-
-重启 `dsh web`。不同 profile 之间插件不共享，用哪个就装到哪个。`dsh-vault setup --dry-run` 会打印适合你机器的命令。
+然后在插件页添加 `link:/absolute/path/to/dsh-vault`，或用 `dsh plugin --profile desktop add link:…`。更新：`git pull`，`npm run build`，重启 Desktop。
 
 ### 只用命令行
 
-构建后命令行是 `node lib/cli/index.js`（或执行 `npm link`，之后可直接用 `dsh-vault`）。它直接读取 `$DSH_HOME`，不需要 dsh 在运行。
+命令行是已安装包或克隆目录里的 `node lib/cli/index.js`（执行 `npm link` 后可直接用 `dsh-vault`）。它直接读取 `$DSH_HOME`，不需要 dsh 在运行。
 
 ## 迁移到新电脑
 
@@ -102,7 +112,7 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-vault
 **新电脑**
 
 1. 安装 DeepSeek Harness Desktop，打开一次后退出。
-2. 按上面的方法安装 dsh-vault。
+2. 在插件页添加 `github:guobingke/dsh-vault`。
 3. 设置 → 大肥鱼备份 → **恢复**。选择快照，或指向拷过来的文件夹/文件。
 4. 点 **预览差异**，确认变更后点 **恢复**。
 5. 按结果提示完全退出 Desktop 再重新打开。
@@ -186,7 +196,7 @@ Desktop 在启动时加载插件。从托盘完全退出 Desktop（不只是关�
 备份时只看到了插件名（在 bundles 列表或 `cordis.patch.yml` 里），没有记录它是从哪装的，也没有副本。大肥鱼备份不会只凭名字去 npm 安装，因为可能装到同名的另一个包。请手动安装，或开启插件副本后重新备份。
 
 **恢复会更新大肥鱼备份自己吗？**
-不会。恢复时会跳过 dsh-vault，保留本机已安装的版本和它的 `link:` 路径。更新请用 `git pull` 加 `npm run build`。
+不会。恢复时会跳过 dsh-vault，保留本机已安装的版本和它的 `link:` 路径。更新请在插件页卸载后重新添加 `github:guobingke/dsh-vault`。
 
 **新电脑上已经有 dsh 配置了，还能恢复吗？**
 可以。差异预览会列出所有变更，冲突逐项选择，恢复前还会自动做回滚快照。
@@ -199,6 +209,7 @@ Desktop 在启动时加载插件。从托盘完全退出 Desktop（不只是关�
 npm install
 npm test        # 需要 Node 24
 npm run build
+npm run check:lib   # lib/ 已提交到仓库，改动后请一并提交重新构建的 lib/
 ```
 
 架构说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，界面约定见 [docs/FRONTEND_CONTRACT.md](docs/FRONTEND_CONTRACT.md)。

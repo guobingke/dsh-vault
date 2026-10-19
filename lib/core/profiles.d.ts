@@ -17,6 +17,8 @@ export declare function resolveProfileDir(profile: string, dshHome?: string): st
 export declare function isProfileInitialized(profile: string, dshHome?: string): boolean;
 /** GUI profiles that currently exist on disk. */
 export declare function listInitializedGuiProfiles(dshHome?: string): GuiProfile[];
+/** Install spec for this plugin. Not on npm: the npm name `dsh-vault` is an unrelated package. */
+export declare const DSH_VAULT_INSTALL_SPEC = "github:guobingke/dsh-vault";
 /**
  * User-facing install guidance for a profile.
  * Desktop cannot be initialized by npm `dsh`; the Electron app must create it first,

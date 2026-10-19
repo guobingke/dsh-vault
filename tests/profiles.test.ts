@@ -46,12 +46,12 @@ describe('profiles (desktop + web)', () => {
 
   it('documents desktop-specific install constraints', () => {
     const desktop = installCommandForProfile(DESKTOP_PROFILE)
-    assert.match(desktop.command, /--profile desktop add dsh-vault/)
+    assert.match(desktop.command, /--profile desktop add github:guobingke\/dsh-vault$/)
     assert.ok(desktop.notes.some((n) => /bundled/i.test(n)))
     assert.ok(desktop.notes.some((n) => /quit/i.test(n)))
 
     const web = installCommandForProfile(WEB_PROFILE)
-    assert.match(web.command, /--profile web add dsh-vault/)
+    assert.match(web.command, /--profile web add github:guobingke\/dsh-vault$/)
 
     const plan = multiProfileInstallPlan('dsh-vault', '/nonexistent')
     assert.ok(plan.some((p) => p.profile === WEB_PROFILE))
