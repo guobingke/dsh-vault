@@ -258,6 +258,12 @@ const zh = {
   'restore.restartHint': '部分变更可能需要重启 dsh 后生效。',
   'restore.restartRequired': '请重启 DeepSeek Harness Desktop（或 dsh web）以使新装插件生效。',
   'restore.failedTitle': '恢复失败',
+  'restore.resultTitle': '插件安装结果',
+  'restore.resultDesc': '{ok} 个就绪，{failed} 个失败',
+  'restore.status.installed': '已安装',
+  'restore.status.already-present': '已就绪',
+  'restore.status.failed': '失败',
+  'restore.status.skipped': '已跳过',
 
   // storage
   'storage.desc': '快照写入的位置：本地目录、GitHub、WebDAV 或 S3 兼容存储。',
@@ -655,6 +661,12 @@ const en: Record<MessageKey, string> = {
   'restore.restartHint': 'Some changes may need a dsh restart.',
   'restore.restartRequired': 'Restart DeepSeek Harness Desktop (or dsh web) so newly installed plugins load.',
   'restore.failedTitle': 'Restore failed',
+  'restore.resultTitle': 'Plugin results',
+  'restore.resultDesc': '{ok} ready, {failed} failed',
+  'restore.status.installed': 'Installed',
+  'restore.status.already-present': 'Ready',
+  'restore.status.failed': 'Failed',
+  'restore.status.skipped': 'Skipped',
 
   'storage.desc': 'Where snapshots are written: local folders, GitHub, WebDAV or S3-compatible storage.',
   'storage.emptyTitle': 'No storage locations yet',

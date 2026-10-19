@@ -1282,7 +1282,9 @@
   display: grid;
   place-items: center;
   padding: 16px;
-  background: var(--dsw-alias-bg-overlay, rgb(0 0 0 / 0.32));
+  /* --dsw-alias-bg-overlay is an opaque surface color (#e9ecf2), not a scrim: it hid
+     the whole Settings modal behind vault dialogs. mask-drop is the host's translucent wash. */
+  background: var(--dsw-alias-bg-mask-drop, rgb(0 0 0 / 0.32));
 }
 
 .dv-dialog {

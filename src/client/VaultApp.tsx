@@ -10,7 +10,7 @@ import { SectionHead, SectionTabs } from './components/ui.js'
 import type { FsBrowser } from './components/PathPicker.js'
 import { I18nContext, detectInitialLocale, normalizeLocale, translate, type Locale, type MessageKey } from './i18n.js'
 import { formatBytes } from './lib/format.js'
-import type { BackupCategory, RestorePreview, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
+import type { BackupCategory, RestorePreview, RestoreResult, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
 import './theme.css'
 
 export type VaultTab = 'overview' | 'backup' | 'restore' | 'storage' | 'snapshots' | 'schedule'
@@ -85,6 +85,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
   const [status, setStatus] = useState<VaultStatusResponse | null>(null)
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([])
   const [preview, setPreview] = useState<RestorePreview | null>(null)
+  const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [snapshotsReliable, setSnapshotsReliable] = useState(true)
@@ -280,7 +281,9 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                     .catch((err: unknown) => setError(errorText(err)))
                     .finally(() => setBusy(false))
                 }}
+                result={restoreResult}
                 onRestore={(input) => {
+                  setRestoreResult(null)
                   setBusy(true)
                   setError(null)
                   setNotice(null)
@@ -302,16 +305,16 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                           : t('restore.successBody', { applied: r.applied.length, skipped: r.skipped.length }),
                       ]
                       if (r.rollbackSnapshotId) parts.push(t('restore.rollbackCreated', { id: r.rollbackSnapshotId }))
+                      setRestoreResult(r)
                       if (r.pluginResults?.length) {
-                        for (const row of r.pluginResults) {
-                          parts.push(`${row.name}: ${row.status}${row.detail ? ` — ${row.detail}` : ''}`)
-                        }
+                        // Listed row by row in the "Plugin results" card.
+                        if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
                       } else {
                         if (r.pluginsReinstalled.length) parts.push(t('restore.pluginsReinstalled', { list: r.pluginsReinstalled.join(', ') }))
                         if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
                       }
                       if (r.restartRequired) parts.push(t('restore.restartRequired'))
-                      for (const m of r.manualActions) parts.push(m)
+                      for (const m of r.manualActions) if (!r.pluginResults?.length || !r.pluginResults.some((row) => m.startsWith(`${row.name} (`))) parts.push(m)
                       setNotice({ kind: failed ? 'error' : 'ok', text: parts.join(' · ') })
                       if (failed) setError(parts.join(' · '))
                       setPreview(null)

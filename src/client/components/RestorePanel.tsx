@@ -1,5 +1,5 @@
-import { useEffect, useId, useMemo, useState } from 'react'
-import type { ConflictStrategy, DiffItem, RestorePreview, SnapshotInfo, StorageTargetConfig } from '../../core/types.js'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import type { ConflictStrategy, DiffItem, RestorePreview, RestoreResult, SnapshotInfo, StorageTargetConfig } from '../../core/types.js'
 import { useT, type Translate } from '../i18n.js'
 import { formatBytes, formatDateTime, relativeLabel } from '../lib/format.js'
 import { newestFirst } from '../lib/targets.js'
@@ -62,6 +62,8 @@ export interface RestorePanelProps {
   onNavigateStorage?: () => void
   /** Filesystem access for the Browse… dialog (in-app browser + optional native chooser). */
   fs?: FsBrowser
+  /** Last restore outcome: per-plugin install results are listed under the banner. */
+  result?: RestoreResult | null
 }
 
 type ConflictChoice = ConflictStrategy
@@ -112,10 +114,16 @@ export function RestorePanel({
   initialSnapshotId,
   onNavigateStorage,
   fs,
+  result,
 }: RestorePanelProps) {
   const tr = useT()
   const groupId = useId()
   const [pickerOpen, setPickerOpen] = useState(false)
+  const topRef = useRef<HTMLParagraphElement | null>(null)
+  // The restore button sits far below the banners; bring the outcome into view.
+  useEffect(() => {
+    if (result || message || error) topRef.current?.scrollIntoView?.({ block: 'start' })
+  }, [result, message, error])
 
   const [sourceMode, setSourceMode] = useState<SourceMode>(
     initialTargetId || initialSnapshotId || snapshots.length ? 'target' : 'import',
@@ -272,7 +280,7 @@ export function RestorePanel({
 
   return (
     <>
-      <p className="dv-section-desc">{tr('restore.desc')}</p>
+      <p className="dv-section-desc" ref={topRef}>{tr('restore.desc')}</p>
       {error ? <Banner tone="error" title={tr('restore.failedTitle')}>{error}</Banner> : null}
       {message ? (
         <Banner tone="ok" title={tr('restore.successTitle')}>
@@ -280,6 +288,8 @@ export function RestorePanel({
           <div className="dv-hint">{tr('restore.restartHint')}</div>
         </Banner>
       ) : null}
+
+      {result?.pluginResults?.length ? <PluginResults result={result} /> : null}
 
       <Card>
         <CardHead title={tr('restore.sourceTitle')} sub={tr('restore.sourceDesc')} />
@@ -612,3 +622,35 @@ export function RestorePanel({
   )
 }
 
+
+const STATUS_TONE = { installed: 'ok', 'already-present': 'ok', failed: 'danger', skipped: 'neutral' } as const
+
+/** Per-plugin outcome of the last restore — a failure is never folded into "success". */
+function PluginResults({ result }: { result: RestoreResult }) {
+  const tr = useT()
+  const rows = result.pluginResults ?? []
+  const failed = rows.filter((r) => r.status === 'failed').length
+  return (
+    <Card>
+      <CardHead
+        title={tr('restore.resultTitle')}
+        sub={tr('restore.resultDesc', { ok: rows.length - failed, failed })}
+      />
+      <div className="dv-card-sep" aria-hidden="true" />
+      <ul className="dv-list" aria-label={tr('restore.resultTitle')}>
+        {rows.map((r) => (
+          <li key={`${r.profile}:${r.name}`} className="dv-list-item">
+            <div className="dv-list-main">
+              <span className="dv-list-title dv-mono">{r.name}</span>
+              <span className="dv-small dv-muted" style={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{r.detail}</span>
+            </div>
+            <div className="dv-list-meta">
+              <Tag>{r.profile}</Tag>
+              <Tag tone={STATUS_TONE[r.status]}>{tr(`restore.status.${r.status}` as 'restore.status.failed')}</Tag>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
