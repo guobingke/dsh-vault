@@ -3,6 +3,7 @@ import type { ConflictStrategy, DiffItem, RestorePreview, RestoreResult, Snapsho
 import { useT, type Translate } from '../i18n.js'
 import { formatBytes, formatDateTime, relativeLabel } from '../lib/format.js'
 import { newestFirst } from '../lib/targets.js'
+import { localizeNotice, pluginRawDetail, pluginReasonText } from '../notices.js'
 import { PathPicker, type FsBrowser } from './PathPicker.js'
 import {
   Banner,
@@ -56,6 +57,9 @@ export interface RestorePanelProps {
     reinstallPlugins?: boolean
   }) => void
   loading?: boolean
+  /** Re-attempt only the failed plugins of the shown result (no config rewrite). */
+  onRetryFailed?: () => void
+  retrying?: boolean
   /** Preselect a snapshot (e.g. from the Snapshots tab). */
   initialTargetId?: string
   initialSnapshotId?: string
@@ -115,6 +119,8 @@ export function RestorePanel({
   onNavigateStorage,
   fs,
   result,
+  onRetryFailed,
+  retrying,
 }: RestorePanelProps) {
   const tr = useT()
   const groupId = useId()
@@ -289,7 +295,7 @@ export function RestorePanel({
         </Banner>
       ) : null}
 
-      {result?.pluginResults?.length ? <PluginResults result={result} /> : null}
+      {result?.pluginResults?.length ? <PluginResults result={result} onRetry={onRetryFailed} retrying={retrying} /> : null}
 
       <Card>
         <CardHead title={tr('restore.sourceTitle')} sub={tr('restore.sourceDesc')} />
@@ -557,7 +563,7 @@ export function RestorePanel({
       {preview && preview.manualActions.length > 0 ? (
         <Banner tone="warn" title={tr('restore.manualTitle')}>
           <ul>
-            {preview.manualActions.map((m) => <li key={m}>{m}</li>)}
+            {preview.manualActions.map((m) => <li key={m}>{localizeNotice(m, tr)}</li>)}
           </ul>
         </Banner>
       ) : null}
@@ -626,7 +632,15 @@ export function RestorePanel({
 const STATUS_TONE = { installed: 'ok', 'already-present': 'ok', failed: 'danger', skipped: 'neutral' } as const
 
 /** Per-plugin outcome of the last restore — a failure is never folded into "success". */
-function PluginResults({ result }: { result: RestoreResult }) {
+function PluginResults({
+  result,
+  onRetry,
+  retrying,
+}: {
+  result: RestoreResult
+  onRetry?: () => void
+  retrying?: boolean
+}) {
   const tr = useT()
   const rows = result.pluginResults ?? []
   const failed = rows.filter((r) => r.status === 'failed').length
@@ -635,21 +649,40 @@ function PluginResults({ result }: { result: RestoreResult }) {
       <CardHead
         title={tr('restore.resultTitle')}
         sub={tr('restore.resultDesc', { ok: rows.length - failed, failed })}
+        actions={failed && onRetry ? (
+          <Button size="sm" onClick={onRetry} loading={retrying} disabled={retrying} title={tr('restore.retryDesc')}>
+            {retrying ? tr('restore.retrying') : tr('restore.retryFailed')}
+          </Button>
+        ) : undefined}
       />
       <div className="dv-card-sep" aria-hidden="true" />
       <ul className="dv-list" aria-label={tr('restore.resultTitle')}>
-        {rows.map((r) => (
+        {rows.map((r) => {
+          const raw = pluginRawDetail(r, tr)
+          return (
           <li key={`${r.profile}:${r.name}`} className="dv-list-item">
             <div className="dv-list-main">
               <span className="dv-list-title dv-mono">{r.name}</span>
-              <span className="dv-small dv-muted" style={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{r.detail}</span>
+              <span
+                className={r.status === 'failed' ? 'dv-small dv-error-text' : 'dv-small dv-muted'}
+                style={{ overflowWrap: 'anywhere' }}
+              >
+                {pluginReasonText(r, tr)}
+              </span>
+              {raw ? (
+                <details className="dv-details">
+                  <summary>{tr('restore.details')}</summary>
+                  <pre className="dv-log">{raw}</pre>
+                </details>
+              ) : null}
             </div>
             <div className="dv-list-meta">
               <Tag>{r.profile}</Tag>
               <Tag tone={STATUS_TONE[r.status]}>{tr(`restore.status.${r.status}` as 'restore.status.failed')}</Tag>
             </div>
           </li>
-        ))}
+          )
+        })}
       </ul>
     </Card>
   )

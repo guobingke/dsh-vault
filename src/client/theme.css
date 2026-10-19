@@ -1450,3 +1450,35 @@
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/* Restore results: raw installer log, collapsed under 详情 */
+.dsh-vault-root .dv-details {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--dv-text-tertiary);
+}
+.dsh-vault-root .dv-details > summary {
+  cursor: pointer;
+  width: fit-content;
+  user-select: none;
+}
+.dsh-vault-root .dv-details > summary:focus-visible {
+  outline: var(--dv-focus-width) solid var(--dv-focus);
+  outline-offset: 2px;
+  border-radius: var(--dv-radius-xs);
+}
+.dsh-vault-root .dv-log {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--dv-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  border: 1px solid var(--dv-border-l1);
+  border-radius: var(--dv-radius-sm);
+  background: var(--dv-bg-module);
+  color: var(--dv-text-secondary);
+}

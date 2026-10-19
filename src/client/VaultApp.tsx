@@ -11,6 +11,7 @@ import type { FsBrowser } from './components/PathPicker.js'
 import { I18nContext, detectInitialLocale, normalizeLocale, translate, type Locale, type MessageKey } from './i18n.js'
 import { formatBytes } from './lib/format.js'
 import type { BackupCategory, RestorePreview, RestoreResult, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
+import { failedPluginLabels, localizeNotice } from './notices.js'
 import './theme.css'
 
 export type VaultTab = 'overview' | 'backup' | 'restore' | 'storage' | 'snapshots' | 'schedule'
@@ -86,6 +87,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([])
   const [preview, setPreview] = useState<RestorePreview | null>(null)
   const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
+  const [retrying, setRetrying] = useState(false)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [snapshotsReliable, setSnapshotsReliable] = useState(true)
@@ -142,6 +144,36 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
       setLoading(false)
     }
   }, [api])
+
+  /** Banner text for a restore (or retry) result; plugin rows themselves are in the results card. */
+  const showRestoreOutcome = async (r: RestoreResult, isRetry: boolean): Promise<void> => {
+    const failed = (r.pluginResults ?? []).some((row) => row.status === 'failed') || r.ok === false
+    const parts: string[] = []
+    if (!isRetry) {
+      parts.push(failed
+        ? t('restore.partialBody', { applied: r.applied.length, skipped: r.skipped.length })
+        : t('restore.successBody', { applied: r.applied.length, skipped: r.skipped.length }))
+      if (r.rollbackSnapshotId) parts.push(t('restore.rollbackCreated', { id: r.rollbackSnapshotId }))
+    }
+    if (failed) parts.push(t('restore.pluginsFailed', { list: failedPluginLabels(r.pluginResults, r.pluginsFailed) }))
+    else if (!r.pluginResults?.length && r.pluginsReinstalled.length) {
+      parts.push(t('restore.pluginsReinstalled', { list: [...new Set(r.pluginsReinstalled)].join('、') }))
+    }
+    if (r.restartRequired) parts.push(t('restore.restartRequired'))
+    for (const m of r.manualActions) {
+      // Plugin failures are listed per row; the restart hint is already localized above.
+      if (r.pluginResults?.some((row) => m.startsWith(`${row.name} (`))) continue
+      if (r.restartRequired && /^Restart /.test(m)) continue
+      // Per-row reasons already say which local sources are missing.
+      if (r.pluginResults?.length && /^Some plugins used local link:\/file: sources/.test(m)) continue
+      parts.push(localizeNotice(m, t))
+    }
+    const text = [...new Set(parts)].join(' · ')
+    setNotice({ kind: failed ? 'error' : 'ok', text })
+    // refresh() clears `error`, so raise the failure banner after it.
+    await refresh()
+    if (failed) setError(text)
+  }
 
   // Load once on mount, keyed by the API instance: `refresh` is re-created on
   // every render, so depending on it here would re-run on every render.
@@ -282,6 +314,33 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                     .finally(() => setBusy(false))
                 }}
                 result={restoreResult}
+                retrying={retrying}
+                onRetryFailed={() => {
+                  const failedRows = (restoreResult?.pluginResults ?? []).filter((row) => row.status === 'failed')
+                  setRetrying(true)
+                  setError(null)
+                  setNotice(null)
+                  void api.retryPlugins(failedRows.map((row) => ({ name: row.name, profile: row.profile })))
+                    .then((r) => {
+                      // Replace the retried rows in place; keep the rest of the original result.
+                      const merged = new Map((restoreResult?.pluginResults ?? []).map((row) => [`${row.profile}:${row.name}`, row]))
+                      for (const row of r.pluginResults ?? []) merged.set(`${row.profile}:${row.name}`, row)
+                      const rows = [...merged.values()]
+                      const next = {
+                        ...(restoreResult ?? r),
+                        pluginResults: rows,
+                        pluginsFailed: rows.filter((row) => row.status === 'failed').map((row) => row.name),
+                        pluginsReinstalled: rows.filter((row) => row.status === 'installed').map((row) => row.name),
+                        restartRequired: Boolean(restoreResult?.restartRequired || r.restartRequired),
+                        ok: rows.every((row) => row.status !== 'failed'),
+                        manualActions: r.manualActions,
+                      }
+                      setRestoreResult(next)
+                      return showRestoreOutcome(next, true)
+                    })
+                    .catch((err: unknown) => setError(errorText(err)))
+                    .finally(() => setRetrying(false))
+                }}
                 onRestore={(input) => {
                   setRestoreResult(null)
                   setBusy(true)
@@ -298,32 +357,9 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                     createRollbackSnapshot: input.createRollbackSnapshot,
                   })
                     .then((r) => {
-                      const failed = (r.pluginsFailed?.length ?? 0) > 0 || r.ok === false
-                      const parts = [
-                        failed
-                          ? t('restore.partialBody', { applied: r.applied.length, skipped: r.skipped.length })
-                          : t('restore.successBody', { applied: r.applied.length, skipped: r.skipped.length }),
-                      ]
-                      if (r.rollbackSnapshotId) parts.push(t('restore.rollbackCreated', { id: r.rollbackSnapshotId }))
                       setRestoreResult(r)
-                      if (r.pluginResults?.length) {
-                        // Listed row by row in the "Plugin results" card.
-                        if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
-                      } else {
-                        if (r.pluginsReinstalled.length) parts.push(t('restore.pluginsReinstalled', { list: r.pluginsReinstalled.join(', ') }))
-                        if (r.pluginsFailed.length) parts.push(t('restore.pluginsFailed', { list: r.pluginsFailed.join(', ') }))
-                      }
-                      if (r.restartRequired) parts.push(t('restore.restartRequired'))
-                      for (const m of r.manualActions) {
-                        // Plugin failures are listed per row; the restart hint is already localized above.
-                        if (r.pluginResults?.some((row) => m.startsWith(`${row.name} (`))) continue
-                        if (r.restartRequired && /^Restart /.test(m)) continue
-                        parts.push(m)
-                      }
-                      setNotice({ kind: failed ? 'error' : 'ok', text: parts.join(' · ') })
                       setPreview(null)
-                      // refresh() clears `error`, so raise the failure banner after it.
-                      return refresh().then(() => { if (failed) setError(parts.join(' · ')) })
+                      return showRestoreOutcome(r, false)
                     })
                     .catch((err: unknown) => setError(errorText(err)))
                     .finally(() => setBusy(false))

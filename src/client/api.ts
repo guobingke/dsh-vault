@@ -179,6 +179,11 @@ export class VaultApi {
     return request('/restore', { method: 'POST', body: JSON.stringify(body), acceptConflictBody: true })
   }
 
+  /** Re-attempt only the given failed plugins (or all failed ones of the last restore). */
+  retryPlugins(plugins?: Array<{ name: string; profile: string }>): Promise<RestoreResult> {
+    return request('/restore/retry-plugins', { method: 'POST', body: JSON.stringify(plugins ? { plugins } : {}), acceptConflictBody: true })
+  }
+
   getSchedule(): Promise<ScheduleConfig> {
     return request('/schedule')
   }
