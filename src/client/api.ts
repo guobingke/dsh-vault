@@ -11,6 +11,8 @@ import type {
   VaultSettings,
 } from '../core/types.js'
 
+import type { FsListingView } from './components/PathPicker.js'
+
 const BASE = '/api/dsh-vault'
 
 /** Per-path overrides for the global conflict strategy (keys are snapshot-relative paths). */
@@ -113,8 +115,12 @@ export class VaultApi {
     return request('/backup', { method: 'POST', body: JSON.stringify(body) })
   }
 
-  listFs(path: string): Promise<{ path: string; parent: string | null; entries: Array<{ name: string; path: string; kind: 'file' | 'directory'; bytes?: number }> }> {
+  listFs(path: string): Promise<FsListingView> {
     return request(`/fs/list?path=${encodeURIComponent(path)}`)
+  }
+
+  mkdir(path: string, name: string): Promise<{ path: string }> {
+    return request('/fs/mkdir', { method: 'POST', body: JSON.stringify({ path, name }) })
   }
 
   pickDirectory(): Promise<{ path: string | null }> {

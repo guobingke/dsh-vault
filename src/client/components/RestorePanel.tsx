@@ -3,6 +3,7 @@ import type { ConflictStrategy, DiffItem, RestorePreview, SnapshotInfo, StorageT
 import { useT, type Translate } from '../i18n.js'
 import { formatBytes, formatDateTime, relativeLabel } from '../lib/format.js'
 import { newestFirst } from '../lib/targets.js'
+import { PathPicker, type FsBrowser } from './PathPicker.js'
 import {
   Banner,
   Button,
@@ -59,8 +60,8 @@ export interface RestorePanelProps {
   initialTargetId?: string
   initialSnapshotId?: string
   onNavigateStorage?: () => void
-  /** Native folder picker when the host supports it. */
-  onPickDirectory?: () => Promise<string | null>
+  /** Filesystem access for the Browse… dialog (in-app browser + optional native chooser). */
+  fs?: FsBrowser
 }
 
 type ConflictChoice = ConflictStrategy
@@ -110,10 +111,11 @@ export function RestorePanel({
   initialTargetId,
   initialSnapshotId,
   onNavigateStorage,
-  onPickDirectory,
+  fs,
 }: RestorePanelProps) {
   const tr = useT()
   const groupId = useId()
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   const [sourceMode, setSourceMode] = useState<SourceMode>(
     initialTargetId || initialSnapshotId || snapshots.length ? 'target' : 'import',
@@ -308,15 +310,22 @@ export function RestorePanel({
                 placeholder={tr('restore.importPathPlaceholder')}
                 mono
               />
-              {onPickDirectory ? (
-                <Button
-                  variant="quiet"
-                  onClick={() => { void onPickDirectory().then((p) => { if (p) setImportPath(p) }) }}
-                >
+              {fs ? (
+                <Button variant="quiet" onClick={() => setPickerOpen(true)}>
                   {tr('restore.browse')}
                 </Button>
               ) : null}
             </div>
+            {fs ? (
+              <PathPicker
+                open={pickerOpen}
+                mode="open"
+                fs={fs}
+                initialPath={importPath}
+                onClose={() => setPickerOpen(false)}
+                onSelect={(p) => { setImportPath(p); setAck(false); setPickerOpen(false) }}
+              />
+            ) : null}
           </Field>
         ) : targets.length === 0 && snapshots.length === 0 ? (
           <EmptyState

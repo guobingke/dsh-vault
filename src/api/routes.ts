@@ -125,9 +125,25 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
   )
 
   routes.push(
-    endpoint({ path: `${API_PREFIX}/fs/pick-directory`, methods: ['POST'] }, async (_req, res) => {
-      const path = await service.pickDirectory()
-      writeJson(res, 200, { path })
+    endpoint({ path: `${API_PREFIX}/fs/mkdir`, methods: ['POST'] }, async (req, res) => {
+      const body = await readJsonBody<{ path?: string; name?: string }>(req)
+      if (!body.path || !body.name) throw new ApiError('path and name are required', 400)
+      writeJson(res, 200, { path: await service.createFsDirectory(body.path, body.name) })
+    }),
+  )
+
+  routes.push(
+    endpoint({ path: `${API_PREFIX}/fs/pick-directory`, methods: ['POST'] }, async (req, res) => {
+      // Close the OS dialog if the browser goes away mid-pick.
+      const controller = new AbortController()
+      const onClose = () => { if (!res.writableEnded) controller.abort() }
+      res.on('close', onClose)
+      try {
+        const path = await service.pickDirectory(controller.signal)
+        writeJson(res, 200, { path })
+      } finally {
+        res.off('close', onClose)
+      }
     }),
   )
 

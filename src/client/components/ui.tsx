@@ -604,10 +604,12 @@ export interface DialogProps {
   children?: ReactNode
   actions?: ReactNode
   tone?: 'default' | 'danger'
+  /** `wide` for content dialogs such as the path browser. */
+  size?: 'default' | 'wide'
 }
 
 /** Accessible modal: focus trap, Escape closes, focus restored on close. */
-export function Dialog({ open, onClose, title, description, children, actions, tone = 'default' }: DialogProps) {
+export function Dialog({ open, onClose, title, description, children, actions, tone = 'default', size = 'default' }: DialogProps) {
   const t = useT()
   const autoId = useId()
   const baseId = autoId.replace(/[^a-zA-Z0-9_-]/g, '') || 'x'
@@ -654,8 +656,9 @@ export function Dialog({ open, onClose, title, description, children, actions, t
   if (!open || typeof document === 'undefined') return null
 
   return createPortal(
+    // Portaled outside the section: re-apply the root class so --dv-* tokens resolve.
     <div
-      className="dv-dialog-backdrop"
+      className="dsh-vault-root dv-dialog-backdrop"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
@@ -663,6 +666,7 @@ export function Dialog({ open, onClose, title, description, children, actions, t
       <div
         ref={panelRef}
         className="dv-dialog"
+        data-size={size === 'wide' ? 'wide' : undefined}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

@@ -34,7 +34,7 @@ export interface HostContext {
   pluginManager?: PluginManagerLike
   directoryPicker?: {
     capability: () =>
-      | { kind: 'native'; pick: (signal?: AbortSignal) => Promise<string | null> }
+      | { kind: 'native'; pick: (signal: AbortSignal) => Promise<string | null> }
       | { kind: 'browse'; list: (path?: string) => Promise<unknown> }
   }
   logger?: { info?: (m: string) => void; warn?: (m: string) => void; error?: (m: string) => void }
@@ -57,11 +57,21 @@ function optionalService<T>(
   return ctx[name] as T | undefined
 }
 
-function bindDirectoryPicker(picker: HostContext['directoryPicker']): (() => Promise<string | null>) | undefined {
+/**
+ * Bind dsh's `ctx.directoryPicker` when it is the `native` backend (Desktop /
+ * loopback web on Windows/macOS, Linux with zenity/kdialog). dsh's `pick`
+ * dereferences `signal.aborted`, so a signal must always be forwarded — calling
+ * it without one threw a TypeError and made "Browse" silently do nothing.
+ * The `browse` backend is directories-only, so the vault uses its own
+ * in-app browser (/fs/list) for that case and for file selection.
+ */
+export function bindDirectoryPicker(picker: HostContext['directoryPicker']): ((signal: AbortSignal) => Promise<string | null>) | undefined {
   if (!picker?.capability) return undefined
   try {
     const cap = picker.capability()
-    if (cap.kind === 'native') return () => cap.pick()
+    if (cap?.kind === 'native' && typeof cap.pick === 'function') {
+      return (signal: AbortSignal) => cap.pick(signal)
+    }
   } catch {
     return undefined
   }

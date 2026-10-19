@@ -7,6 +7,7 @@ import { StoragePanel } from './components/StoragePanel.js'
 import { SnapshotsPanel, type VerifyResult } from './components/SnapshotsPanel.js'
 import { SettingsPanel } from './components/SettingsPanel.js'
 import { SectionHead, SectionTabs } from './components/ui.js'
+import type { FsBrowser } from './components/PathPicker.js'
 import { I18nContext, detectInitialLocale, normalizeLocale, translate, type Locale, type MessageKey } from './i18n.js'
 import { formatBytes } from './lib/format.js'
 import type { BackupCategory, RestorePreview, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
@@ -65,6 +66,12 @@ function errorText(err: unknown): string {
 
 export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: VaultAppProps) {
   const api = useMemo(() => apiProp ?? new VaultApi(), [apiProp])
+  // Browse… always opens the in-app browser; the native chooser is an extra when dsh exposes one.
+  const fsBrowser = useMemo<FsBrowser>(() => ({
+    list: (path) => api.listFs(path),
+    mkdir: (path, name) => api.mkdir(path, name),
+    pickNative: () => api.pickDirectory(),
+  }), [api])
 
   /* ---------------- locale: follow the host, no in-app switch ---------------- */
   const locale: Locale = useMemo(() => (hostLocale ? normalizeLocale(hostLocale) : detectInitialLocale()), [hostLocale])
@@ -244,14 +251,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                 defaultTargetId={backupTargetId ?? settings?.defaultTargetId}
                 onBackup={backupTo}
                 onNavigateStorage={() => navigate('storage')}
-                onPickDirectory={async () => {
-                  try {
-                    const r = await api.pickDirectory()
-                    return r.path
-                  } catch {
-                    return null
-                  }
-                }}
+                fs={fsBrowser}
               />
             ) : null}
 
@@ -320,14 +320,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                     .catch((err: unknown) => setError(errorText(err)))
                     .finally(() => setBusy(false))
                 }}
-                onPickDirectory={async () => {
-                  try {
-                    const r = await api.pickDirectory()
-                    return r.path
-                  } catch {
-                    return null
-                  }
-                }}
+                fs={fsBrowser}
               />
             ) : null}
 

@@ -20,6 +20,7 @@ import {
   TextArea,
   TextInput,
 } from './ui.js'
+import { PathPicker, type FsBrowser } from './PathPicker.js'
 
 export interface BackupPanelProps {
   targets: StorageTargetConfig[]
@@ -42,8 +43,8 @@ export interface BackupPanelProps {
   /** Optional: current progress stage: collect | pack | encrypt | upload. */
   stage?: string
   onNavigateStorage?: () => void
-  /** Native folder picker when the host supports it. */
-  onPickDirectory?: () => Promise<string | null>
+  /** Filesystem access for the Browse… dialog (in-app browser + optional native chooser). */
+  fs?: FsBrowser
 }
 
 type DestMode = 'target' | 'directory' | 'file'
@@ -63,6 +64,13 @@ const CATEGORIES: Array<{ id: BackupCategory; label: MessageKey; desc: MessageKe
 
 const ALL_IDS = CATEGORIES.map((c) => c.id)
 
+/** Suggested export file name: dsh-vault-YYYYMMDD-HHMM.(dshvault|tar.gz). */
+export function defaultExportName(encrypt: boolean, now = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+  return `dsh-vault-${stamp}.${encrypt ? 'dshvault' : 'tar.gz'}`
+}
+
 function strengthLabel(tr: Translate, level: 0 | 1 | 2 | 3 | 4): string {
   return tr(`backup.strength.${level}` as `backup.strength.${0 | 1 | 2 | 3 | 4}`)
 }
@@ -77,7 +85,7 @@ export function BackupPanel({
   defaultTargetId,
   stage,
   onNavigateStorage,
-  onPickDirectory,
+  fs,
 }: BackupPanelProps) {
   const tr = useT()
   const [destMode, setDestMode] = useState<DestMode>(targets.length ? 'target' : 'directory')
@@ -90,6 +98,7 @@ export function BackupPanel({
   const [notes, setNotes] = useState('')
   const [scope, setScope] = useState<Set<BackupCategory>>(() => new Set(ALL_IDS))
   const [touched, setTouched] = useState(false)
+  const [picker, setPicker] = useState<'directory' | 'save' | null>(null)
 
   // Keep the selection valid when targets load asynchronously or change.
   useEffect(() => {
@@ -199,16 +208,36 @@ export function BackupPanel({
           <Field label={tr('backup.directory')} htmlFor="dv-backup-dir" hint={tr('backup.directoryHint')}>
             <div style={{ display: 'flex', gap: 8 }}>
               <TextInput id="dv-backup-dir" value={directory} onChange={(e) => setDirectory(e.target.value)} placeholder={tr('backup.directoryPlaceholder')} mono />
-              {onPickDirectory ? (
-                <Button variant="quiet" onClick={() => { void onPickDirectory().then((p) => { if (p) setDirectory(p) }) }}>{tr('backup.browse')}</Button>
+              {fs ? (
+                <Button variant="quiet" onClick={() => setPicker('directory')}>{tr('backup.browse')}</Button>
               ) : null}
             </div>
           </Field>
         ) : null}
         {destMode === 'file' ? (
           <Field label={tr('backup.exportFile')} htmlFor="dv-backup-file" hint={tr('backup.exportFileHint')}>
-            <TextInput id="dv-backup-file" value={exportFile} onChange={(e) => setExportFile(e.target.value)} placeholder={tr('backup.exportFilePlaceholder')} mono />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <TextInput id="dv-backup-file" value={exportFile} onChange={(e) => setExportFile(e.target.value)} placeholder={tr('backup.exportFilePlaceholder')} mono />
+              {fs ? (
+                <Button variant="quiet" onClick={() => setPicker('save')}>{tr('backup.browse')}</Button>
+              ) : null}
+            </div>
           </Field>
+        ) : null}
+        {fs ? (
+          <PathPicker
+            open={picker !== null}
+            mode={picker ?? 'directory'}
+            fs={fs}
+            initialPath={picker === 'save' ? exportFile : directory}
+            defaultFileName={defaultExportName(encrypt)}
+            onClose={() => setPicker(null)}
+            onSelect={(p) => {
+              if (picker === 'save') setExportFile(p)
+              else setDirectory(p)
+              setPicker(null)
+            }}
+          />
         ) : null}
       </Card>
 

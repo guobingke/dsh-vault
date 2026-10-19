@@ -12,7 +12,7 @@ import {
 } from './config-store.js'
 import { previewRestoreDiff } from './diff.js'
 import { VaultUserError } from './errors.js'
-import { isSnapshotArchiveName, listDirectory } from './fs-browse.js'
+import { createDirectory, isSnapshotArchiveName, listDirectory } from './fs-browse.js'
 import {
   resolveAgentsHome,
   resolveDshHome,
@@ -57,6 +57,9 @@ import { LocalStorageAdapter } from '../storage/local.js'
 import { StorageRegistry } from '../storage/index.js'
 import type { StorageAdapter } from '../storage/types.js'
 
+/** Native directory chooser; dsh's implementation requires a signal. */
+export type PickDirectoryFn = (signal: AbortSignal) => Promise<string | null>
+
 export interface VaultServiceOptions {
   dshHome?: string
   agentsHome?: string
@@ -72,7 +75,7 @@ export interface VaultServiceOptions {
   /** Preferred npm registry (China mainland mirror by default when unset). */
   preferredRegistry?: string | null
   /** Native OS directory picker from host directoryPicker (optional). */
-  pickDirectory?: () => Promise<string | null>
+  pickDirectory?: PickDirectoryFn
   /** Override plugin install runner (tests). */
   runPluginInstall?: PluginInstallDeps['runCommand']
 }
@@ -91,7 +94,7 @@ export class VaultService {
   private pluginManager: PluginManagerLike | null
   private readonly pnpmCommand?: string
   private preferredRegistry: string | null | undefined
-  private pickDirectoryFn?: () => Promise<string | null>
+  private pickDirectoryFn?: PickDirectoryFn
   private readonly runCommand?: PluginInstallDeps['runCommand']
 
   constructor(private readonly options: VaultServiceOptions = {}) {
@@ -113,17 +116,33 @@ export class VaultService {
     this.pluginManager = manager
   }
 
-  setPickDirectory(fn: (() => Promise<string | null>) | undefined): void {
+  setPickDirectory(fn: PickDirectoryFn | undefined): void {
     this.pickDirectoryFn = fn
   }
 
-  async listFs(path: string) {
-    return listDirectory(path)
+  /** Whether dsh exposes a native OS folder chooser on this host. */
+  hasNativePicker(): boolean {
+    return Boolean(this.pickDirectoryFn)
   }
 
-  async pickDirectory(): Promise<string | null> {
-    if (!this.pickDirectoryFn) return null
-    return this.pickDirectoryFn()
+  async listFs(path: string) {
+    return { ...(await listDirectory(path)), nativePicker: this.hasNativePicker() }
+  }
+
+  async createFsDirectory(parent: string, name: string): Promise<string> {
+    return createDirectory(parent, name)
+  }
+
+  /**
+   * Open dsh's native OS folder chooser. dsh's picker requires an AbortSignal
+   * (it dereferences `signal.aborted`), so one is always passed.
+   * Returns null when the user cancels; throws NO_NATIVE_PICKER when unavailable.
+   */
+  async pickDirectory(signal: AbortSignal = new AbortController().signal): Promise<string | null> {
+    if (!this.pickDirectoryFn) {
+      throw new VaultUserError('native folder picker is not available on this host', 501, 'NO_NATIVE_PICKER')
+    }
+    return this.pickDirectoryFn(signal)
   }
 
   async init(): Promise<void> {
