@@ -63,11 +63,13 @@ github:guobingke/dsh-vault
 
 也可以直接填完整仓库地址 `https://github.com/guobingke/dsh-vault`（带不带 `.git` 都行）。末尾不要加 `/`，也不要带 `/tree/...`，插件页会拒绝。
 
-这几种写法都需要本机装有 **git**：pnpm 要用 git 查出该拉哪个提交。Windows 请先安装 [Git for Windows](https://git-scm.com/download/win)。没有 git 的话，改填下面的压缩包地址，完全不需要 git：
+这几种写法都需要本机装有 **git**：pnpm 要用 git 查出该拉哪个提交。Windows 请先安装 [Git for Windows](https://git-scm.com/download/win)。没有 git 的话，改填某个提交的压缩包地址，完全不需要 git：
 
 ```
-https://github.com/guobingke/dsh-vault/archive/refs/heads/main.tar.gz
+https://github.com/guobingke/dsh-vault/archive/<提交>.tar.gz
 ```
+
+把 `<提交>` 换成仓库提交列表里的提交哈希。更新时卸载后填较新提交的地址。不要用 `archive/refs/heads/main.tar.gz`：第一次能装上，但 main 更新后再添加会报校验错误。
 
 不要只填 `dsh-vault`，npm 上这个名字是另一个无关的包。
 

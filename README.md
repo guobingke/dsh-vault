@@ -63,11 +63,13 @@ Restart Desktop when it finishes, then open **Settings → 大肥鱼备份**. No
 
 The full repository URL works too: `https://github.com/guobingke/dsh-vault` (with or without `.git`). Don't add a trailing `/` or a `/tree/...` path, because the plugin page rejects those.
 
-These forms need **git** on the machine, because pnpm asks git which commit to fetch. On Windows, install [Git for Windows](https://git-scm.com/download/win) first. Without git, enter the tarball URL instead. It installs with no git at all:
+These forms need **git** on the machine, because pnpm asks git which commit to fetch. On Windows, install [Git for Windows](https://git-scm.com/download/win) first. Without git, enter a tarball URL for one commit instead. It installs with no git at all:
 
 ```
-https://github.com/guobingke/dsh-vault/archive/refs/heads/main.tar.gz
+https://github.com/guobingke/dsh-vault/archive/<commit>.tar.gz
 ```
+
+Replace `<commit>` with a commit hash from the repo's commit list. To update, uninstall and add the URL of a newer commit. Avoid `archive/refs/heads/main.tar.gz`: it installs once, but adding it again after main changes fails with an integrity error.
 
 Don't enter just `dsh-vault`. That name on npm belongs to an unrelated package.
 
