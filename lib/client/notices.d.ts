@@ -7,4 +7,6 @@ export declare function pluginReasonText(row: PluginInstallResultRow, t: Transla
 export declare function failedPluginLabels(rows: PluginInstallResultRow[] | undefined, fallback: string[]): string;
 /** Raw text for 详情: the install log for failures, the technical detail for successes. */
 export declare function pluginRawDetail(row: PluginInstallResultRow, t: Translate): string | undefined;
+/** Server errors are English; show the known ones in the UI language (the raw text stays in the message). */
+export declare function localizeError(err: unknown, t: Translate): string;
 //# sourceMappingURL=notices.d.ts.map

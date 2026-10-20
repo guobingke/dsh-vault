@@ -1,3 +1,4 @@
+import { targetName } from '../lib/format.js'
 import { useMemo } from 'react'
 import type { VaultStatusResponse } from '../api.js'
 import type { SnapshotInfo, VaultSettings } from '../../core/types.js'
@@ -90,7 +91,7 @@ export function Overview({
   const targets = data.targets
   const summaries = summarizeSnapshotsByTarget(targets, list)
   const latest = [...list].sort(newestFirst)[0]
-  const targetLabel = (id: string): string => targets.find((t) => t.id === id)?.label ?? id
+  const targetLabel = (id: string): string => targetName(targets.find((t) => t.id === id), tr, id)
   const encrypted = list.filter((s) => s.encrypted).length
   const totalBytes = list.reduce((acc, s) => acc + (s.bytes || 0), 0)
   const schedule = settings.schedule
@@ -159,7 +160,7 @@ export function Overview({
             key={target.id}
             title={
               <span className="dv-inline">
-                <DotText tone={count > 0 ? 'ok' : 'neutral'}>{target.label}</DotText>
+                <DotText tone={count > 0 ? 'ok' : 'neutral'}>{targetName(target, tr)}</DotText>
                 {target.id === defaultTargetId ? <span className="dv-tag">{tr('common.default')}</span> : null}
               </span>
             }
@@ -175,7 +176,7 @@ export function Overview({
         <SettingRow
           title={tr('overview.backupRow')}
           description={defaultTarget
-            ? tr('overview.backupDescTarget', { target: defaultTarget.label })
+            ? tr('overview.backupDescTarget', { target: targetName(defaultTarget, tr) })
             : tr('overview.backupDesc')}
           control={
             onBackupNow ? (

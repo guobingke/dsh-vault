@@ -25,6 +25,14 @@ declare const zh: {
     'common.optional': string;
     'common.encrypted': string;
     'common.plaintext': string;
+    'error.path.private': string;
+    'error.path.credentials': string;
+    'error.path.system': string;
+    'error.path.outside': string;
+    'error.path.notArchive': string;
+    'error.path.relative': string;
+    'error.badSnapshot': string;
+    'error.noSnapshotInFolder': string;
     'common.secrets': string;
     'common.verify': string;
     'common.delete': string;
@@ -114,6 +122,7 @@ declare const zh: {
     'backup.cat.plugin-data.none': string;
     'backup.cat.credentials': string;
     'backup.cat.credentials.desc': string;
+    'backup.cat.credentials.plainBlocked': string;
     'backup.encTitle': string;
     'backup.encDesc': string;
     'backup.password': string;
@@ -267,6 +276,7 @@ declare const zh: {
     'summary.restore.failed': string;
     'summary.restore.plugins': string;
     'summary.restore.pluginsOk': string;
+    'summary.restore.pluginsSkipped': string;
     'summary.restore.files': string;
     'summary.restore.skipped': string;
     'summary.took': string;

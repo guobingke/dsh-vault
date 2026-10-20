@@ -4,8 +4,9 @@ import { ARCHIVE_EXTENSION, ENCRYPTED_EXTENSION } from '../core/types.js'
 import type { LocalTargetConfig, SnapshotInfo } from '../core/types.js'
 import type { StorageAdapter } from './types.js'
 
+/** Snapshot archives only: `manifest.json`, `*.meta.json` sidecars and other JSON are not snapshots. */
 function isSnapshotFile(name: string): boolean {
-  return name.endsWith(ARCHIVE_EXTENSION) || name.endsWith(ENCRYPTED_EXTENSION) || name.endsWith('.json')
+  return name.endsWith(ARCHIVE_EXTENSION) || name.endsWith(ENCRYPTED_EXTENSION)
 }
 
 function idFromName(name: string): string {
@@ -55,9 +56,9 @@ export class LocalStorageAdapter implements StorageAdapter {
     // Prefer an exact id match from the directory listing (unique ids include a suffix).
     const names = await readdir(this.directory)
     const id = idFromName(snapshotIdOrKey)
-    const match = names.find((n) => idFromName(n) === id)
+    const match = names.find((n) => isSnapshotFile(n) && idFromName(n) === id)
     if (match) return readFile(join(this.directory, match))
-    for (const ext of [ARCHIVE_EXTENSION, ENCRYPTED_EXTENSION, '.json']) {
+    for (const ext of [ARCHIVE_EXTENSION, ENCRYPTED_EXTENSION]) {
       try {
         return await readFile(join(this.directory, `${id}${ext}`))
       } catch {

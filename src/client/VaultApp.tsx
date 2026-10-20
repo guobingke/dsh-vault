@@ -10,10 +10,12 @@ import { SettingsPanel } from './components/SettingsPanel.js'
 import { Banner, Button, SectionHead, SectionTabs } from './components/ui.js'
 import type { FsBrowser } from './components/PathPicker.js'
 import { I18nContext, detectInitialLocale, normalizeLocale, translate, type Locale, type MessageKey } from './i18n.js'
-import { formatBytes } from './lib/format.js'
+import { formatBytes, formatDateTime } from './lib/format.js'
+import type { RestoreRequestBody } from './lib/requests.js'
 import type { BackupCategory, BackupResult, RestorePreview, RestoreResult, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js'
-import { failedPluginLabels, localizeNotice } from './notices.js'
+import { failedPluginLabels, localizeError, localizeNotice } from './notices.js'
 import './theme.css'
+import { targetName } from './lib/format.js'
 
 export type VaultTab = 'overview' | 'backup' | 'restore' | 'storage' | 'snapshots' | 'schedule'
 
@@ -29,16 +31,7 @@ export interface BackupInput {
   categories?: BackupCategory[]
 }
 
-export interface RestoreInput {
-  targetId?: string
-  snapshotId?: string
-  importPath?: string
-  password?: string
-  conflict: 'keep-current' | 'use-backup'
-  conflicts?: Record<string, 'keep-current' | 'use-backup'>
-  reinstallPlugins?: boolean
-  createRollbackSnapshot?: boolean
-}
+export type RestoreInput = RestoreRequestBody
 
 export interface PreviewInput {
   targetId?: string
@@ -60,12 +53,6 @@ type Notice = { kind: 'ok' | 'error'; text: string }
 
 const TABS: VaultTab[] = ['overview', 'backup', 'restore', 'storage', 'snapshots', 'schedule']
 
-function errorText(err: unknown): string {
-  if (err instanceof VaultApiError) {
-    return err.status ? `${err.message} (HTTP ${err.status})` : err.message
-  }
-  return err instanceof Error ? err.message : String(err)
-}
 
 export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: VaultAppProps) {
   const api = useMemo(() => apiProp ?? new VaultApi(), [apiProp])
@@ -82,6 +69,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
     () => (key: MessageKey, vars?: Record<string, string | number>) => translate(locale, key, vars),
     [locale],
   )
+  const errorText = useCallback((err: unknown) => localizeError(err, t), [t])
 
   /* ---------------- data ---------------- */
   const [tab, setTab] = useState<VaultTab>(initialTab)
@@ -215,7 +203,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
 
   const targets: StorageTargetConfig[] = status?.targets ?? []
   const settings: VaultSettings | null = status?.settings ?? null
-  const targetLabel = useCallback((id: string) => targets.find((x) => x.id === id)?.label ?? id, [targets])
+  const targetLabel = useCallback((id: string) => targetName(targets.find((x) => x.id === id), t, id), [targets, t])
 
   const navigate = useCallback((next: VaultTab) => {
     setTab(next)
@@ -340,7 +328,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
               >
                 {t(status.unfinishedRestore.rollbackSnapshotId ? 'unfinished.body' : 'unfinished.bodyNoRollback', {
                   snapshot: status.unfinishedRestore.snapshotId,
-                  time: status.unfinishedRestore.startedAt,
+                  time: formatDateTime(status.unfinishedRestore.startedAt, locale),
                 })}
                 {status.unfinishedRestore.rollbackEncrypted ? ' ' + t('unfinished.encrypted') : ''}
               </Banner>
@@ -404,6 +392,13 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                 initialTargetId={restorePreset?.targetId}
                 initialSnapshotId={restorePreset?.snapshotId}
                 archiveLimitBytes={status?.archiveLimitBytes}
+                onSourceChange={() => {
+                  // A new source makes the last outcome banner stale.
+                  setNotice(null)
+                  setError(null)
+                  setRestoreResult(null)
+                  setPreview(null)
+                }}
                 onNavigateStorage={() => navigate('storage')}
                 onPreview={(input) => {
                   setBusy(true)
@@ -436,16 +431,8 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                   setBusy(true)
                   setError(null)
                   setNotice(null)
-                  void api.startRestoreJob({
-                    targetId: input.targetId,
-                    snapshotId: input.snapshotId,
-                    importPath: input.importPath,
-                    password: input.password,
-                    conflict: input.conflict,
-                    conflicts: input.conflicts,
-                    reinstallPlugins: input.reinstallPlugins,
-                    createRollbackSnapshot: input.createRollbackSnapshot,
-                  })
+                  // Forward the panel's request unchanged (fields were dropped here before).
+                  void api.startRestoreJob(input)
                     .then((j) => followJob(j, finishRestore))
                     .catch((err: unknown) => {
                       setBusy(false)
@@ -476,7 +463,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                 onUpsert={(target) => {
                   void run(async () => {
                     await api.upsertTarget(target)
-                    setNotice({ kind: 'ok', text: t('storage.saved', { label: target.label }) })
+                    setNotice({ kind: 'ok', text: t('storage.saved', { label: targetName(target, t) }) })
                     await refresh()
                   })
                 }}

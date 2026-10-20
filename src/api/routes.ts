@@ -10,7 +10,7 @@ import type { JobState } from '../core/progress.js'
 export function publicResult<T>(result: T): T {
   if (!result || typeof result !== 'object') return result
   const r = { ...(result as Record<string, unknown>) }
-  const m = r.manifest as { id?: string; createdAt?: string; includeSecrets?: boolean; encrypted?: boolean; files?: unknown[]; plugins?: Array<{ name?: string; profile?: string }>; categories?: unknown } | undefined
+  const m = r.manifest as { id?: string; createdAt?: string; includeSecrets?: boolean; encrypted?: boolean; files?: unknown[]; plugins?: Array<{ name?: string; profile?: string; fallbackBundle?: unknown; bundledSource?: unknown }>; categories?: unknown } | undefined
   if (m && typeof m === 'object') {
     r.manifest = {
       id: m.id,
@@ -19,7 +19,8 @@ export function publicResult<T>(result: T): T {
       encrypted: m.encrypted,
       categories: m.categories,
       fileCount: Array.isArray(m.files) ? m.files.length : 0,
-      plugins: Array.isArray(m.plugins) ? m.plugins.map((p) => ({ name: p?.name, profile: p?.profile })) : [],
+      pluginCopyCount: Array.isArray(m.plugins) ? m.plugins.filter((p) => Boolean(p?.fallbackBundle || p?.bundledSource)).length : 0,
+      plugins: Array.isArray(m.plugins) ? m.plugins.map((p) => ({ name: p?.name, profile: p?.profile, hasCopy: Boolean(p?.fallbackBundle || p?.bundledSource) })) : [],
     }
   }
   return redactDeep(r) as T
@@ -28,6 +29,14 @@ export function publicResult<T>(result: T): T {
 export function publicJob(job: JobState | null): JobState | null {
   if (!job) return job
   return redactDeep({ ...job, result: publicResult(job.result) })
+}
+
+/** H-06: over HTTP only source-bound approvals (`profile:name#hash` from preview) count; `*` and `profile:name` are CLI-only. */
+export function sanitizeApprovals(body: { approvedPluginSources?: unknown }): void {
+  if (body.approvedPluginSources === undefined) return
+  body.approvedPluginSources = Array.isArray(body.approvedPluginSources)
+    ? body.approvedPluginSources.filter((k): k is string => typeof k === 'string' && /^[^#\s]+:[^#\s]+#[0-9a-f]{16}$/.test(k))
+    : []
 }
 
 async function checkBackupPaths(service: VaultService, body: BackupRequest): Promise<void> {
@@ -160,6 +169,7 @@ export function buildVaultRoutes(service: VaultService, guard: RouteGuard = {}):
         throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
       }
       await checkImportPath(service, body)
+      sanitizeApprovals(body)
       const result = await service.restore(body)
       // Never report HTTP success when plugins failed — clients must surface the failure.
       writeJson(res, result.ok === false ? 409 : 200, publicResult(result))
@@ -187,12 +197,7 @@ export function buildVaultRoutes(service: VaultService, guard: RouteGuard = {}):
         throw new ApiError('targetId+snapshotId or importPath is required', 400)
       }
       await checkImportPath(service, body)
-      // H-06: from the browser only source-bound approvals (`profile:name#hash` from preview) count.
-      if (body.approvedPluginSources !== undefined) {
-        body.approvedPluginSources = Array.isArray(body.approvedPluginSources)
-          ? body.approvedPluginSources.filter((k): k is string => typeof k === 'string' && /^[^#\s]+:[^#\s]+#[0-9a-f]{16}$/.test(k))
-          : []
-      }
+      sanitizeApprovals(body)
       writeJson(res, 202, publicJob(startJob(() => service.startRestoreJob(body))))
     }),
   )

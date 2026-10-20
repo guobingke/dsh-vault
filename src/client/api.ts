@@ -13,6 +13,7 @@ import type {
 } from '../core/types.js'
 
 import type { FsListingView } from './components/PathPicker.js'
+import type { RestoreRequestBody } from './lib/requests.js'
 
 const BASE = '/api/dsh-vault'
 
@@ -236,17 +237,7 @@ export class VaultApi {
     })
   }
 
-  restore(body: {
-    targetId?: string
-    snapshotId?: string
-    importPath?: string
-    conflict: ConflictStrategy
-    conflicts?: RestoreConflicts
-    password?: string
-    createRollbackSnapshot?: boolean
-    reinstallPlugins?: boolean
-    includeSecrets?: boolean
-  }): Promise<RestoreResult> {
+  restore(body: RestoreRequestBody): Promise<RestoreResult> {
     return request('/restore', { method: 'POST', body: JSON.stringify(body), acceptConflictBody: true })
   }
 

@@ -1,5 +1,6 @@
-import { packTarGz, unpackTarGz } from './archive.js'
+import { ArchiveLimitError, packTarGz, unpackTarGz } from './archive.js'
 import { VaultDecryptError, decryptBytes, encryptBytes, parseEnvelope, serializeEnvelope } from './encryption.js'
+import { VaultUserError } from './errors.js'
 import { buildManifest, makeSnapshotId, parseManifest } from './manifest.js'
 import { sha256Buffer, verifyManifestIntegrity } from './checksum.js'
 import type { CollectedFile, KdfAlgorithm, PluginRecord, ProgressCallback, VaultManifest } from './types.js'
@@ -78,27 +79,36 @@ export async function unpackSnapshot(
     encrypted = true
   }
   onProgress?.({ phase: 'download', message: 'Unpacking archive', percent: 50 })
-  const entries = unpackTarGz(archive)
-  const manifestEntry = entries.find((e) => e.path === 'manifest.json')
-  if (!manifestEntry) throw new Error('manifest.json missing from snapshot')
-  const manifest = parseManifest(manifestEntry.data)
+  let entries
+  try {
+    entries = unpackTarGz(archive)
+  } catch (err) {
+    if (err instanceof ArchiveLimitError) throw err
+    // zlib / tar parse errors ("incorrect header check") are bad input, not a server fault.
+    throw new VaultUserError(`not a valid dsh-vault snapshot: ${err instanceof Error ? err.message : String(err)}`, 400, 'BAD_SNAPSHOT')
+  }
+  const bad = (why: string) => new VaultUserError(`not a valid dsh-vault snapshot: ${why}`, 400, 'BAD_SNAPSHOT')
+  let manifest: VaultManifest
+  try {
+    manifest = parseManifest((entries.find((e) => e.path === 'manifest.json') ?? { data: Buffer.alloc(0) }).data)
+  } catch (err) {
+    throw bad(entries.some((e) => e.path === 'manifest.json') ? (err instanceof Error ? err.message : String(err)) : 'manifest.json missing')
+  }
   const integrity = verifyManifestIntegrity(manifest)
   if (!integrity.ok) {
-    throw new Error(`manifest integrity check failed (expected ${integrity.expected}, got ${integrity.actual})`)
+    throw bad(`manifest integrity check failed (expected ${integrity.expected}, got ${integrity.actual})`)
   }
   const files = new Map<string, Buffer>()
   for (const entry of entries) {
     if (!entry.path.startsWith('files/')) continue
-    const rel = entry.path.slice('files/'.length)
-    files.set(rel, entry.data)
+    files.set(entry.path.slice('files/'.length), entry.data)
   }
   // Verify file checksums
   for (const meta of manifest.files) {
     const data = files.get(meta.path)
-    if (!data) throw new Error(`missing file in archive: ${meta.path}`)
-    const digest = sha256Buffer(data)
-    if (digest !== meta.sha256) throw new Error(`checksum mismatch for ${meta.path}`)
-    if (data.length !== meta.size) throw new Error(`size mismatch for ${meta.path}`)
+    if (!data) throw bad(`missing file in archive: ${meta.path}`)
+    if (sha256Buffer(data) !== meta.sha256) throw bad(`checksum mismatch for ${meta.path}`)
+    if (data.length !== meta.size) throw bad(`size mismatch for ${meta.path}`)
   }
   onProgress?.({ phase: 'done', message: 'Snapshot verified', percent: 100 })
   return { manifest, files, encrypted }

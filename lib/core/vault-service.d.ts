@@ -133,6 +133,16 @@ export declare class VaultService {
     assertExportWritable(req: BackupRequest): Promise<void>;
     private backupInner;
     listSnapshots(targetId?: string): Promise<SnapshotInfo[]>;
+    /**
+     * Storage listings cannot see inside encrypted snapshots, so whether a snapshot carries
+     * credentials is recorded here when it is made (`snapshot-index.json` in the data folder).
+     * Snapshots made elsewhere and only encrypted ones can be unknown: they show as "no".
+     */
+    private get snapshotIndexPath();
+    private snapshotIndex;
+    private loadSnapshotIndex;
+    private recordSnapshotMeta;
+    private withSnapshotMeta;
     deleteSnapshot(targetId: string, snapshotId: string): Promise<void>;
     verify(targetId: string, snapshotId: string, password?: string): Promise<{
         ok: true;

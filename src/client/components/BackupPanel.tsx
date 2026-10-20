@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { targetName } from '../lib/format.js'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { BackupCategory, BackupResult, StorageTargetConfig } from '../../core/types.js'
 import { useT, type MessageKey, type Translate } from '../i18n.js'
 import { passwordStrength } from '../lib/format.js'
@@ -103,6 +104,11 @@ export function BackupPanel({
 }: BackupPanelProps) {
   const tr = useT()
   const [destMode, setDestMode] = useState<DestMode>(targets.length ? 'target' : 'directory')
+  const destTouched = useRef(false)
+  // Targets usually arrive after the first render: switch to them unless the user already chose.
+  useEffect(() => {
+    if (!destTouched.current && targets.length > 0) setDestMode('target')
+  }, [targets.length])
   const [targetId, setTargetId] = useState(defaultTargetId ?? targets[0]?.id ?? '')
   const [directory, setDirectory] = useState('')
   const [exportFile, setExportFile] = useState('')
@@ -128,7 +134,7 @@ export function BackupPanel({
   }, [target?.id, target?.encryptByDefault])
 
   const strength = passwordStrength(password)
-  const selectedCats = CATEGORIES.filter((c) => scope.has(c.id))
+  const selectedCats = CATEGORIES.filter((c) => scope.has(c.id) && (!c.secret || encrypt))
   const noScope = selectedCats.length === 0
   const passwordMissing = encrypt && password.length === 0
   const destOk = destMode === 'target'
@@ -179,7 +185,7 @@ export function BackupPanel({
         <div className="dv-card-sep" aria-hidden="true" />
         <Rows>
           <SettingRow title={tr('backup.destMode')} description={tr('backup.destModeDesc')}>
-            <select className="dv-input" value={destMode} onChange={(e) => setDestMode(e.target.value as DestMode)} aria-label={tr('backup.destMode')}>
+            <select className="dv-input" value={destMode} onChange={(e) => { destTouched.current = true; setDestMode(e.target.value as DestMode) }} aria-label={tr('backup.destMode')}>
               <option value="target">{tr('backup.dest.target')}</option>
               <option value="directory">{tr('backup.dest.directory')}</option>
               <option value="file">{tr('backup.dest.file')}</option>
@@ -203,7 +209,7 @@ export function BackupPanel({
                   onChange={() => setTargetId(tg.id)}
                   title={
                     <>
-                      {tg.label}
+                      {targetName(tg, tr)}
                       {tg.encryptByDefault ? <Tag tone="ok">{tr('backup.targetEncBadge')}</Tag> : null}
                     </>
                   }
@@ -274,7 +280,9 @@ export function BackupPanel({
             <OptionTile
               key={c.id}
               shape="square"
-              checked={scope.has(c.id)}
+              // Credentials can only go into an encrypted backup: off and locked otherwise.
+              checked={scope.has(c.id) && (!c.secret || encrypt)}
+              disabled={Boolean(c.secret) && !encrypt}
               onChange={() => toggleCategory(c.id)}
               title={tr(c.label)}
               description={
@@ -282,7 +290,9 @@ export function BackupPanel({
                   ? pluginDataEntries.length
                     ? tr('backup.cat.plugin-data.found', { list: pluginDataEntries.join('  ') })
                     : tr('backup.cat.plugin-data.none')
-                  : tr(c.desc)
+                  : c.secret && !encrypt
+                    ? tr('backup.cat.credentials.plainBlocked')
+                    : tr(c.desc)
               }
             />
           ))}

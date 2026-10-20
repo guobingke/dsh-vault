@@ -1,5 +1,6 @@
 import type { UnfinishedRestore, BackupCategory, BackupResult, ConflictStrategy, KdfAlgorithm, RestorePreview, RestoreResult, ScheduleConfig, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js';
 import type { FsListingView } from './components/PathPicker.js';
+import type { RestoreRequestBody } from './lib/requests.js';
 /** Per-path overrides for the global conflict strategy (keys are snapshot-relative paths). */
 export type RestoreConflicts = Record<string, ConflictStrategy>;
 export declare class VaultApiError extends Error {
@@ -129,17 +130,7 @@ export declare class VaultApi {
      * carries a `resolution` for that path (global default + optional overrides).
      */
     previewRestore(targetId: string | undefined, snapshotId: string | undefined, password?: string, conflict?: ConflictStrategy, conflicts?: RestoreConflicts, importPath?: string): Promise<RestorePreview>;
-    restore(body: {
-        targetId?: string;
-        snapshotId?: string;
-        importPath?: string;
-        conflict: ConflictStrategy;
-        conflicts?: RestoreConflicts;
-        password?: string;
-        createRollbackSnapshot?: boolean;
-        reinstallPlugins?: boolean;
-        includeSecrets?: boolean;
-    }): Promise<RestoreResult>;
+    restore(body: RestoreRequestBody): Promise<RestoreResult>;
     /** Re-attempt only the given failed plugins (or all failed ones of the last restore). */
     retryPlugins(plugins?: Array<{
         name: string;

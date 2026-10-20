@@ -1,6 +1,8 @@
+import { targetName } from '../lib/format.js'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ConflictStrategy, DiffItem, RestorePreview, RestoreResult, SnapshotInfo, StorageTargetConfig } from '../../core/types.js'
-import { useT, type Translate } from '../i18n.js'
+import { useLocale, useT, type Translate } from '../i18n.js'
+import { buildRestoreRequest, type RestoreRequestBody } from '../lib/requests.js'
 import { formatBytes, formatDateTime, relativeLabel } from '../lib/format.js'
 import { newestFirst } from '../lib/targets.js'
 const ROLLBACK_TARGET_ID = 'local-rollback'
@@ -49,21 +51,7 @@ export interface RestorePanelProps {
     conflict?: ConflictStrategy
     conflicts?: Record<string, ConflictStrategy>
   }) => void
-  onRestore: (input: {
-    targetId?: string
-    snapshotId?: string
-    importPath?: string
-    password?: string
-    conflict: ConflictStrategy
-    /** Optional per-path decisions; unspecified paths fall back to `conflict`. */
-    conflicts?: Record<string, ConflictStrategy>
-    createRollbackSnapshot?: boolean
-    reinstallPlugins?: boolean
-    /** Write credential files from an encrypted snapshot that carries them (explicit opt-in). */
-    includeSecrets?: boolean
-    /** `profile:name` of git / tarball / URL plugin sources the user allowed to be fetched. */
-    approvedPluginSources?: string[]
-  }) => void
+  onRestore: (input: RestoreRequestBody) => void
   loading?: boolean
   /** Re-attempt only the failed plugins of the shown result (no config rewrite). */
   onRetryFailed?: () => void
@@ -73,6 +61,8 @@ export interface RestorePanelProps {
   initialSnapshotId?: string
   /** M-05: largest uncompressed snapshot the host unpacks. */
   archiveLimitBytes?: number
+  /** The user switched between storage target and import (or changed the import path). */
+  onSourceChange?: () => void
   onNavigateStorage?: () => void
   /** Filesystem access for the Browse… dialog (in-app browser + optional native chooser). */
   fs?: FsBrowser
@@ -119,6 +109,7 @@ export function RestorePanel({
   snapshots,
   preview,
   archiveLimitBytes,
+  onSourceChange,
   busy,
   message,
   error,
@@ -134,6 +125,7 @@ export function RestorePanel({
   retrying,
 }: RestorePanelProps) {
   const tr = useT()
+  const locale = useLocale()
   const groupId = useId()
   const [pickerOpen, setPickerOpen] = useState(false)
   const topRef = useRef<HTMLParagraphElement | null>(null)
@@ -161,7 +153,7 @@ export function RestorePanel({
   const [choices, setChoices] = useState<Record<string, ConflictChoice>>({})
   const [diffFilter, setDiffFilter] = useState<DiffFilter>('all')
 
-  const targetLabel = (id: string): string => targets.find((t) => t.id === id)?.label ?? id
+  const targetLabel = (id: string): string => targetName(targets.find((t) => t.id === id), tr, id)
   const usingImport = sourceMode === 'import'
 
   // Keep the target filter valid. "" (all locations) is a valid user choice; only the
@@ -280,18 +272,20 @@ export function RestorePanel({
   function submitRestore() {
     if (!preview) return
     if (!ack) return
-    onRestore({
-      targetId: usingImport ? undefined : selected?.targetId,
-      snapshotId: usingImport ? undefined : preview.snapshotId,
-      importPath: usingImport ? importPath.trim() : undefined,
-      password: password || undefined,
+    onRestore(buildRestoreRequest({
+      usingImport,
+      targetId: selected?.targetId,
+      snapshotId: preview.snapshotId,
+      importPath,
+      password,
       conflict: requestedConflict,
       conflicts: choices,
-      createRollbackSnapshot: rollback,
-      reinstallPlugins: reinstall,
-      includeSecrets: Boolean(preview.secretsAvailable && withSecrets),
-      approvedPluginSources: Object.entries(approvedSources).filter(([, v]) => v).map(([k]) => k),
-    })
+      rollback,
+      reinstall,
+      withSecrets,
+      secretsAvailable: Boolean(preview.secretsAvailable),
+      approvedSources,
+    }))
   }
 
   return (
@@ -324,6 +318,7 @@ export function RestorePanel({
               onChange={(e) => {
                 setSourceMode(e.target.value as SourceMode)
                 setAck(false)
+                onSourceChange?.()
               }}
               aria-label={tr('restore.sourceMode')}
             >
@@ -375,7 +370,7 @@ export function RestorePanel({
               >
                 <option value="">{tr('common.allTargets')}</option>
                 {targets.map((t) => (
-                  <option key={t.id} value={t.id}>{t.label}</option>
+                  <option key={t.id} value={t.id}>{targetName(t, tr)}</option>
                 ))}
                 {extraTargetIds.map((id) => (
                   <option key={id} value={id}>{id === ROLLBACK_TARGET_ID ? tr('restore.rollbackTarget') : id}</option>
@@ -412,7 +407,7 @@ export function RestorePanel({
                     }
                     description={
                       <>
-                        {targetLabel(s.targetId)} · {formatDateTime(s.createdAt)}（{relativeLabel(tr, s.createdAt)}） · {formatBytes(s.bytes)}
+                        {targetLabel(s.targetId)} · {formatDateTime(s.createdAt, locale)}（{relativeLabel(tr, s.createdAt)}） · {formatBytes(s.bytes)}
                         {s.notes ? ` · ${s.notes}` : ''}
                       </>
                     }
@@ -647,6 +642,7 @@ function PluginResults({
   retrying?: boolean
 }) {
   const tr = useT()
+  const locale = useLocale()
   const rows = result.pluginResults ?? []
   const failed = rows.filter((r) => r.status === 'failed').length
   return (

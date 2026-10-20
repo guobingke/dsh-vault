@@ -7,6 +7,7 @@
  * exposes the native chooser, a "System dialog…" action is offered too.
  */
 import { useCallback, useEffect, useState } from 'react'
+import { localizeError } from '../notices.js'
 import { useT } from '../i18n.js'
 import { IconFile, IconFolder } from './Icons.js'
 import { Banner, Button, Checkbox, Dialog, LoadingInline, Select, TextInput } from './ui.js'
@@ -140,7 +141,7 @@ export function PathPicker({ open, mode, fs, initialPath, defaultFileName, onSel
       setNewName('')
       await load(r.path)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(localizeError(err, tr))
     }
   }
 

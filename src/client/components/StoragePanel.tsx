@@ -1,7 +1,8 @@
+import { targetName } from '../lib/format.js'
 import { useId, useMemo, useRef, useState } from 'react'
 import type { SnapshotInfo, StorageKind, StorageTargetConfig } from '../../core/types.js'
 import { VaultApiError } from '../api.js'
-import { useT, type Translate } from '../i18n.js'
+import { useLocale, useT, type Translate } from '../i18n.js'
 import { formatDateTime, relativeLabel } from '../lib/format.js'
 import { hasStoredSecret, summarizeSnapshotsByTarget, targetKindLabel, targetLocation } from '../lib/targets.js'
 import {
@@ -253,6 +254,7 @@ function redactError(message: string, target: StorageTargetConfig): string {
 export function StoragePanel({ targets, busy, error, message, onUpsert, onDelete, snapshots, loading, testConnection, fs }: StoragePanelProps) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const tr = useT()
+  const locale = useLocale()
   const ids = useId()
   const [form, setForm] = useState<FormState | null>(null)
   const [editing, setEditing] = useState(false)
@@ -333,7 +335,7 @@ export function StoragePanel({ targets, busy, error, message, onUpsert, onDelete
                 <CardHead
                   title={
                     <span className="dv-inline">
-                      <DotText tone={test.status === 'fail' ? 'danger' : count > 0 ? 'ok' : 'neutral'}>{target.label}</DotText>
+                      <DotText tone={test.status === 'fail' ? 'danger' : count > 0 ? 'ok' : 'neutral'}>{targetName(target, tr)}</DotText>
                       <span className="dv-card-sub dv-mono">{target.id}</span>
                     </span>
                   }
@@ -352,7 +354,7 @@ export function StoragePanel({ targets, busy, error, message, onUpsert, onDelete
                   {tr('storage.snapshots', { count })}
                   {' · '}
                   {latest
-                    ? tr('storage.lastBackup', { time: `${formatDateTime(latest.createdAt)}（${relativeLabel(tr, latest.createdAt)}）` })
+                    ? tr('storage.lastBackup', { time: `${formatDateTime(latest.createdAt, locale)}（${relativeLabel(tr, latest.createdAt)}）` })
                     : tr('storage.noSnapshots')}
                 </span>
                 {test.status === 'ok' ? <span className="dv-small" style={{ color: 'var(--dv-ok-label)' }}>{tr('storage.testOk', { count: test.count })}</span> : null}

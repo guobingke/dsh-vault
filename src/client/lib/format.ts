@@ -94,3 +94,13 @@ export function passwordStrength(password: string): PasswordStrength {
   const level = Math.min(4, score) as 0 | 1 | 2 | 3 | 4
   return { level, score }
 }
+
+/** The default local target is created with the English label "Local folder"; show it in the UI language. */
+export function targetName(
+  target: { label: string; kind?: string } | undefined,
+  tr: (key: 'storage.kind.local') => string,
+  fallback = '',
+): string {
+  if (!target) return fallback
+  return target.kind === 'local' && target.label === 'Local folder' ? tr('storage.kind.local') : target.label
+}

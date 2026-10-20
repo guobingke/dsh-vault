@@ -48,6 +48,7 @@ import { isRemoteNonRegistrySpec } from './local-spec.js'
 import { captureSelfEntries, reapplySelfEntries } from './self-entry.js'
 import { packSnapshot, unpackSnapshot } from './snapshot-io.js'
 import { WriteJournal } from './safe-fs.js'
+import { isExtractedSnapshotDir, packExtractedSnapshot } from './extracted-snapshot.js'
 import { maskTargetSecrets, mergeTargetSecrets } from './target-secrets.js'
 import { expandUserPath } from './win-paths.js'
 import type { RemotePluginSource, UnfinishedRestore,
@@ -304,6 +305,8 @@ export class VaultService {
       pluginRestoreOrder: (patch.pluginRestoreOrder ?? this.settings.pluginRestoreOrder) === 'copy-first' ? 'copy-first' : 'source-first',
       schedule: { ...this.settings.schedule, ...patch.schedule, retention: { ...this.settings.schedule.retention, ...patch.schedule?.retention } },
     }
+    // A disabled schedule has no next run (covers PUT /settings and PUT /schedule alike).
+    if (!this.settings.schedule.enabled) delete this.settings.schedule.nextRunAt
     await saveSettings(this.dataDir, this.settings)
     this.armSchedule()
     return this.settings
@@ -431,6 +434,7 @@ export class VaultService {
         : undefined,
     })
     onProgress?.({ phase: 'upload', message: 'Saving snapshot', fraction: 0.1 })
+    await this.recordSnapshotMeta(packed.snapshotId, packed.encrypted && packed.manifest.includeSecrets === true)
 
     let targetId = req.targetId ?? (directory ? 'local-oneshot' : 'export-file')
     let remoteKey = packed.snapshotId
@@ -494,13 +498,14 @@ export class VaultService {
   }
 
   async listSnapshots(targetId?: string): Promise<SnapshotInfo[]> {
+    await this.loadSnapshotIndex()
     if (targetId === ROLLBACK_TARGET_ID) {
-      return this.ensureRollbackAdapter().list()
+      return this.withSnapshotMeta(await this.ensureRollbackAdapter().list())
     }
     const ids = targetId ? [targetId] : this.registry.list().map((t) => t.id)
     const all: SnapshotInfo[] = []
     if (targetId) {
-      all.push(...(await this.adapterFor(targetId).list()))
+      all.push(...this.withSnapshotMeta(await this.adapterFor(targetId).list()))
     } else {
       // Listing everything: one unreachable remote (bad token, offline WebDAV/S3) must not
       // hide the other targets' snapshots or break the overview.
@@ -520,7 +525,40 @@ export class VaultService {
       // Include private rollback snapshots when listing everything.
       all.push(...(await this.ensureRollbackAdapter().list()))
     }
-    return all.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+    return this.withSnapshotMeta(all).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+  }
+
+  /**
+   * Storage listings cannot see inside encrypted snapshots, so whether a snapshot carries
+   * credentials is recorded here when it is made (`snapshot-index.json` in the data folder).
+   * Snapshots made elsewhere and only encrypted ones can be unknown: they show as "no".
+   */
+  private get snapshotIndexPath(): string {
+    return join(this.dataDir, 'snapshot-index.json')
+  }
+
+  private snapshotIndex: Record<string, { includeSecrets: boolean }> | null = null
+
+  private async loadSnapshotIndex(): Promise<Record<string, { includeSecrets: boolean }>> {
+    if (this.snapshotIndex) return this.snapshotIndex
+    try {
+      const parsed = JSON.parse(await readFile(this.snapshotIndexPath, 'utf8')) as Record<string, { includeSecrets: boolean }>
+      this.snapshotIndex = parsed && typeof parsed === 'object' ? parsed : {}
+    } catch {
+      this.snapshotIndex = {}
+    }
+    return this.snapshotIndex
+  }
+
+  private async recordSnapshotMeta(id: string, includeSecrets: boolean): Promise<void> {
+    const index = await this.loadSnapshotIndex()
+    index[id] = { includeSecrets }
+    await writeFile(this.snapshotIndexPath, JSON.stringify(index) + '\n', { mode: 0o600 }).catch(() => {})
+  }
+
+  private withSnapshotMeta(list: SnapshotInfo[]): SnapshotInfo[] {
+    const index = this.snapshotIndex ?? {}
+    return list.map((s) => (index[s.id] ? { ...s, includeSecrets: s.encrypted && index[s.id]!.includeSecrets } : s))
   }
 
   async deleteSnapshot(targetId: string, snapshotId: string): Promise<void> {
@@ -903,6 +941,10 @@ export class VaultService {
         const bytes = await readFile(path)
         return { bytes, targetId: 'import-file', snapshotId: req.snapshotId ?? basename(path).replace(/\.(tar\.gz|dshvault)$/i, '') }
       }
+      if (info.isDirectory() && (await isExtractedSnapshotDir(path))) {
+        // An unpacked plaintext snapshot (manifest.json + files/), e.g. copied by hand.
+        return { bytes: await packExtractedSnapshot(path), targetId: 'import-folder', snapshotId: req.snapshotId ?? basename(path) }
+      }
       if (info.isDirectory()) {
         const adapter = new LocalStorageAdapter({
           kind: 'local',
@@ -912,7 +954,7 @@ export class VaultService {
         })
         const list = await adapter.list()
         const snapshotId = req.snapshotId ?? list[0]?.id
-        if (!snapshotId) throw new VaultUserError(`no snapshots in folder: ${path}`, 404, 'SNAPSHOT_NOT_FOUND')
+        if (!snapshotId) throw new VaultUserError(`no snapshot in folder: ${path} (expected .tar.gz / .dshvault files, or an extracted snapshot with manifest.json and files/)`, 404, 'SNAPSHOT_NOT_FOUND')
         const bytes = await adapter.get(snapshotId)
         return { bytes, targetId: 'import-folder', snapshotId }
       }
@@ -957,7 +999,9 @@ export class VaultService {
     const next = new Date(Date.now() + effectiveIntervalMs(schedule.intervalMinutes)).toISOString()
     // M-03: stopSchedule() during the backup must not be undone by persisting nextRunAt.
     if (this.scheduleStopped || generation !== this.scheduleGeneration) {
-      this.settings = { ...this.settings, schedule: { ...this.settings.schedule, lastRunAt: new Date().toISOString(), nextRunAt: next } }
+      const cur = this.settings.schedule
+      this.settings = { ...this.settings, schedule: { ...cur, lastRunAt: new Date().toISOString(), ...(cur.enabled ? { nextRunAt: next } : {}) } }
+      if (!cur.enabled) delete this.settings.schedule.nextRunAt
       await saveSettings(this.dataDir, this.settings).catch(() => {})
       return result
     }
@@ -1157,6 +1201,7 @@ export class VaultService {
       rollbackRemoves: input.rollbackRemoves,
       onProgress: input.onProgress,
     })
+    await this.recordSnapshotMeta(packed.snapshotId, packed.encrypted && packed.manifest.includeSecrets === true)
     await this.ensureRollbackAdapter().put(packed.snapshotId, packed.bytes)
     return packed.snapshotId
   }

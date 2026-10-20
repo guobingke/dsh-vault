@@ -11,4 +11,9 @@ export interface PasswordStrength {
 }
 /** Lightweight password strength heuristic (UI hint only). */
 export declare function passwordStrength(password: string): PasswordStrength;
+/** The default local target is created with the English label "Local folder"; show it in the UI language. */
+export declare function targetName(target: {
+    label: string;
+    kind?: string;
+} | undefined, tr: (key: 'storage.kind.local') => string, fallback?: string): string;
 //# sourceMappingURL=format.d.ts.map

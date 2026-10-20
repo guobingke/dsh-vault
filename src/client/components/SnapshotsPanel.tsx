@@ -1,6 +1,7 @@
+import { targetName } from '../lib/format.js'
 import { useId, useMemo, useState } from 'react'
 import type { SnapshotInfo, StorageTargetConfig } from '../../core/types.js'
-import { useT } from '../i18n.js'
+import { useLocale, useT } from '../i18n.js'
 import { formatBytes, formatDateTime, relativeLabel } from '../lib/format.js'
 import { newestFirst } from '../lib/targets.js'
 import {
@@ -57,6 +58,7 @@ export function SnapshotsPanel({
   onNavigateBackup,
 }: SnapshotsPanelProps) {
   const tr = useT()
+  const locale = useLocale()
   const ids = useId()
   const [targetFilter, setTargetFilter] = useState('')
   const [mode, setMode] = useState<ModeFilter>('all')
@@ -67,7 +69,7 @@ export function SnapshotsPanel({
   const [verifying, setVerifying] = useState(false)
   const [results, setResults] = useState<Record<string, VerifyState>>({})
 
-  const targetLabel = (id: string): string => targets.find((t) => t.id === id)?.label ?? id
+  const targetLabel = (id: string): string => targetName(targets.find((t) => t.id === id), tr, id)
 
   const sorted = useMemo(() => [...snapshots].sort(newestFirst), [snapshots])
 
@@ -131,7 +133,7 @@ export function SnapshotsPanel({
         <Select aria-label={tr('snapshots.filterTarget')} value={targetFilter} onChange={(e) => setTargetFilter(e.target.value)}>
           <option value="">{tr('common.allTargets')}</option>
           {targets.map((t) => (
-            <option key={t.id} value={t.id}>{t.label}</option>
+            <option key={t.id} value={t.id}>{targetName(t, tr)}</option>
           ))}
         </Select>
         <Segmented
@@ -180,7 +182,7 @@ export function SnapshotsPanel({
                   <div className="dv-list-main">
                     <span className="dv-list-title dv-mono" title={s.id}>{s.id}</span>
                     <span className="dv-card-sub">
-                      {targetLabel(s.targetId)} · {formatDateTime(s.createdAt)}（{relativeLabel(tr, s.createdAt)}） · {formatBytes(s.bytes)}
+                      {targetLabel(s.targetId)} · {formatDateTime(s.createdAt, locale)}（{relativeLabel(tr, s.createdAt)}） · {formatBytes(s.bytes)}
                     </span>
                     <span className="dv-tag-list" style={{ marginTop: 4 }}>
                       <Tag tone={s.encrypted ? 'ok' : 'neutral'}>{s.encrypted ? tr('common.encrypted') : tr('common.plaintext')}</Tag>
@@ -244,7 +246,7 @@ export function SnapshotsPanel({
             <dt>{tr('common.size')}</dt>
             <dd>{formatBytes(deleteTarget.bytes)}</dd>
             <dt>{tr('common.createdAt')}</dt>
-            <dd>{formatDateTime(deleteTarget.createdAt)}</dd>
+            <dd>{formatDateTime(deleteTarget.createdAt, locale)}</dd>
             {deleteTarget.notes ? (
               <>
                 <dt>{tr('common.notes')}</dt>

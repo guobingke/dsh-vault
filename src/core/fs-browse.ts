@@ -123,5 +123,5 @@ export async function createDirectory(parentInput: string, name: string): Promis
 
 export function isSnapshotArchiveName(name: string): boolean {
   const base = basename(name).toLowerCase()
-  return base.endsWith('.tar.gz') || base.endsWith('.dshvault') || base.endsWith('.json')
+  return base.endsWith('.tar.gz') || base.endsWith('.dshvault')
 }

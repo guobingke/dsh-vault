@@ -1,4 +1,5 @@
 import { VaultApi } from './api.js';
+import type { RestoreRequestBody } from './lib/requests.js';
 import type { BackupCategory } from '../core/types.js';
 import './theme.css';
 export type VaultTab = 'overview' | 'backup' | 'restore' | 'storage' | 'snapshots' | 'schedule';
@@ -13,16 +14,7 @@ export interface BackupInput {
     notes?: string;
     categories?: BackupCategory[];
 }
-export interface RestoreInput {
-    targetId?: string;
-    snapshotId?: string;
-    importPath?: string;
-    password?: string;
-    conflict: 'keep-current' | 'use-backup';
-    conflicts?: Record<string, 'keep-current' | 'use-backup'>;
-    reinstallPlugins?: boolean;
-    createRollbackSnapshot?: boolean;
-}
+export type RestoreInput = RestoreRequestBody;
 export interface PreviewInput {
     targetId?: string;
     snapshotId?: string;

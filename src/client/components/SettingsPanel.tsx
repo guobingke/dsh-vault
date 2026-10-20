@@ -1,3 +1,4 @@
+import { targetName } from '../lib/format.js'
 import { useEffect, useId, useMemo, useState } from 'react'
 import type { KdfAlgorithm, ScheduleConfig, StorageTargetConfig, VaultSettings } from '../../core/types.js'
 import { useT } from '../i18n.js'
@@ -160,7 +161,7 @@ export function SettingsPanel({
           htmlFor={`${ids}-interval`}
           description={schedule.enabled
             ? (schedule.nextRunAt
-                ? tr('schedule.interval.desc', { next: `${formatDateTime(schedule.nextRunAt)}（${relativeLabel(tr, schedule.nextRunAt)}）` })
+                ? tr('schedule.interval.desc', { next: `${formatDateTime(schedule.nextRunAt, locale)}（${relativeLabel(tr, schedule.nextRunAt)}）` })
                 : scheduleLabel(locale, schedule.intervalMinutes))
             : undefined}
         >
@@ -222,7 +223,7 @@ export function SettingsPanel({
               {targets.length === 0 ? <option value="">—</option> : null}
               {scheduleTargetMissing ? <option value={schedule.targetId}>{schedule.targetId}</option> : null}
               {targets.map((t) => (
-                <option key={t.id} value={t.id}>{t.label} · {targetKindLabel(t, tr)}</option>
+                <option key={t.id} value={t.id}>{targetName(t, tr)} · {targetKindLabel(t, tr)}</option>
               ))}
             </Select>
           }
@@ -257,7 +258,7 @@ export function SettingsPanel({
           control={
             <span className="dv-muted">
               {schedule.lastRunAt
-                ? `${formatDateTime(schedule.lastRunAt)}（${relativeLabel(tr, schedule.lastRunAt)}）`
+                ? `${formatDateTime(schedule.lastRunAt, locale)}（${relativeLabel(tr, schedule.lastRunAt)}）`
                 : tr('common.never')}
             </span>
           }
@@ -324,7 +325,7 @@ export function SettingsPanel({
             >
               <option value="">{tr('common.none')}</option>
               {targets.map((t) => (
-                <option key={t.id} value={t.id}>{t.label}</option>
+                <option key={t.id} value={t.id}>{targetName(t, tr)}</option>
               ))}
             </Select>
           }
