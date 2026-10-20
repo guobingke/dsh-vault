@@ -135,7 +135,13 @@ export async function pluginPackagePresent(dshHome: string, profile: string, nam
  * Spawn without a shell whenever possible: cmd.exe mangles quoting and prints GBK on
  * Chinese Windows. `.cmd` / `.bat` shims still need it.
  */
-function defaultRunCommand(
+/** Environment that makes npm / pnpm skip lifecycle scripts (pnpm reads npm_config_*; newer pnpm also pnpm_config_*). */
+export const NO_SCRIPTS_ENV: Readonly<Record<string, string>> = Object.freeze({
+  npm_config_ignore_scripts: 'true',
+  pnpm_config_ignore_scripts: 'true',
+})
+
+export function defaultRunCommand(
   command: string,
   args: string[],
   opts: { cwd?: string; env?: NodeJS.ProcessEnv },
@@ -330,6 +336,9 @@ async function installerEnv(deps: PluginInstallDeps, pnpm?: PnpmInvocationLike):
     else env[k] = v
   }
   env.DSH_HOME = deps.dshHome
+  // L-03: belt and braces next to --ignore-scripts, and the only guard for `dsh plugin add`
+  // (the dsh CLI runs pnpm with its own process env, which inherits these).
+  Object.assign(env, NO_SCRIPTS_ENV)
   const gitDir = deps.gitDir === undefined ? await findGitDir(base) : deps.gitDir
   if (gitDir) {
     const delim = win ? ';' : ':'
@@ -635,36 +644,6 @@ async function materializeProfile(
   let result = await runPnpm(deps, pnpm, args, profileDir)
   if (!result.ok && hasLock) result = await runPnpm(deps, pnpm, ['install', '--ignore-scripts'], profileDir)
   return { ok: result.ok, detail: result.detail }
-}
-
-async function installViaPluginManager(
-  manager: PluginManagerLike,
-  spec: string,
-  deps: PluginInstallDeps,
-): Promise<{ ok: boolean; detail: string; already?: boolean }> {
-  try {
-    const outcome = await manager.installBundle(spec, {
-      saveExact: !spec.startsWith('link:') && !spec.startsWith('file:'),
-      registry: deps.preferredRegistry === undefined ? NPMMIRROR : deps.preferredRegistry,
-      enabled: true,
-    })
-    if (outcome.error?.code === 'already-installed') {
-      return { ok: true, detail: 'already-installed in profile manifest', already: true }
-    }
-    if (outcome.application === 'failed' || outcome.error) {
-      const detail = [outcome.error?.code, outcome.error?.message, outcome.error?.diagnostic, outcome.packageResult?.output]
-        .filter(Boolean)
-        .join('\n') || 'installBundle failed'
-      return { ok: false, detail: `pluginManager: ${detail}` }
-    }
-    return { ok: true, detail: outcome.application ?? 'installed' }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (/already-installed/i.test(message)) {
-      return { ok: true, detail: message, already: true }
-    }
-    return { ok: false, detail: `pluginManager: ${message}` }
-  }
 }
 
 /** `pnpm add` straight into a profile with the host's (or Desktop's bundled) pnpm. */
@@ -1141,7 +1120,6 @@ export async function reinstallMissingPlugins(
     bundledDeps.set(target.abs, await installBundledSourceDeps(target.abs, deps))
   }
 
-  const managerProfile = deps.pluginManager?.profile?.name ?? deps.activeProfile
   let restartRequired = false
   let pluginIndex = 0
   for (const plugin of actionable) {
@@ -1250,21 +1228,9 @@ export async function reinstallMissingPlugins(
       }
     }
 
-    // a) Host pluginManager — only for the profile it manages.
-    if (!ok && deps.pluginManager && profile === managerProfile) {
-      const viaMgr = await installViaPluginManager(deps.pluginManager, spec, deps)
-      if (viaMgr.already) {
-        await materializeProfile(profileDir, deps)
-        ok = await pluginPackagePresent(deps.dshHome, profile, plugin.name)
-        how = 'materialized via pnpm after already-installed'
-        if (!ok) logs.push(viaMgr.detail)
-      } else if (viaMgr.ok) {
-        ok = true
-        how = viaMgr.detail
-      } else {
-        logs.push(viaMgr.detail)
-      }
-    }
+    // L-03: the host pluginManager.installBundle() runs `pnpm add` without --ignore-scripts and
+    // with an environment dsh-vault cannot extend, so restores never install through it. Every
+    // install below runs pnpm (or the dsh CLI) with --ignore-scripts and npm_config_ignore_scripts.
     // b) pnpm in the profile dir (any profile; host / Desktop-bundled pnpm).
     if (!ok) {
       const viaPnpm = await installViaPnpm(spec, plugin.name, kind, profileDir, deps)

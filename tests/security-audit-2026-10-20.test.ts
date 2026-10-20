@@ -478,7 +478,7 @@ describe('H-06 / L-03 snapshot plugin sources need approval; installs ignore scr
     const { home, calls, service, snap } = await setup()
     try {
       const preview = await service.previewRestore({ importPath: snap })
-      assert.deepEqual(preview.remotePluginSources?.map((r) => r.key), ['web:evil'])
+      assert.deepEqual(preview.remotePluginSources?.map((r) => r.nameKey), ['web:evil'])
       const r = await service.restore({ importPath: snap, conflict: 'use-backup' })
       assert.ok(!calls.some((a) => a.join(' ').includes('attacker.example')), JSON.stringify(calls))
       assert.equal(r.pluginResults?.find((p) => p.name === 'evil')?.reason, 'source-not-approved')

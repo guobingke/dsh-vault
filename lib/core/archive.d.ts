@@ -21,6 +21,11 @@ export interface ArchiveLimits {
     /** Max entry path length in bytes. */
     maxPathLength: number;
 }
+/**
+ * Default uncompressed-size limit: a quarter of installed memory, between 256 MiB and
+ * 2 GiB − 1 (unpacking is in memory, so the limit follows what the machine can hold).
+ */
+export declare function memoryBasedArchiveLimit(totalMem?: number): number;
 export declare function defaultArchiveLimits(): ArchiveLimits;
 export declare class ArchiveLimitError extends Error {
     readonly code = "ARCHIVE_LIMIT";

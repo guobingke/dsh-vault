@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
-import { spawn } from 'node:child_process'
+import { runDshPluginAdd } from './dsh-add.js'
 import { VaultService } from '../core/vault-service.js'
 import { restoreExitCode, restoreFailureSummary } from './exit.js'
 import { resolveAgentsHome, resolveDshHome } from '../core/paths.js'
@@ -121,26 +121,6 @@ function getFlag(args: string[], name: string): string | undefined {
 
 function has(args: string[], name: string): boolean {
   return args.includes(name)
-}
-
-function runDshPluginAdd(profile: string, packageSpec: string, dshHome?: string): Promise<{ ok: boolean; detail: string }> {
-  return new Promise((resolvePromise) => {
-    const child = spawn('dsh', ['plugin', '--profile', profile, 'add', packageSpec], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // Honor --home: the child dsh must install into the same DSH_HOME.
-      env: dshHome ? { ...process.env, DSH_HOME: dshHome } : process.env,
-      shell: process.platform === 'win32',
-    })
-    let detail = ''
-    child.stdout?.on('data', (c: Buffer) => {
-      detail += c.toString('utf8')
-    })
-    child.stderr?.on('data', (c: Buffer) => {
-      detail += c.toString('utf8')
-    })
-    child.on('error', (err) => resolvePromise({ ok: false, detail: err.message }))
-    child.on('close', (code) => resolvePromise({ ok: code === 0, detail: detail.slice(0, 1200) }))
-  })
 }
 
 async function runSetup(args: string[], home: string): Promise<number> {

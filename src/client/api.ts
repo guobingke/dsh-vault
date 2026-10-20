@@ -1,4 +1,5 @@
 import type {
+  UnfinishedRestore,
   BackupCategory,
   BackupResult,
   ConflictStrategy,
@@ -79,6 +80,10 @@ export interface VaultStatusResponse {
   recentSnapshots: SnapshotInfo[]
   /** Plugin data folders/files under $DSH_HOME included in backups (newer hosts). */
   pluginDataEntries?: string[]
+  /** H-03: a restore interrupted by a crash (newer hosts). */
+  unfinishedRestore?: UnfinishedRestore | null
+  /** M-05: largest uncompressed snapshot this machine unpacks (newer hosts). */
+  archiveLimitBytes?: number
 }
 
 export interface DetectedPluginView {
@@ -136,6 +141,10 @@ export class VaultApi {
 
   status(): Promise<VaultStatusResponse> {
     return request('/status')
+  }
+
+  dismissUnfinishedRestore(): Promise<{ ok: boolean }> {
+    return request('/restore/unfinished/dismiss', { method: 'POST', body: '{}' })
   }
 
   getSettings(): Promise<VaultSettings> {

@@ -7,7 +7,7 @@ import { RestorePanel } from './components/RestorePanel.js'
 import { StoragePanel } from './components/StoragePanel.js'
 import { SnapshotsPanel, type VerifyResult } from './components/SnapshotsPanel.js'
 import { SettingsPanel } from './components/SettingsPanel.js'
-import { SectionHead, SectionTabs } from './components/ui.js'
+import { Banner, Button, SectionHead, SectionTabs } from './components/ui.js'
 import type { FsBrowser } from './components/PathPicker.js'
 import { I18nContext, detectInitialLocale, normalizeLocale, translate, type Locale, type MessageKey } from './i18n.js'
 import { formatBytes } from './lib/format.js'
@@ -306,6 +306,45 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
           {/* No fixed id here: panels may mount their own regions with ids. */}
           <main tabIndex={-1} className="dv-section-body">
             {job ? <JobProgress job={job} /> : null}
+            {status?.unfinishedRestore ? (
+              <Banner
+                tone="error"
+                role="alert"
+                title={t('unfinished.title')}
+                actions={
+                  <>
+                    {status.unfinishedRestore.rollbackSnapshotId ? (
+                      <Button
+                        variant="danger"
+                        disabled={busy}
+                        onClick={() => {
+                          const u = status.unfinishedRestore!
+                          setRestorePreset({ targetId: u.rollbackTargetId ?? 'local-rollback', snapshotId: u.rollbackSnapshotId!, nonce: Date.now() })
+                          setPreview(null)
+                          navigate('restore')
+                        }}
+                      >
+                        {t('unfinished.rollback')}
+                      </Button>
+                    ) : null}
+                    <Button
+                      disabled={busy}
+                      onClick={() => {
+                        void api.dismissUnfinishedRestore().then(() => refresh(), () => refresh())
+                      }}
+                    >
+                      {t('unfinished.dismiss')}
+                    </Button>
+                  </>
+                }
+              >
+                {t(status.unfinishedRestore.rollbackSnapshotId ? 'unfinished.body' : 'unfinished.bodyNoRollback', {
+                  snapshot: status.unfinishedRestore.snapshotId,
+                  time: status.unfinishedRestore.startedAt,
+                })}
+                {status.unfinishedRestore.rollbackEncrypted ? ' ' + t('unfinished.encrypted') : ''}
+              </Banner>
+            ) : null}
             {tab === 'overview' ? (
               <Overview
                 status={status}
@@ -364,6 +403,7 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
                 loading={loading}
                 initialTargetId={restorePreset?.targetId}
                 initialSnapshotId={restorePreset?.snapshotId}
+                archiveLimitBytes={status?.archiveLimitBytes}
                 onNavigateStorage={() => navigate('storage')}
                 onPreview={(input) => {
                   setBusy(true)

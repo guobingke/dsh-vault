@@ -187,6 +187,12 @@ export function buildVaultRoutes(service: VaultService, guard: RouteGuard = {}):
         throw new ApiError('targetId+snapshotId or importPath is required', 400)
       }
       await checkImportPath(service, body)
+      // H-06: from the browser only source-bound approvals (`profile:name#hash` from preview) count.
+      if (body.approvedPluginSources !== undefined) {
+        body.approvedPluginSources = Array.isArray(body.approvedPluginSources)
+          ? body.approvedPluginSources.filter((k): k is string => typeof k === 'string' && /^[^#\s]+:[^#\s]+#[0-9a-f]{16}$/.test(k))
+          : []
+      }
       writeJson(res, 202, publicJob(startJob(() => service.startRestoreJob(body))))
     }),
   )
@@ -214,6 +220,14 @@ export function buildVaultRoutes(service: VaultService, guard: RouteGuard = {}):
       }
       const result = await service.retryFailedPlugins(body)
       writeJson(res, result.ok === false ? 409 : 200, publicResult(result))
+    }),
+  )
+
+  routes.push(
+    endpoint({ path: `${API_PREFIX}/restore/unfinished/dismiss`, methods: ['POST'] }, async (req, res) => {
+      await readJsonBody<Record<string, never>>(req)
+      await service.dismissUnfinishedRestore()
+      writeJson(res, 200, { ok: true })
     }),
   )
 

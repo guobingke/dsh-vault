@@ -71,6 +71,8 @@ export interface RestorePanelProps {
   /** Preselect a snapshot (e.g. from the Snapshots tab). */
   initialTargetId?: string
   initialSnapshotId?: string
+  /** M-05: largest uncompressed snapshot the host unpacks. */
+  archiveLimitBytes?: number
   onNavigateStorage?: () => void
   /** Filesystem access for the Browse… dialog (in-app browser + optional native chooser). */
   fs?: FsBrowser
@@ -116,6 +118,7 @@ export function RestorePanel({
   targets,
   snapshots,
   preview,
+  archiveLimitBytes,
   busy,
   message,
   error,
@@ -208,7 +211,7 @@ export function RestorePanel({
     setDiffFilter('all')
     // Imported files are untrusted: their git/URL plugin sources start unchecked.
     const next: Record<string, boolean> = {}
-    for (const r of preview?.remotePluginSources ?? []) next[r.key] = !usingImport
+    for (const r of preview?.remotePluginSources ?? []) next[r.key] = !usingImport && r.trusted !== false
     setApprovedSources(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewKey])
@@ -330,7 +333,7 @@ export function RestorePanel({
           </SettingRow>
         </Rows>
         {usingImport ? (
-          <Field label={tr('restore.importPath')} htmlFor="dv-restore-import" hint={tr('restore.importPathHint')}>
+          <Field label={tr('restore.importPath')} htmlFor="dv-restore-import" hint={tr('restore.importPathHint') + (archiveLimitBytes ? ' ' + tr('restore.archiveLimit', { size: formatBytes(archiveLimitBytes) }) : '')}>
             <div style={{ display: 'flex', gap: 8 }}>
               <TextInput
                 id="dv-restore-import"
@@ -589,7 +592,7 @@ export function RestorePanel({
                 <Checkbox
                   key={r.key}
                   title={`${r.name} (${r.profile})`}
-                  description={r.source}
+                  description={r.trusted === false ? `${r.source} — ${tr('restore.untrustedSource')}` : r.source}
                   checked={Boolean(approvedSources[r.key])}
                   onChange={() => setApprovedSources((prev) => ({ ...prev, [r.key]: !prev[r.key] }))}
                 />

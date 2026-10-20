@@ -1,3 +1,4 @@
+import { totalmem } from 'node:os'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { sha256Buffer } from './checksum.js'
 
@@ -156,9 +157,18 @@ function envLimit(name: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback
 }
 
+/**
+ * Default uncompressed-size limit: a quarter of installed memory, between 256 MiB and
+ * 2 GiB − 1 (unpacking is in memory, so the limit follows what the machine can hold).
+ */
+export function memoryBasedArchiveLimit(totalMem: number = totalmem()): number {
+  const MiB = 1024 * 1024
+  return Math.max(256 * MiB, Math.min(2 * 1024 * MiB - 1, Math.floor(totalMem / 4)))
+}
+
 export function defaultArchiveLimits(): ArchiveLimits {
   return {
-    maxTotalBytes: envLimit('DSH_VAULT_MAX_ARCHIVE_BYTES', 2 * 1024 * 1024 * 1024 - 1),
+    maxTotalBytes: envLimit('DSH_VAULT_MAX_ARCHIVE_BYTES', memoryBasedArchiveLimit()),
     maxEntryBytes: envLimit('DSH_VAULT_MAX_ENTRY_BYTES', 512 * 1024 * 1024),
     maxEntries: envLimit('DSH_VAULT_MAX_ENTRIES', 200_000),
     maxPathLength: 4096,

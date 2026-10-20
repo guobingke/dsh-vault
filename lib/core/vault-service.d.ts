@@ -2,7 +2,7 @@ import { JobRegistry, type JobState } from './progress.js';
 import { type DetectedPlugin, type RegistryLookup } from './plugin-copies.js';
 import { type PluginInstallDeps, type PluginManagerLike, type PnpmInvocationLike } from './plugin-install.js';
 import { PathPolicy, type ApiPathUse } from './path-policy.js';
-import type { BackupRequest, BackupResult, ProgressCallback, RestorePreview, RestoreRequest, RestoreResult, ScheduleConfig, SnapshotInfo, StorageTargetConfig, VaultManifest, VaultSettings } from './types.js';
+import type { RemotePluginSource, UnfinishedRestore, BackupRequest, BackupResult, ProgressCallback, RestorePreview, RestoreRequest, RestoreResult, ScheduleConfig, SnapshotInfo, StorageTargetConfig, VaultManifest, VaultSettings } from './types.js';
 /** Native directory chooser; dsh's implementation requires a signal. */
 export type PickDirectoryFn = (signal: AbortSignal) => Promise<string | null>;
 export interface VaultServiceOptions {
@@ -142,6 +142,16 @@ export declare class VaultService {
         conflict?: RestoreRequest['conflict'];
     }): Promise<RestorePreview>;
     restore(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult>;
+    private restoreMarkerWritten;
+    /** H-03 crash marker: present only while files are being restored, so it survives a host crash. */
+    get restoreMarkerPath(): string;
+    /**
+     * A restore that started writing files but never finished (the host crashed or was killed).
+     * Null while a restore is running in this or another live process.
+     */
+    unfinishedRestore(): Promise<UnfinishedRestore | null>;
+    /** Forget an unfinished-restore notice (after rolling back, or when the user keeps the result). */
+    dismissUnfinishedRestore(): Promise<void>;
     private restoreInner;
     private installDeps;
     private registryIntegrity;
@@ -195,6 +205,10 @@ export declare class VaultService {
         recentSnapshots: SnapshotInfo[];
         /** Plugin-owned entries directly under $DSH_HOME that a backup includes. */
         pluginDataEntries: string[];
+        /** H-03: a restore that was interrupted by a crash (null when none). */
+        unfinishedRestore: UnfinishedRestore | null;
+        /** M-05: largest uncompressed snapshot this machine will unpack. */
+        archiveLimitBytes: number;
     }>;
     private adapterFor;
     private ensureRollbackDir;
@@ -219,13 +233,11 @@ export declare const MAX_TIMER_MS: number;
 export declare const MAX_IMPORT_BYTES: number;
 export declare function clampIntervalMinutes(intervalMinutes: number): number;
 export declare function effectiveIntervalMs(intervalMinutes: number): number;
+export declare function isTrustedPluginSource(spec: string): boolean;
+/** Approval key bound to one exact source string. */
+export declare function pluginSourceKey(profile: string, name: string, spec: string): string;
 /** Plugins whose install would fetch a git / tarball / URL source (H-06), credentials stripped for display. */
-export declare function remotePluginSources(records: VaultManifest['plugins'], activeProfile: string): Array<{
-    key: string;
-    name: string;
-    profile: string;
-    source: string;
-}>;
+export declare function remotePluginSources(records: VaultManifest['plugins'], activeProfile: string): RemotePluginSource[];
 /** Id of the private local rollback folder (not a user-editable storage target). */
 export declare const ROLLBACK_TARGET_ID = "local-rollback";
 /** Write a sidecard meta file next to a local snapshot (optional helper for CLI). */

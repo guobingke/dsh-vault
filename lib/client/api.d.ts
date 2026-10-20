@@ -1,4 +1,4 @@
-import type { BackupCategory, BackupResult, ConflictStrategy, KdfAlgorithm, RestorePreview, RestoreResult, ScheduleConfig, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js';
+import type { UnfinishedRestore, BackupCategory, BackupResult, ConflictStrategy, KdfAlgorithm, RestorePreview, RestoreResult, ScheduleConfig, SnapshotInfo, StorageTargetConfig, VaultSettings } from '../core/types.js';
 import type { FsListingView } from './components/PathPicker.js';
 /** Per-path overrides for the global conflict strategy (keys are snapshot-relative paths). */
 export type RestoreConflicts = Record<string, ConflictStrategy>;
@@ -20,6 +20,10 @@ export interface VaultStatusResponse {
     recentSnapshots: SnapshotInfo[];
     /** Plugin data folders/files under $DSH_HOME included in backups (newer hosts). */
     pluginDataEntries?: string[];
+    /** H-03: a restore interrupted by a crash (newer hosts). */
+    unfinishedRestore?: UnfinishedRestore | null;
+    /** M-05: largest uncompressed snapshot this machine unpacks (newer hosts). */
+    archiveLimitBytes?: number;
 }
 export interface DetectedPluginView {
     key: string;
@@ -73,6 +77,9 @@ export declare class VaultApi {
     }>;
     listPlugins(checkRegistry?: boolean): Promise<PluginListResponse>;
     status(): Promise<VaultStatusResponse>;
+    dismissUnfinishedRestore(): Promise<{
+        ok: boolean;
+    }>;
     getSettings(): Promise<VaultSettings>;
     updateSettings(patch: Partial<VaultSettings>): Promise<VaultSettings>;
     listTargets(): Promise<{

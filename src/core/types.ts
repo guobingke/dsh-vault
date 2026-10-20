@@ -214,7 +214,21 @@ export interface RestorePreview {
    * Plugins whose install would fetch a git / tarball / URL source (H-06). Each needs an
    * explicit approval (`RestoreRequest.approvedPluginSources`); `source` has credentials stripped.
    */
-  remotePluginSources?: Array<{ key: string; name: string; profile: string; source: string }>
+  remotePluginSources?: RemotePluginSource[]
+}
+
+/** One plugin whose restore would fetch a git / tarball / URL source (H-06). */
+export interface RemotePluginSource {
+  /** Approval key bound to this exact source: `profile:name#<sha256(source) prefix>`. */
+  key: string
+  /** Name-only key (`profile:name`), accepted from the CLI's --allow-plugin-source. */
+  nameKey: string
+  name: string
+  profile: string
+  /** Source with credentials stripped. */
+  source: string
+  /** Hosted on the npm registry / npmmirror or github.com. Anything else is flagged. */
+  trusted: boolean
 }
 
 export interface RestoreRequest {
@@ -250,8 +264,9 @@ export interface RestoreRequest {
   /** Plugins with a saved copy: try the copy first, or the source first (default: settings). */
   pluginRestoreOrder?: PluginRestoreOrder
   /**
-   * `profile:name` keys whose git / tarball / URL source may be fetched (H-06). Others
-   * install from the snapshot's saved copy when there is one, else are skipped.
+   * Approval keys for git / tarball / URL sources (H-06): `profile:name#hash` as returned by
+   * preview (bound to the exact source; the HTTP API only accepts this form), or `profile:name`
+   * / `*` from the CLI. Others install from the snapshot's saved copy when there is one, else are skipped.
    */
   approvedPluginSources?: string[]
 }
@@ -436,4 +451,15 @@ export interface VaultPluginConfig {
   dataDir?: string
   targets?: StorageTargetConfig[]
   settings?: Partial<VaultSettings>
+}
+
+/** H-03: marker left by a restore that started writing files and never finished. */
+export interface UnfinishedRestore {
+  snapshotId: string
+  startedAt: string
+  /** Pre-restore rollback snapshot to restore from (absent when none was made). */
+  rollbackSnapshotId?: string
+  rollbackTargetId?: string
+  /** The rollback snapshot is encrypted with the restore password. */
+  rollbackEncrypted: boolean
 }

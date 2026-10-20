@@ -80,6 +80,20 @@ export declare function localSourcePath(source: string): string | null;
 export declare function bundledSourceRel(profile: string, name: string): string;
 export declare function installedPackageVersion(pkgDir: string): Promise<string | undefined>;
 export declare function pluginPackagePresent(dshHome: string, profile: string, name: string): Promise<boolean>;
+/**
+ * Spawn without a shell whenever possible: cmd.exe mangles quoting and prints GBK on
+ * Chinese Windows. `.cmd` / `.bat` shims still need it.
+ */
+/** Environment that makes npm / pnpm skip lifecycle scripts (pnpm reads npm_config_*; newer pnpm also pnpm_config_*). */
+export declare const NO_SCRIPTS_ENV: Readonly<Record<string, string>>;
+export declare function defaultRunCommand(command: string, args: string[], opts: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+}): Promise<{
+    ok: boolean;
+    detail: string;
+    code: number | null;
+}>;
 /** Candidate `resources` folders of an installed DeepSeek Harness Desktop. */
 export declare function desktopResourceRoots(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string[];
 type Exists = (p: string) => Promise<boolean>;

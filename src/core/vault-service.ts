@@ -1,4 +1,6 @@
-import { chmod, lstat, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { chmod, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { defaultArchiveLimits } from './archive.js'
 import { basename, dirname, join } from 'node:path'
 import { collectBackupFiles, extractPluginsFromProfilePackage } from './collect.js'
 import { listPluginDataEntries } from './home-scope.js'
@@ -48,7 +50,7 @@ import { packSnapshot, unpackSnapshot } from './snapshot-io.js'
 import { WriteJournal } from './safe-fs.js'
 import { maskTargetSecrets, mergeTargetSecrets } from './target-secrets.js'
 import { expandUserPath } from './win-paths.js'
-import type {
+import type { RemotePluginSource, UnfinishedRestore,
   BackupRequest,
   BackupResult,
   ConflictStrategy,
@@ -564,10 +566,48 @@ export class VaultService {
   async restore(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
     return this.lock.run('restore', async () => {
       const started = Date.now()
-      const out = await this.restoreInner(req, onProgress)
-      out.durationMs = Date.now() - started
-      return out
+      this.restoreMarkerWritten = false
+      try {
+        const out = await this.restoreInner(req, onProgress)
+        out.durationMs = Date.now() - started
+        return out
+      } finally {
+        // Finished (applied, or rolled back in-process): the marker only survives a crash.
+        if (this.restoreMarkerWritten) await rm(this.restoreMarkerPath, { force: true }).catch(() => {})
+        this.restoreMarkerWritten = false
+      }
     })
+  }
+
+  private restoreMarkerWritten = false
+
+  /** H-03 crash marker: present only while files are being restored, so it survives a host crash. */
+  get restoreMarkerPath(): string {
+    return join(this.dataDir, 'restore-in-progress.json')
+  }
+
+  /**
+   * A restore that started writing files but never finished (the host crashed or was killed).
+   * Null while a restore is running in this or another live process.
+   */
+  async unfinishedRestore(): Promise<UnfinishedRestore | null> {
+    let info: UnfinishedRestore
+    try {
+      info = JSON.parse(await readFile(this.restoreMarkerPath, 'utf8')) as UnfinishedRestore
+    } catch {
+      return null
+    }
+    if (!info || typeof info.snapshotId !== 'string') return null
+    if (this.lock.current() === 'restore') return null
+    const owner = await this.lock.read()
+    if (owner && !(await this.lock.abandoned(owner))) return null
+    return info
+  }
+
+  /** Forget an unfinished-restore notice (after rolling back, or when the user keeps the result). */
+  async dismissUnfinishedRestore(): Promise<void> {
+    if (this.lock.current() === 'restore') return
+    await rm(this.restoreMarkerPath, { force: true })
   }
 
   private async restoreInner(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
@@ -596,6 +636,7 @@ export class VaultService {
 
     let rollbackSnapshotId: string | undefined
     let rollbackTargetId: string | undefined
+    let rollbackEncrypted = false
     if (req.createRollbackSnapshot !== false) {
       const willTouchSecrets = await this.restoreWillApplySecrets(
         unpacked.manifest,
@@ -613,6 +654,7 @@ export class VaultService {
             'PASSWORD_REQUIRED',
           )
         }
+        rollbackEncrypted = true
         rollbackSnapshotId = await this.createPrivateRollbackSnapshot({
           includeSecrets: true,
           encrypt: true,
@@ -632,6 +674,15 @@ export class VaultService {
       }
       rollbackTargetId = ROLLBACK_TARGET_ID
     }
+
+    const marker: UnfinishedRestore = {
+      snapshotId,
+      startedAt: new Date().toISOString(),
+      ...(rollbackSnapshotId ? { rollbackSnapshotId, rollbackTargetId: ROLLBACK_TARGET_ID } : {}),
+      rollbackEncrypted,
+    }
+    await writeFile(this.restoreMarkerPath, JSON.stringify(marker, null, 2) + '\n', { mode: 0o600 })
+    this.restoreMarkerWritten = true
 
     const selfBefore = await captureSelfEntries(this.dshHome)
     const journal = new WriteJournal([this.dshHome, this.agentsHome])
@@ -713,8 +764,14 @@ export class VaultService {
     const restoreOrder = order ?? this.settings.pluginRestoreOrder ?? 'source-first'
     // H-06: a git / tarball / URL source is fetched only when the user approved that plugin.
     const blockedSources = new Set<string>()
+    const untrustedApproved: string[] = []
     for (const r of remotePluginSources(records, this.activeProfile)) {
-      if (!approvedSources?.has(r.key) && !approvedSources?.has('*')) blockedSources.add(r.key)
+      const ok = approvedSources?.has(r.key) || approvedSources?.has(r.nameKey) || approvedSources?.has('*')
+      if (!ok) blockedSources.add(r.nameKey)
+      else if (!r.trusted) untrustedApproved.push(`${r.name} (${r.source})`)
+    }
+    if (untrustedApproved.length) {
+      result.manualActions.push(`Plugins fetched from sources outside npm / github.com (approved by you): ${untrustedApproved.join(', ')}`)
     }
     const { results: raw, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only, restoreOrder, onProgress, blockedSources })
     const results = raw.map((r) => ({ ...r, ...(r.detail ? { detail: redactText(r.detail) } : {}), ...(r.log ? { log: redactText(r.log) } : {}), ...(r.source ? { source: redactText(r.source) } : {}) }))
@@ -1000,6 +1057,10 @@ export class VaultService {
     recentSnapshots: SnapshotInfo[]
     /** Plugin-owned entries directly under $DSH_HOME that a backup includes. */
     pluginDataEntries: string[]
+    /** H-03: a restore that was interrupted by a crash (null when none). */
+    unfinishedRestore: UnfinishedRestore | null
+    /** M-05: largest uncompressed snapshot this machine will unpack. */
+    archiveLimitBytes: number
   }> {
     const recentSnapshots = (await this.listSnapshots()).slice(0, 10)
     const surface =
@@ -1019,6 +1080,8 @@ export class VaultService {
       settings: this.settings,
       recentSnapshots,
       pluginDataEntries: await listPluginDataEntries(this.dshHome),
+      unfinishedRestore: await this.unfinishedRestore(),
+      archiveLimitBytes: defaultArchiveLimits().maxTotalBytes,
     }
   }
 
@@ -1163,18 +1226,47 @@ function isInside(root: string, p: string): boolean {
   return a === b || a.startsWith(b + '/') || a.startsWith(b + '\\')
 }
 
+/** Hosts dsh-vault treats as trusted plugin sources (H-06). Others are allowed only with a warning. */
+const TRUSTED_SOURCE_PATTERNS = [
+  /^github:[\w.-]+\/[\w.-]+/i,
+  /^(git\+)?https:\/\/github\.com\//i,
+  /^git\+ssh:\/\/git@github\.com\//i,
+  /^git@github\.com:/i,
+  /^https:\/\/codeload\.github\.com\//i,
+  /^https:\/\/registry\.npmjs\.org\//i,
+  /^https:\/\/registry\.npmmirror\.com\//i,
+]
+
+export function isTrustedPluginSource(spec: string): boolean {
+  const s = redactText(spec.trim()).replace(/^npm:/i, '')
+  return TRUSTED_SOURCE_PATTERNS.some((re) => re.test(s))
+}
+
+/** Approval key bound to one exact source string. */
+export function pluginSourceKey(profile: string, name: string, spec: string): string {
+  return `${profile}:${name}#${createHash('sha256').update(spec, 'utf8').digest('hex').slice(0, 16)}`
+}
+
 /** Plugins whose install would fetch a git / tarball / URL source (H-06), credentials stripped for display. */
-export function remotePluginSources(records: VaultManifest['plugins'], activeProfile: string): Array<{ key: string; name: string; profile: string; source: string }> {
-  const out: Array<{ key: string; name: string; profile: string; source: string }> = []
+export function remotePluginSources(records: VaultManifest['plugins'], activeProfile: string): RemotePluginSource[] {
+  const out: RemotePluginSource[] = []
   const seen = new Set<string>()
   for (const p of records) {
     const profile = p.profile ?? activeProfile
-    const key = `${profile}:${p.name}`
-    if (seen.has(key)) continue
-    const spec = [p.source, p.version, p.lockedTarball].find((s) => typeof s === 'string' && isRemoteNonRegistrySpec(s))
-    if (!spec || p.bundledSource) continue
-    seen.add(key)
-    out.push({ key, name: p.name, profile, source: redactText(spec) })
+    const nameKey = `${profile}:${p.name}`
+    if (seen.has(nameKey)) continue
+    const specs = [p.source, p.version, p.lockedTarball].filter((s): s is string => typeof s === 'string' && isRemoteNonRegistrySpec(s))
+    if (!specs.length || p.bundledSource) continue
+    seen.add(nameKey)
+    // The key covers every remote spec of the record, so changing any of them voids the approval.
+    out.push({
+      key: pluginSourceKey(profile, p.name, specs.join('\n')),
+      nameKey,
+      name: p.name,
+      profile,
+      source: redactText(specs[0]!),
+      trusted: specs.every(isTrustedPluginSource),
+    })
   }
   return out
 }

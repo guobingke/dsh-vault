@@ -38,11 +38,13 @@ export interface RestorePanelProps {
     /** Preselect a snapshot (e.g. from the Snapshots tab). */
     initialTargetId?: string;
     initialSnapshotId?: string;
+    /** M-05: largest uncompressed snapshot the host unpacks. */
+    archiveLimitBytes?: number;
     onNavigateStorage?: () => void;
     /** Filesystem access for the Browse… dialog (in-app browser + optional native chooser). */
     fs?: FsBrowser;
     /** Last restore outcome: per-plugin install results are listed under the banner. */
     result?: RestoreResult | null;
 }
-export declare function RestorePanel({ targets, snapshots, preview, busy, message, error, onPreview, onRestore, loading, initialTargetId, initialSnapshotId, onNavigateStorage, fs, result, onRetryFailed, retrying, }: RestorePanelProps): import("react").JSX.Element;
+export declare function RestorePanel({ targets, snapshots, preview, archiveLimitBytes, busy, message, error, onPreview, onRestore, loading, initialTargetId, initialSnapshotId, onNavigateStorage, fs, result, onRetryFailed, retrying, }: RestorePanelProps): import("react").JSX.Element;
 //# sourceMappingURL=RestorePanel.d.ts.map

@@ -335,6 +335,14 @@ declare const zh: {
     'restore.remoteSourcesTitle': string;
     'restore.remoteSourcesHint': string;
     'restore.remoteSourcesImportHint': string;
+    'restore.untrustedSource': string;
+    'restore.archiveLimit': string;
+    'unfinished.title': string;
+    'unfinished.body': string;
+    'unfinished.bodyNoRollback': string;
+    'unfinished.encrypted': string;
+    'unfinished.rollback': string;
+    'unfinished.dismiss': string;
     'restore.credentialsWritten': string;
     'restore.credentialsUntouched': string;
     'backup.overwriteConfirm': string;
