@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { readdir, readFile, realpath, stat } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, join, resolve as resolvePath } from 'node:path'
+import { isWithin, realpathLoose } from './path-policy.js'
+import { redactFileData, redactText } from './redact.js'
 import { parse as parseYaml } from 'yaml'
 import {
   isSecretRelPath,
@@ -143,6 +145,7 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   plugins: PluginRecord[]
   dshHome: string
   agentsHome: string
+  redactedFiles: string[]
 }> {
   const dshHome = options.dshHome || resolveDshHome()
   const agentsHome = options.agentsHome || resolveAgentsHome()
@@ -175,7 +178,17 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
 
   // Everything under $DSH_HOME except the denylist (home-scope.ts).
   const progress = options.onProgress
-  const homeFiles = await walkHome(dshHome, { includeSecrets })
+  const excluded = await Promise.all((options.excludeAbs ?? []).map(async (d) => [resolvePath(d), await realpathLoose(d)]))
+  const isExcluded = async (abs: string) => {
+    if (!excluded.length) return false
+    const real = await realpathLoose(abs)
+    return excluded.some((pair) => pair.some((d) => isWithin(d, abs) || isWithin(d, real)))
+  }
+  const homeFiles = []
+  for (const f of await walkHome(dshHome, { includeSecrets })) {
+    // H-07: a dataDir override inside DSH_HOME (targets.json holds tokens) is never packed.
+    if (!(await isExcluded(f.abs))) homeFiles.push(f)
+  }
   progress?.({ phase: 'collect', message: 'Collecting files', current: 0, total: homeFiles.length })
   let n = 0
   for (const f of homeFiles) {
@@ -389,7 +402,33 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     deduped.push(f)
   }
 
-  return { files: deduped, plugins, dshHome, agentsHome }
+  // H-05: plaintext backups never carry URL credentials or tokens — not in the plugin
+  // records (manifest) nor in config text such as profile package.json / lockfiles.
+  const redactedFiles: string[] = []
+  if (!includeSecrets) {
+    for (const p of plugins) sanitizePluginRecord(p)
+    for (let i = 0; i < deduped.length; i++) {
+      const f = deduped[i]!
+      const isPkgMeta = /(^|\/)(package\.json|pnpm-lock\.yaml|package-lock\.json|\.dsh-vault-bundle\.json)$/.test(f.relPath)
+      if (f.category === 'plugins' && !isPkgMeta) continue
+      const next = redactFileData(f.data)
+      if (!next) continue
+      deduped[i] = { ...f, data: next, size: next.length, sha256: createHash('sha256').update(next).digest('hex') }
+      redactedFiles.push(f.relPath)
+    }
+  }
+
+  return { files: deduped, plugins, dshHome, agentsHome, redactedFiles }
+}
+
+/** Strip URL userinfo / tokens from every string field of a plugin record (H-05). */
+export function sanitizePluginRecord(p: PluginRecord): PluginRecord {
+  const rec = p as unknown as Record<string, unknown>
+  for (const k of Object.keys(rec)) {
+    const v = rec[k]
+    if (typeof v === 'string') rec[k] = redactText(v)
+  }
+  return p
 }
 
 /** importers['.'].dependencies from a profile's pnpm-lock.yaml: name → resolved version/URL. */

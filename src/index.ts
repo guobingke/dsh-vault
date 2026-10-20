@@ -16,6 +16,13 @@ import { buildVaultCommands } from './commands/register.js'
 import type { PluginManagerLike, PnpmInvocationLike } from './core/plugin-install.js'
 import type { VaultPluginConfig } from './core/types.js'
 
+import type { IncomingMessage } from 'node:http'
+
+/** dsh-client-connection's HostConnectionService (only the part we use). */
+export interface ConnectionLike {
+  requestRejection: (request: IncomingMessage) => number | undefined
+}
+
 export const name = 'dsh-vault'
 
 /**
@@ -45,7 +52,7 @@ export interface HostContext {
 
 function optionalService<T>(
   ctx: HostContext,
-  name: 'webServer' | 'tools' | 'commands' | 'credentials' | 'pluginManager' | 'directoryPicker' | 'profileContext',
+  name: 'webServer' | 'connection' | 'tools' | 'commands' | 'credentials' | 'pluginManager' | 'directoryPicker' | 'profileContext',
 ): T | undefined {
   if (typeof ctx.get === 'function') {
     try {
@@ -124,13 +131,30 @@ export function apply(ctx: HostContext, config: VaultPluginConfig = {}): void {
     }
   }, 'dsh-vault:service')
 
+  // C-01: every /api/dsh-vault route requires dsh's own browser session (signed HttpOnly
+  // SameSite=Strict cookie issued for the launch token) via the `connection` service.
+  // Without that service the API fails closed (503); CLI/tools are unaffected.
+  let connection = optionalService<ConnectionLike>(ctx, 'connection')
+  if (!connection && typeof ctx.inject === 'function') {
+    ctx.inject(['connection'], (sub) => {
+      connection = (typeof sub.get === 'function' ? sub.get('connection') : sub.connection) as ConnectionLike
+      sub.effect(() => () => { connection = undefined }, 'dsh-vault:connection')
+    })
+  }
+  const guard = {
+    authorize: (req: IncomingMessage) => {
+      if (!connection || typeof connection.requestRejection !== 'function') return 503
+      return connection.requestRejection(req)
+    },
+  }
+
   if (webServerSvc) {
     const webServer = webServerSvc
-    ctx.effect(() => registerVaultRoutes(webServer as Parameters<typeof registerVaultRoutes>[0], service), 'dsh-vault:routes')
+    ctx.effect(() => registerVaultRoutes(webServer as Parameters<typeof registerVaultRoutes>[0], service, guard), 'dsh-vault:routes')
   } else if (typeof ctx.inject === 'function') {
     ctx.inject(['webServer'], (sub) => {
       const webServer = (typeof sub.get === 'function' ? sub.get('webServer') : sub.webServer) as Parameters<typeof registerVaultRoutes>[0]
-      sub.effect(() => registerVaultRoutes(webServer, service), 'dsh-vault:routes')
+      sub.effect(() => registerVaultRoutes(webServer, service, guard), 'dsh-vault:routes')
     })
   } else {
     ctx.logger?.warn?.('[dsh-vault] webServer unavailable: HTTP API not registered (CLI/tools still work)')

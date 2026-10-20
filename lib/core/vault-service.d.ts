@@ -1,7 +1,8 @@
 import { JobRegistry, type JobState } from './progress.js';
 import { type DetectedPlugin, type RegistryLookup } from './plugin-copies.js';
 import { type PluginInstallDeps, type PluginManagerLike, type PnpmInvocationLike } from './plugin-install.js';
-import type { BackupRequest, BackupResult, ProgressCallback, RestorePreview, RestoreRequest, RestoreResult, ScheduleConfig, SnapshotInfo, StorageTargetConfig, VaultSettings } from './types.js';
+import { PathPolicy, type ApiPathUse } from './path-policy.js';
+import type { BackupRequest, BackupResult, ProgressCallback, RestorePreview, RestoreRequest, RestoreResult, ScheduleConfig, SnapshotInfo, StorageTargetConfig, VaultManifest, VaultSettings } from './types.js';
 /** Native directory chooser; dsh's implementation requires a signal. */
 export type PickDirectoryFn = (signal: AbortSignal) => Promise<string | null>;
 export interface VaultServiceOptions {
@@ -28,6 +29,12 @@ export interface VaultServiceOptions {
     registryLookup?: RegistryLookup | null;
     /** Registry integrity lookup for restore (tests); null disables the check. */
     registryIntegrity?: PluginInstallDeps['registryIntegrity'];
+    /** Extra folders the HTTP API may read/write besides home + removable drives (tests). */
+    apiPathRoots?: string[];
+    /** Home folder used for API path approval (tests); defaults to os.homedir(). */
+    apiHome?: string;
+    /** How long a backup/restore waits for another one to finish (default 30 min). */
+    lockTimeoutMs?: number;
 }
 export declare class VaultService {
     private readonly options;
@@ -49,7 +56,14 @@ export declare class VaultService {
     private preferredRegistry;
     private pickDirectoryFn?;
     private readonly runCommand?;
+    /** Approved folders for API-supplied paths (C-02/C-03/H-08). */
+    readonly paths: PathPolicy;
+    private readonly lock;
+    private scheduleGeneration;
+    private scheduleStopped;
     constructor(options?: VaultServiceOptions);
+    /** Validate a path that came from the HTTP API (CLI/tools are not restricted). */
+    checkApiPath(path: string, use: ApiPathUse): Promise<string>;
     /** Hot-bind host services that may activate after the vault plugin. */
     setPluginManager(manager: PluginManagerLike | null): void;
     setPickDirectory(fn: PickDirectoryFn | undefined): void;
@@ -65,6 +79,17 @@ export declare class VaultService {
         entries: import("./fs-browse.js").FsEntry[];
     }>;
     createFsDirectory(parent: string, name: string): Promise<string>;
+    /** In-app browser listing for the HTTP API: approved roots only, realpath-checked. */
+    listFsApi(path: string): Promise<{
+        parent: string | null;
+        roots: string[];
+        entries: import("./fs-browse.js").FsEntry[];
+        nativePicker: boolean;
+        path: string;
+        home: string;
+        sep: string;
+    }>;
+    createFsDirectoryApi(parent: string, name: string): Promise<string>;
     /**
      * Open dsh's native OS folder chooser. dsh's picker requires an AbortSignal
      * (it dereferences `signal.aborted`), so one is always passed.
@@ -94,7 +119,7 @@ export declare class VaultService {
         settings: VaultSettings['pluginCopies'];
         restoreOrder: VaultSettings['pluginRestoreOrder'];
     }>;
-    updateSettings(patch: Partial<VaultSettings>): Promise<VaultSettings>;
+    updateSettings(patchIn: Partial<VaultSettings>): Promise<VaultSettings>;
     /** Stored targets with secrets masked for browser/API responses. */
     listTargets(): StorageTargetConfig[];
     /** Unmasked configs (internal / CLI that already has filesystem access). */
@@ -102,6 +127,10 @@ export declare class VaultService {
     upsertTarget(config: StorageTargetConfig): Promise<StorageTargetConfig[]>;
     removeTarget(id: string): Promise<StorageTargetConfig[]>;
     backup(req: BackupRequest, onProgress?: ProgressCallback): Promise<BackupResult>;
+    /** Final archive path for an export request (extension added when missing). */
+    exportPathFor(exportFile: string, encrypted: boolean): string;
+    /** 409 EXPORT_EXISTS unless the request explicitly allows replacing the file (C-02). */
+    assertExportWritable(req: BackupRequest): Promise<void>;
     private backupInner;
     listSnapshots(targetId?: string): Promise<SnapshotInfo[]>;
     deleteSnapshot(targetId: string, snapshotId: string): Promise<void>;
@@ -133,12 +162,19 @@ export declare class VaultService {
             profile: string;
         }>;
     }, onProgress?: ProgressCallback): Promise<RestoreResult>;
+    private retryInner;
     /** Load snapshot bytes from a configured target or an import path (file/folder). */
     private resolveSnapshotBytes;
     getSchedule(): ScheduleConfig;
     updateSchedule(patch: Partial<ScheduleConfig>): Promise<ScheduleConfig>;
     runScheduledBackup(onProgress?: ProgressCallback): Promise<BackupResult | null>;
+    /** Stop the timer for good (plugin disposal / tests); re-armed only by init(). */
     stopSchedule(): void;
+    private clearScheduleTimer;
+    /** Whether a schedule timer is armed (tests). */
+    hasScheduleTimer(): boolean;
+    /** Sleep until `dueAt` in chunks ≤ 2^31-1 ms (M-04: larger delays overflow to 1 ms). */
+    private armAt;
     private armSchedule;
     private armScheduleAfterFailure;
     private applyRetention;
@@ -168,11 +204,28 @@ export declare class VaultService {
      * Never uses a user-configured local target (USB/sync folders).
      */
     private createPrivateRollbackSnapshot;
+    /** Paths the restore will create (not overwrite); a rollback of it deletes them again (M-01). */
+    private plannedAdds;
+    /** M-07: per-path, with the shared classifier — the request/manifest flags alone never decide. */
     private restoreWillApplySecrets;
 }
 /** Minimum schedule interval enforced by the timer (and reflected in nextRunAt). */
 export declare const MIN_SCHEDULE_MINUTES = 15;
+/** Longest supported interval (M-04): one year. */
+export declare const MAX_SCHEDULE_MINUTES: number;
+/** setTimeout's ceiling; longer delays are chained. */
+export declare const MAX_TIMER_MS: number;
+/** Largest import file read into memory. */
+export declare const MAX_IMPORT_BYTES: number;
+export declare function clampIntervalMinutes(intervalMinutes: number): number;
 export declare function effectiveIntervalMs(intervalMinutes: number): number;
+/** Plugins whose install would fetch a git / tarball / URL source (H-06), credentials stripped for display. */
+export declare function remotePluginSources(records: VaultManifest['plugins'], activeProfile: string): Array<{
+    key: string;
+    name: string;
+    profile: string;
+    source: string;
+}>;
 /** Id of the private local rollback folder (not a user-editable storage target). */
 export declare const ROLLBACK_TARGET_ID = "local-rollback";
 /** Write a sidecard meta file next to a local snapshot (optional helper for CLI). */

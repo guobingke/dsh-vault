@@ -33,6 +33,7 @@ export function buildManifest(input: {
   dshVersion?: string
   notes?: string
   createdAt?: string
+  rollbackRemoves?: string[]
 }): VaultManifest {
   const categories = [...new Set(input.files.map((f) => f.category))] as BackupCategory[]
   const files = input.files.map((f) => ({
@@ -56,6 +57,7 @@ export function buildManifest(input: {
     files,
     manifestSha256: '',
     notes: input.notes,
+    ...(input.rollbackRemoves?.length ? { rollbackRemoves: input.rollbackRemoves } : {}),
   }
   if (input.encrypted) {
     manifest.encryption = {

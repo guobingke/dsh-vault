@@ -139,10 +139,55 @@ const cstr = (b: Buffer) => {
   return (z < 0 ? b : b.subarray(0, z)).toString('utf8')
 }
 
-/** Unpack a gzip-compressed tar (ustar, pax `x`/`g`, GNU `L` long names). */
-export function unpackTarGz(archive: Buffer): ArchiveEntry[] {
-  const tar = gunzipSync(archive)
+/** Hard limits for untrusted archives (M-05: decompression bombs, header abuse). */
+export interface ArchiveLimits {
+  /** Max decompressed tar size in bytes. */
+  maxTotalBytes: number
+  /** Max size of one entry. */
+  maxEntryBytes: number
+  /** Max number of entries (headers). */
+  maxEntries: number
+  /** Max entry path length in bytes. */
+  maxPathLength: number
+}
+
+function envLimit(name: string, fallback: number): number {
+  const v = Number(process.env[name])
+  return Number.isFinite(v) && v > 0 ? v : fallback
+}
+
+export function defaultArchiveLimits(): ArchiveLimits {
+  return {
+    maxTotalBytes: envLimit('DSH_VAULT_MAX_ARCHIVE_BYTES', 2 * 1024 * 1024 * 1024 - 1),
+    maxEntryBytes: envLimit('DSH_VAULT_MAX_ENTRY_BYTES', 512 * 1024 * 1024),
+    maxEntries: envLimit('DSH_VAULT_MAX_ENTRIES', 200_000),
+    maxPathLength: 4096,
+  }
+}
+
+export class ArchiveLimitError extends Error {
+  readonly code = 'ARCHIVE_LIMIT'
+  constructor(message: string) {
+    super(message)
+    this.name = 'ArchiveLimitError'
+  }
+}
+
+/** Unpack a gzip-compressed tar (ustar, pax `x`/`g`, GNU `L` long names). Links and devices are refused. */
+export function unpackTarGz(archive: Buffer, limitsIn: Partial<ArchiveLimits> = {}): ArchiveEntry[] {
+  const limits = { ...defaultArchiveLimits(), ...limitsIn }
+  let tar: Buffer
+  try {
+    tar = gunzipSync(archive, { maxOutputLength: limits.maxTotalBytes })
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException
+    if (e?.code === 'ERR_BUFFER_TOO_LARGE' || e instanceof RangeError) {
+      throw new ArchiveLimitError(`archive expands beyond ${limits.maxTotalBytes} bytes; refusing to unpack`)
+    }
+    throw err
+  }
   const out: ArchiveEntry[] = []
+  let headers = 0
   let offset = 0
   let nextPath: string | undefined
   let globalPath: string | undefined
@@ -156,6 +201,11 @@ export function unpackTarGz(archive: Buffer): ArchiveEntry[] {
     const size = readOctal(header, 124, 12)
     const mode = readOctal(header, 100, 8)
     const typeFlag = String.fromCharCode(header[156] ?? 0)
+    if (++headers > limits.maxEntries) throw new ArchiveLimitError(`archive has more than ${limits.maxEntries} entries`)
+    if (!Number.isFinite(size) || size < 0 || size > limits.maxEntryBytes) {
+      throw new ArchiveLimitError(`archive entry larger than ${limits.maxEntryBytes} bytes`)
+    }
+    if (offset + size > tar.length) throw new ArchiveLimitError('archive entry runs past the end of the archive (truncated or forged size)')
     const data = tar.subarray(offset, offset + size)
     offset += size + padToBlock(size)
     if (typeFlag === 'x') {
@@ -174,8 +224,12 @@ export function unpackTarGz(archive: Buffer): ArchiveEntry[] {
     }
     const path = nextPath ?? globalPath ?? (prefix ? `${prefix}/${name}` : name)
     nextPath = undefined
+    if (Buffer.byteLength(path, 'utf8') > limits.maxPathLength) throw new ArchiveLimitError('archive entry path too long')
     if (typeFlag === '0' || typeFlag === '\0' || typeFlag === '7') {
       out.push({ path, data: Buffer.from(data), mode })
+    } else if (typeFlag === '1' || typeFlag === '2' || typeFlag === '3' || typeFlag === '4' || typeFlag === '6') {
+      // H-01: hard links, symlinks, devices and FIFOs never come out of a snapshot.
+      throw new ArchiveLimitError(`archive contains a link or special file (${path}); refusing to unpack`)
     }
   }
   return out

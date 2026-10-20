@@ -8,7 +8,10 @@ export declare function collectBackupFiles(options: CollectOptions): Promise<{
     plugins: PluginRecord[];
     dshHome: string;
     agentsHome: string;
+    redactedFiles: string[];
 }>;
+/** Strip URL userinfo / tokens from every string field of a plugin record (H-05). */
+export declare function sanitizePluginRecord(p: PluginRecord): PluginRecord;
 export interface LockedPackage {
     integrity?: string;
     tarball?: string;

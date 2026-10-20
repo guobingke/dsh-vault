@@ -89,13 +89,45 @@ export const SECRET_BASENAMES = new Set([
   'credentials.yaml',
   '.env',
   '.env.local',
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  '.pypirc',
+  '.netrc',
+  '_netrc',
+  '.git-credentials',
+  '.pgpass',
+  '.dockercfg',
+  'auth.json',
+  'id_rsa',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
 ])
 
+/** Case-insensitive name patterns for credential files (M-06). */
+const SECRET_NAME_PATTERNS: RegExp[] = [
+  /^\.env(\..*)?$/i, // .env, .env.local, .env.production …
+  /^.+\.env$/i, // prod.env
+  /^\.?credentials(\..*)?$/i, // credentials, credentials.json, .credentials.yaml …
+  /^\.?secrets?\.(json|ya?ml|toml|env|txt)$/i,
+  /^.+\.(pem|key|p12|pfx|jks|keystore|ppk)$/i,
+  /^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i,
+  /^service[-_]?account.*\.json$/i,
+  /^token(s)?\.(json|txt)$/i,
+]
+
+/**
+ * The single credential classifier used by backup, preview and restore (M-06).
+ * Matches on the basename, case-insensitively, plus any `.credentials.yaml` component.
+ */
 export function isSecretRelPath(rel: string): boolean {
-  const base = rel.replace(/\\/g, '/').split('/').pop() ?? ''
-  if (SECRET_BASENAMES.has(base)) return true
-  if (rel.replace(/\\/g, '/').includes('/.credentials.yaml')) return true
-  return false
+  const norm = rel.replace(/\\/g, '/')
+  const base = (norm.split('/').pop() ?? '').trim()
+  const lower = base.toLowerCase()
+  if (SECRET_BASENAMES.has(lower)) return true
+  if (SECRET_NAME_PATTERNS.some((re) => re.test(base))) return true
+  return /(^|\/)\.credentials\.ya?ml(\/|$)/i.test(norm)
 }
 
 /** Directories skipped while collecting (reinstallable artifacts). */

@@ -1,12 +1,57 @@
 import type { VaultService } from '../core/vault-service.js'
 import type { BackupRequest, RestoreRequest, ScheduleConfig, StorageTargetConfig, VaultSettings } from '../core/types.js'
-import { endpoint, readJsonBody, writeJson, type WebRoute } from './http.js'
+import { endpoint as rawEndpoint, readJsonBody, writeJson, type HttpMethod, type RouteGuard, type WebRoute } from './http.js'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ApiError } from './http.js'
+import { redactDeep } from '../core/redact.js'
+import type { JobState } from '../core/progress.js'
+
+/** H-04: API responses never carry a full manifest or credential-looking strings. */
+export function publicResult<T>(result: T): T {
+  if (!result || typeof result !== 'object') return result
+  const r = { ...(result as Record<string, unknown>) }
+  const m = r.manifest as { id?: string; createdAt?: string; includeSecrets?: boolean; encrypted?: boolean; files?: unknown[]; plugins?: Array<{ name?: string; profile?: string }>; categories?: unknown } | undefined
+  if (m && typeof m === 'object') {
+    r.manifest = {
+      id: m.id,
+      createdAt: m.createdAt,
+      includeSecrets: m.includeSecrets,
+      encrypted: m.encrypted,
+      categories: m.categories,
+      fileCount: Array.isArray(m.files) ? m.files.length : 0,
+      plugins: Array.isArray(m.plugins) ? m.plugins.map((p) => ({ name: p?.name, profile: p?.profile })) : [],
+    }
+  }
+  return redactDeep(r) as T
+}
+
+export function publicJob(job: JobState | null): JobState | null {
+  if (!job) return job
+  return redactDeep({ ...job, result: publicResult(job.result) })
+}
+
+async function checkBackupPaths(service: VaultService, body: BackupRequest): Promise<void> {
+  if (body.exportFile?.trim()) {
+    const out = service.exportPathFor(body.exportFile, Boolean(body.encrypt))
+    body.exportFile = await service.checkApiPath(out, 'write-file')
+    await service.assertExportWritable(body)
+  }
+  if (body.directory?.trim()) body.directory = await service.checkApiPath(body.directory, 'write-dir')
+  delete (body as { dataDir?: unknown }).dataDir
+}
+
+async function checkImportPath(service: VaultService, body: { importPath?: string }): Promise<void> {
+  if (body.importPath?.trim()) body.importPath = await service.checkApiPath(body.importPath, 'read')
+}
 
 export const API_PREFIX = '/api/dsh-vault'
 
-export function buildVaultRoutes(service: VaultService): WebRoute[] {
+export function buildVaultRoutes(service: VaultService, guard: RouteGuard = {}): WebRoute[] {
   const routes: WebRoute[] = []
+  const endpoint = (
+    spec: { path: string; methods: readonly HttpMethod[] },
+    handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
+  ) => rawEndpoint(spec, handler, guard)
 
   routes.push(
     endpoint({ path: `${API_PREFIX}/status`, methods: ['GET'] }, async (_req, res) => {
@@ -21,6 +66,7 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
         return
       }
       const body = await readJsonBody<Partial<VaultSettings>>(req)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError('settings must be an object', 400)
       writeJson(res, 200, await service.updateSettings(body))
     }),
   )
@@ -58,8 +104,9 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       if (!body.targetId && !body.directory && !body.exportFile) {
         throw new ApiError('targetId, directory, or exportFile is required', 400)
       }
+      await checkBackupPaths(service, body)
       const result = await service.backup(body)
-      writeJson(res, 200, result)
+      writeJson(res, 200, publicResult(result))
     }),
   )
 
@@ -97,7 +144,8 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       if (body.conflict !== undefined && body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
         throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
       }
-      writeJson(res, 200, await service.previewRestore(body))
+      await checkImportPath(service, body)
+      writeJson(res, 200, redactDeep(await service.previewRestore(body)))
     }),
   )
 
@@ -111,9 +159,10 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       if (body.conflict !== 'keep-current' && body.conflict !== 'use-backup') {
         throw new ApiError('conflict must be "keep-current" or "use-backup"', 400)
       }
+      await checkImportPath(service, body)
       const result = await service.restore(body)
       // Never report HTTP success when plugins failed — clients must surface the failure.
-      writeJson(res, result.ok === false ? 409 : 200, result)
+      writeJson(res, result.ok === false ? 409 : 200, publicResult(result))
     }),
   )
 
@@ -124,7 +173,8 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       if (!body.targetId && !body.directory && !body.exportFile) {
         throw new ApiError('targetId, directory, or exportFile is required', 400)
       }
-      writeJson(res, 202, startJob(() => service.startBackupJob(body)))
+      await checkBackupPaths(service, body)
+      writeJson(res, 202, publicJob(startJob(() => service.startBackupJob(body))))
     }),
   )
   routes.push(
@@ -136,13 +186,14 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       if ((!body.targetId || !body.snapshotId) && !body.importPath) {
         throw new ApiError('targetId+snapshotId or importPath is required', 400)
       }
-      writeJson(res, 202, startJob(() => service.startRestoreJob(body)))
+      await checkImportPath(service, body)
+      writeJson(res, 202, publicJob(startJob(() => service.startRestoreJob(body))))
     }),
   )
   routes.push(
     endpoint({ path: `${API_PREFIX}/jobs/retry-plugins`, methods: ['POST'] }, async (req, res) => {
       const body = await readJsonBody<{ plugins?: Array<{ name: string; profile: string }> }>(req)
-      writeJson(res, 202, startJob(() => service.startRetryPluginsJob(body)))
+      writeJson(res, 202, publicJob(startJob(() => service.startRetryPluginsJob(body))))
     }),
   )
   routes.push(
@@ -151,7 +202,7 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
       const id = url.searchParams.get('id')
       const job = id ? service.jobs.get(id) : service.jobs.latest()
       if (id && !job) throw new ApiError('job not found', 404)
-      writeJson(res, 200, { job })
+      writeJson(res, 200, { job: publicJob(job) })
     }),
   )
 
@@ -162,7 +213,7 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
         throw new ApiError('plugins must be [{ name, profile }]', 400)
       }
       const result = await service.retryFailedPlugins(body)
-      writeJson(res, result.ok === false ? 409 : 200, result)
+      writeJson(res, result.ok === false ? 409 : 200, publicResult(result))
     }),
   )
 
@@ -176,7 +227,7 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
         const body = await readJsonBody<{ path?: string }>(req)
         path = body.path ?? ''
       }
-      writeJson(res, 200, await service.listFs(path))
+      writeJson(res, 200, await service.listFsApi(path))
     }),
   )
 
@@ -184,7 +235,7 @@ export function buildVaultRoutes(service: VaultService): WebRoute[] {
     endpoint({ path: `${API_PREFIX}/fs/mkdir`, methods: ['POST'] }, async (req, res) => {
       const body = await readJsonBody<{ path?: string; name?: string }>(req)
       if (!body.path || !body.name) throw new ApiError('path and name are required', 400)
-      writeJson(res, 200, { path: await service.createFsDirectory(body.path, body.name) })
+      writeJson(res, 200, { path: await service.createFsDirectoryApi(body.path, body.name) })
     }),
   )
 
@@ -237,9 +288,10 @@ function startJob<T>(fn: () => T): T {
 export function registerVaultRoutes(
   webServer: { register: (route: WebRoute) => (() => void) | void },
   service: VaultService,
+  guard: RouteGuard = {},
 ): () => void {
   const disposers: Array<() => void> = []
-  for (const route of buildVaultRoutes(service)) {
+  for (const route of buildVaultRoutes(service, guard)) {
     const dispose = webServer.register(route)
     if (typeof dispose === 'function') disposers.push(dispose)
   }

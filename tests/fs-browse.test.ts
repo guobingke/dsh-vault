@@ -1,3 +1,4 @@
+import { allowAll, vaultFetch } from './api-client.js'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, writeFile, stat } from 'node:fs/promises'
@@ -84,7 +85,7 @@ describe('native directory picker binding', () => {
 
 describe('fs HTTP routes', () => {
   async function withRoutes(service: VaultService, fn: (base: string) => Promise<void>) {
-    const routes = buildVaultRoutes(service)
+    const routes = buildVaultRoutes(service, allowAll)
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const route = routes.find((r) => r.path === url.pathname)
@@ -100,24 +101,24 @@ describe('fs HTTP routes', () => {
   it('list/mkdir work; pick-directory is 501 without native, forwards a signal with it', async () => {
     const home = await makeTempHome()
     try {
-      const service = new VaultService({ dshHome: home.dshHome, agentsHome: home.agentsHome })
+      const service = new VaultService({ dshHome: home.dshHome, agentsHome: home.agentsHome, apiPathRoots: [home.root] })
       await service.init()
       await withRoutes(service, async (base) => {
-        const l = await (await fetch(`${base}/fs/list?path=${encodeURIComponent(home.dshHome)}`)).json() as { path: string; nativePicker: boolean; roots: string[] }
+        const l = await (await vaultFetch(`${base}/fs/list?path=${encodeURIComponent(home.dshHome)}`)).json() as { path: string; nativePicker: boolean; roots: string[] }
         assert.equal(l.path, home.dshHome)
         assert.equal(l.nativePicker, false)
-        const mk = await fetch(`${base}/fs/mkdir`, { method: 'POST', body: JSON.stringify({ path: home.dshHome, name: 'new-dir' }) })
+        const mk = await vaultFetch(`${base}/fs/mkdir`, { method: 'POST', body: JSON.stringify({ path: home.dshHome, name: 'new-dir' }) })
         assert.equal(mk.status, 200)
         assert.equal(((await mk.json()) as { path: string }).path, join(home.dshHome, 'new-dir'))
-        const dup = await fetch(`${base}/fs/mkdir`, { method: 'POST', body: JSON.stringify({ path: home.dshHome, name: 'new-dir' }) })
+        const dup = await vaultFetch(`${base}/fs/mkdir`, { method: 'POST', body: JSON.stringify({ path: home.dshHome, name: 'new-dir' }) })
         assert.equal(dup.status, 409)
-        const none = await fetch(`${base}/fs/pick-directory`, { method: 'POST', body: '{}' })
+        const none = await vaultFetch(`${base}/fs/pick-directory`, { method: 'POST', body: '{}' })
         assert.equal(none.status, 501)
         let sawSignal = false
         service.setPickDirectory(async (signal) => { sawSignal = signal instanceof AbortSignal; return '/picked' })
-        const l2 = await (await fetch(`${base}/fs/list`)).json() as { nativePicker: boolean }
+        const l2 = await (await vaultFetch(`${base}/fs/list`)).json() as { nativePicker: boolean }
         assert.equal(l2.nativePicker, true)
-        const ok = await (await fetch(`${base}/fs/pick-directory`, { method: 'POST', body: '{}' })).json() as { path: string }
+        const ok = await (await vaultFetch(`${base}/fs/pick-directory`, { method: 'POST', body: '{}' })).json() as { path: string }
         assert.equal(ok.path, '/picked')
         assert.ok(sawSignal)
       })

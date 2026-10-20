@@ -165,6 +165,23 @@ dsh-vault restore --from /media/usb/dsh.dshvault --password '…' --profile all
 - The settings page never sends stored passwords or tokens back to the browser.
 - Each snapshot carries a manifest with SHA-256 checksums. `dsh-vault verify` checks them.
 
+### Hardening (2026-10-20 audit)
+
+See [docs/SECURITY-FIXES-2026-10-20.md](docs/SECURITY-FIXES-2026-10-20.md) for every finding, its fix and its test.
+
+- **The HTTP API needs your dsh session.** Every `/api/dsh-vault/*` route, reads included, goes through dsh's own login check: the signed `HttpOnly`, `SameSite=Strict` cookie you get when you open the launch URL (`/?token=…`). The plugin adds its own checks on top. The `Host` must be loopback (this blocks DNS rebinding). A cross-site `Origin` or `Sec-Fetch-Site` is refused. Every request must carry the `x-dsh-vault-request: 1` header, and writes must be `application/json`. If a dsh build has no session service, the API turns itself off (`503`). The CLI and model tools don't use HTTP, so none of this affects them.
+- **Paths from the browser stay in approved folders.** Export targets, one-shot folders, import files and the folder browser are limited to:
+  - your home folder,
+  - removable or extra drives (`/media`, `/mnt`, `/Volumes`, and every Windows drive except the system drive),
+  - folders you picked in the system dialog.
+
+  Paths are checked after links are resolved. System folders, `~/.ssh` and similar folders, and the dsh-vault data folder are always refused. An existing export file is never overwritten silently: the UI asks first.
+- **Restore is link-safe and all-or-nothing.** Before anything is written, every target path is checked. A symlink, a junction or a file sitting where a folder should be makes the whole restore stop with nothing changed. If a write fails partway, every change is reverted. Archives that contain links or device entries are refused, and decompression has size and entry-count limits.
+- **Credentials need three things to be written:** you turn on "Restore credentials", the manifest says the snapshot has credentials, and the snapshot really is encrypted. A plaintext snapshot can't claim otherwise. Credential files are found by one shared, case-insensitive rule: `.env*`, `.npmrc`, `.pypirc`, `.netrc`, `credentials.*`, `auth.json`, `*.pem`, `*.key`, SSH keys and more. When credentials will be written, the pre-restore rollback is encrypted. The result lists which credential files were written.
+- **Plaintext backups strip URL credentials.** `https://user:TOKEN@…` in plugin sources, profile `package.json` and lockfiles is reduced to `https://…`. Job results and plugin logs are redacted too. A private git plugin then needs its credentials again on the new machine.
+- **Plugin sources from a snapshot need your OK.** A plugin that would be downloaded from a git, tarball or URL source is listed in the restore dialog. Each one is checked by default when the snapshot comes from one of your storage targets, and unchecked when it comes from an imported file. An unchecked plugin installs from the copy saved in the snapshot if there is one; otherwise it is skipped. The CLI equivalent is `--allow-plugin-source profile:name` or `--allow-remote-plugins`. All installs run `pnpm` with `--ignore-scripts`.
+- **One operation at a time.** Backups, restores and plugin retries from the UI, the schedule, the tools and the CLI share a lock file. A second operation waits, then fails with `VAULT_BUSY`.
+
 ## CLI reference
 
 ```

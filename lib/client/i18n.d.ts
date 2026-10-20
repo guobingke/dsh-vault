@@ -328,6 +328,16 @@ declare const zh: {
     'restore.reason.no-recorded-source': string;
     'restore.reason.integrity-mismatch': string;
     'restore.reason.self': string;
+    'restore.reason.source-not-approved': string;
+    'restore.reason.invalid-spec': string;
+    'restore.withSecrets': string;
+    'restore.withSecretsDesc': string;
+    'restore.remoteSourcesTitle': string;
+    'restore.remoteSourcesHint': string;
+    'restore.remoteSourcesImportHint': string;
+    'restore.credentialsWritten': string;
+    'restore.credentialsUntouched': string;
+    'backup.overwriteConfirm': string;
     'restore.reason.no-backup-copy': string;
     'restore.reason.network': string;
     'restore.reason.installer-missing': string;

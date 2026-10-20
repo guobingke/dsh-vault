@@ -1,3 +1,4 @@
+import { allowAll, vaultFetch } from './api-client.js'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
@@ -339,7 +340,7 @@ describe('user errors map to 4xx', () => {
         runPluginInstall: async () => ({ ok: true, detail: 'ok' }),
       })
       await service.init()
-      const routes = buildVaultRoutes(service)
+      const routes = buildVaultRoutes(service, allowAll)
       const backup = routes.find((r) => r.path.endsWith('/backup'))!
       const { createServer } = await import('node:http')
       const server = createServer((incoming, outgoing) => {
@@ -348,7 +349,7 @@ describe('user errors map to 4xx', () => {
       await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
       const port = (server.address() as { port: number }).port
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/api/dsh-vault/backup`, {
+        const response = await vaultFetch(`http://127.0.0.1:${port}/api/dsh-vault/backup`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({

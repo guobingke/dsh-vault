@@ -1,6 +1,6 @@
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { SECRET_BASENAMES } from './paths.js'
+import { isSecretRelPath } from './paths.js'
 
 /**
  * What a backup covers: everything under $DSH_HOME except the denylist below.
@@ -93,7 +93,7 @@ export interface ScopeOptions {
 }
 
 function isSecretName(base: string): boolean {
-  return SECRET_BASENAMES.has(base) || /^\.env(\..+)?$/.test(base)
+  return isSecretRelPath(base)
 }
 
 /** Why `rel` (POSIX, relative to $DSH_HOME) is not backed up, or null when it is. */

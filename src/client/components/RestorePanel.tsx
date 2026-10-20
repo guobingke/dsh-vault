@@ -13,6 +13,7 @@ import {
   Button,
   Card,
   CardHead,
+  Checkbox,
   Collapsible,
   ConfirmDialog,
   EmptyState,
@@ -58,6 +59,10 @@ export interface RestorePanelProps {
     conflicts?: Record<string, ConflictStrategy>
     createRollbackSnapshot?: boolean
     reinstallPlugins?: boolean
+    /** Write credential files from an encrypted snapshot that carries them (explicit opt-in). */
+    includeSecrets?: boolean
+    /** `profile:name` of git / tarball / URL plugin sources the user allowed to be fetched. */
+    approvedPluginSources?: string[]
   }) => void
   loading?: boolean
   /** Re-attempt only the failed plugins of the shown result (no config rewrite). */
@@ -146,6 +151,9 @@ export function RestorePanel({
   const [ack, setAck] = useState(false)
   const [rollback, setRollback] = useState(true)
   const [reinstall, setReinstall] = useState(true)
+  const [withSecrets, setWithSecrets] = useState(true)
+  /** Non-registry plugin sources the user allowed (H-06); reset per preview. */
+  const [approvedSources, setApprovedSources] = useState<Record<string, boolean>>({})
   const [dialogOpen, setDialogOpen] = useState(false)
   const [choices, setChoices] = useState<Record<string, ConflictChoice>>({})
   const [diffFilter, setDiffFilter] = useState<DiffFilter>('all')
@@ -198,6 +206,11 @@ export function RestorePanel({
     setChoices({})
     setAck(false)
     setDiffFilter('all')
+    // Imported files are untrusted: their git/URL plugin sources start unchecked.
+    const next: Record<string, boolean> = {}
+    for (const r of preview?.remotePluginSources ?? []) next[r.key] = !usingImport
+    setApprovedSources(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewKey])
 
   const changes = useMemo(
@@ -273,6 +286,8 @@ export function RestorePanel({
       conflicts: choices,
       createRollbackSnapshot: rollback,
       reinstallPlugins: reinstall,
+      includeSecrets: Boolean(preview.secretsAvailable && withSecrets),
+      approvedPluginSources: Object.entries(approvedSources).filter(([, v]) => v).map(([k]) => k),
     })
   }
 
@@ -555,7 +570,32 @@ export function RestorePanel({
                 <Switch id="dv-restore-reinstall" checked={reinstall} onChange={() => setReinstall((v) => !v)} />
               }
             />
+            {preview.secretsAvailable ? (
+              <SettingRow
+                title={tr('restore.withSecrets')}
+                description={tr('restore.withSecretsDesc')}
+                htmlFor="dv-restore-secrets"
+                control={
+                  <Switch id="dv-restore-secrets" checked={withSecrets} onChange={() => setWithSecrets((v) => !v)} />
+                }
+              />
+            ) : null}
           </Rows>
+          {reinstall && preview.remotePluginSources?.length ? (
+            <div className="dv-plugin-sources" role="group" aria-label={tr('restore.remoteSourcesTitle')}>
+              <div className="dv-check-title">{tr('restore.remoteSourcesTitle')}</div>
+              <div className="dv-hint">{tr(usingImport ? 'restore.remoteSourcesImportHint' : 'restore.remoteSourcesHint')}</div>
+              {preview.remotePluginSources.map((r) => (
+                <Checkbox
+                  key={r.key}
+                  title={`${r.name} (${r.profile})`}
+                  description={r.source}
+                  checked={Boolean(approvedSources[r.key])}
+                  onChange={() => setApprovedSources((prev) => ({ ...prev, [r.key]: !prev[r.key] }))}
+                />
+              ))}
+            </div>
+          ) : null}
           <div className="dv-card-foot">
             <Button
               variant="danger"

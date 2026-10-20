@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { missingRuntimeDependencies, reinstallMissingPlugins, resolveLinkTarget } from '../src/core/plugin-install.js'
 import { collectBackupFiles } from '../src/core/collect.js'
-import { makeTempHome } from './helpers.js'
+import { linkDir, makeTempHome } from './helpers.js'
 
 async function writePkg(dir: string, pkg: Record<string, unknown>) {
   await mkdir(dir, { recursive: true })
@@ -39,7 +39,7 @@ describe('bundled link: plugins on machine 2', () => {
     }
   })
 
-  it('installs bundled source deps, and fails (never false success) when they stay missing', async () => {
+  it('installs bundled source deps, and fails (never false success) when they stay missing', async (t) => {
     for (const depsInstallWorks of [true, false]) {
       const home = await makeTempHome()
       try {
@@ -48,7 +48,11 @@ describe('bundled link: plugins on machine 2', () => {
         await writePkg(bundled, { name: 'plug', version: '1.0.0', dependencies: { yaml: '^2' } })
         await writePkg(profileDir, { name: 'dsh-profile-web', dependencies: { plug: 'link:/elsewhere/plug' } })
         await mkdir(join(profileDir, 'node_modules'), { recursive: true })
-        await symlink(bundled, join(profileDir, 'node_modules', 'plug'))
+        // L-02: a directory junction needs no admin rights on Windows; skip if links are still refused.
+        if (!(await linkDir(bundled, join(profileDir, 'node_modules', 'plug')))) {
+          t.skip('creating directory links is not permitted on this machine')
+          return
+        }
         const calls: Array<{ cwd?: string; args: string[] }> = []
         const { results } = await reinstallMissingPlugins(
           [{ name: 'plug', source: 'link:plugin-sources/web/plug', profile: 'web', bundledSource: 'plugin-sources/web/plug', originalSource: 'link:/elsewhere/plug' }],

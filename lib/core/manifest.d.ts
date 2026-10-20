@@ -14,6 +14,7 @@ export declare function buildManifest(input: {
     dshVersion?: string;
     notes?: string;
     createdAt?: string;
+    rollbackRemoves?: string[];
 }): VaultManifest;
 export declare function parseManifest(raw: string | Buffer): VaultManifest;
 //# sourceMappingURL=manifest.d.ts.map

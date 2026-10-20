@@ -34,6 +34,9 @@ Usage:
   dsh-vault restore <snapshotId> [--target <id>] [--password <pass>] [--keep|--use-backup] [--home <path>]
   dsh-vault restore ... [--plugin-order source-first|copy-first]
   dsh-vault restore --from <file> [--home <sandbox DSH_HOME>] [--profile desktop|web|all]
+      [--allow-plugin-source <profile:name>]... [--allow-remote-plugins] [--no-secrets]
+      (git / tarball / URL plugin sources in an imported file are NOT fetched unless allowed;
+       a saved copy in the snapshot is used instead when there is one)
                     [--dsh-desktop-dir <DeepSeek Harness install dir>] [--password <pass>] [--no-plugins]
       (exits 2 when files were restored but a plugin failed to install)
   dsh-vault retry-plugins [--home <path>]
@@ -94,6 +97,15 @@ function copyFlags(args: string[]): { bundlePluginCopies?: boolean; pluginCopyEx
   const ex = getFlags(args, '--no-copy')
   if (ex.length) out.pluginCopyExclude = ex
   return out
+}
+
+/** `--allow-plugin-source profile:name` (repeatable), `--allow-remote-plugins`, `--no-remote-plugins`. */
+function pluginSourceApprovals(args: string[], defaultAll: boolean): string[] {
+  if (has(args, '--no-remote-plugins')) return []
+  if (has(args, '--allow-remote-plugins')) return ['*']
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) if (args[i] === '--allow-plugin-source' && args[i + 1]) out.push(args[i + 1]!)
+  return out.length ? out : defaultAll ? ['*'] : []
 }
 
 function restoreOrderFlag(args: string[]): 'source-first' | 'copy-first' | undefined {
@@ -386,6 +398,10 @@ async function main(argv: string[]): Promise<number> {
         reinstallPlugins: !has(args, '--no-plugins'),
         pluginProfiles,
         pluginRestoreOrder: restoreOrderFlag(args),
+        // Credentials only from an encrypted snapshot that carries them (service enforces).
+        includeSecrets: !has(args, '--no-secrets'),
+        // An imported file is untrusted: git / URL plugin sources need --allow-plugin-source.
+        approvedPluginSources: pluginSourceApprovals(args, false),
       }, cliProgress('restore'))
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
       process.stderr.write(restoreFailureSummary(result))
@@ -410,6 +426,9 @@ async function main(argv: string[]): Promise<number> {
         conflict,
         password: getFlag(args, '--password'),
         pluginRestoreOrder: restoreOrderFlag(args),
+        includeSecrets: !has(args, '--no-secrets'),
+        // Your own configured target: its recorded sources are allowed unless --no-remote-plugins.
+        approvedPluginSources: pluginSourceApprovals(args, true),
       }, cliProgress('restore'))
       process.stdout.write(JSON.stringify(result, null, 2) + '\n')
       process.stderr.write(restoreFailureSummary(result))

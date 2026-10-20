@@ -1,4 +1,4 @@
-import { chmod, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { collectBackupFiles, extractPluginsFromProfilePackage } from './collect.js'
 import { listPluginDataEntries } from './home-scope.js'
@@ -38,7 +38,11 @@ import {
   type PnpmInvocationLike,
 } from './plugin-install.js'
 import { snapshotsToDelete } from './retention.js'
-import { applyRestore } from './restore-apply.js'
+import { applyRestore, isSecretEntry } from './restore-apply.js'
+import { OperationLock } from './op-lock.js'
+import { PathPolicy, type ApiPathUse } from './path-policy.js'
+import { redactText } from './redact.js'
+import { isRemoteNonRegistrySpec } from './local-spec.js'
 import { captureSelfEntries, reapplySelfEntries } from './self-entry.js'
 import { packSnapshot, unpackSnapshot } from './snapshot-io.js'
 import { maskTargetSecrets, mergeTargetSecrets } from './target-secrets.js'
@@ -89,6 +93,12 @@ export interface VaultServiceOptions {
   registryLookup?: RegistryLookup | null
   /** Registry integrity lookup for restore (tests); null disables the check. */
   registryIntegrity?: PluginInstallDeps['registryIntegrity']
+  /** Extra folders the HTTP API may read/write besides home + removable drives (tests). */
+  apiPathRoots?: string[]
+  /** Home folder used for API path approval (tests); defaults to os.homedir(). */
+  apiHome?: string
+  /** How long a backup/restore waits for another one to finish (default 30 min). */
+  lockTimeoutMs?: number
 }
 
 export class VaultService {
@@ -110,6 +120,11 @@ export class VaultService {
   private preferredRegistry: string | null | undefined
   private pickDirectoryFn?: PickDirectoryFn
   private readonly runCommand?: PluginInstallDeps['runCommand']
+  /** Approved folders for API-supplied paths (C-02/C-03/H-08). */
+  readonly paths: PathPolicy
+  private readonly lock: OperationLock
+  private scheduleGeneration = 0
+  private scheduleStopped = false
 
   constructor(private readonly options: VaultServiceOptions = {}) {
     this.dshHome = options.dshHome ?? resolveDshHome()
@@ -124,6 +139,13 @@ export class VaultService {
     this.preferredRegistry = options.preferredRegistry
     this.pickDirectoryFn = options.pickDirectory
     this.runCommand = options.runPluginInstall
+    this.paths = new PathPolicy({ extraRoots: options.apiPathRoots, protectedDirs: [this.dataDir], ...(options.apiHome ? { home: options.apiHome } : {}) })
+    this.lock = new OperationLock(this.dataDir, { timeoutMs: options.lockTimeoutMs })
+  }
+
+  /** Validate a path that came from the HTTP API (CLI/tools are not restricted). */
+  checkApiPath(path: string, use: ApiPathUse): Promise<string> {
+    return this.paths.check(path, use)
   }
 
   /** Hot-bind host services that may activate after the vault plugin. */
@@ -148,6 +170,42 @@ export class VaultService {
     return createDirectory(parent, name)
   }
 
+  /** In-app browser listing for the HTTP API: approved roots only, realpath-checked. */
+  async listFsApi(path: string) {
+    const real = await this.paths.check(path?.trim() ? path : '~', 'list')
+    const listing = await listDirectory(real)
+    // Probe in parallel with a short timeout so empty card readers can't stall the dialog.
+    const candidates = await this.paths.roots()
+    const present = await Promise.all(candidates.map((r) => Promise.race([
+      stat(r).then((st) => st.isDirectory(), () => false),
+      new Promise<boolean>((res) => setTimeout(() => res(false), 800).unref?.()),
+    ])))
+    const roots = candidates.filter((_, i) => present[i])
+    const allowed = async (p: string | null) => {
+      if (!p) return false
+      try {
+        await this.paths.check(p, 'list')
+        return true
+      } catch {
+        return false
+      }
+    }
+    const entries = []
+    for (const e of listing.entries) if (await allowed(e.path)) entries.push(e)
+    return {
+      ...listing,
+      parent: (await allowed(listing.parent)) ? listing.parent : null,
+      roots,
+      entries,
+      nativePicker: this.hasNativePicker(),
+    }
+  }
+
+  async createFsDirectoryApi(parent: string, name: string): Promise<string> {
+    const real = await this.paths.check(parent, 'mkdir')
+    return createDirectory(real, name)
+  }
+
   /**
    * Open dsh's native OS folder chooser. dsh's picker requires an AbortSignal
    * (it dereferences `signal.aborted`), so one is always passed.
@@ -157,10 +215,14 @@ export class VaultService {
     if (!this.pickDirectoryFn) {
       throw new VaultUserError('native folder picker is not available on this host', 501, 'NO_NATIVE_PICKER')
     }
-    return this.pickDirectoryFn(signal)
+    const picked = await this.pickDirectoryFn(signal)
+    // A folder chosen in the OS dialog is an explicit user approval for API paths.
+    this.paths.approve(picked)
+    return picked
   }
 
   async init(): Promise<void> {
+    this.scheduleStopped = false
     await mkdir(this.dataDir, { recursive: true, mode: 0o700 })
     await mkdir(vaultTempDir(this.dataDir), { recursive: true, mode: 0o700 })
     await this.ensureRollbackDir()
@@ -218,7 +280,13 @@ export class VaultService {
     return { plugins, settings: this.settings.pluginCopies, restoreOrder: this.settings.pluginRestoreOrder }
   }
 
-  async updateSettings(patch: Partial<VaultSettings>): Promise<VaultSettings> {
+  async updateSettings(patchIn: Partial<VaultSettings>): Promise<VaultSettings> {
+    // H-07: only known keys; the data folder (and anything else) cannot be moved over the API.
+    const { dataDir: _dataDir, ...patch } = (patchIn ?? {}) as Partial<VaultSettings> & { dataDir?: unknown }
+    void _dataDir
+    if (patch.schedule && patch.schedule.intervalMinutes !== undefined) {
+      patch.schedule = { ...patch.schedule, intervalMinutes: clampIntervalMinutes(patch.schedule.intervalMinutes) }
+    }
     this.settings = {
       ...this.settings,
       ...patch,
@@ -249,6 +317,13 @@ export class VaultService {
     if (config.id === ROLLBACK_TARGET_ID) {
       throw new VaultUserError('local-rollback is a reserved private target', 400, 'BAD_CONFIG')
     }
+    if (config.kind === 'local' && typeof (config as { directory?: unknown }).directory === 'string') {
+      // Never let a target point into the plugin's own data dir (targets.json, rollback).
+      const dir = (config as { directory: string }).directory
+      if (isInside(this.dataDir, expandUserPath(dir)) && !isInside(join(this.dataDir, 'snapshots'), expandUserPath(dir))) {
+        throw new VaultUserError('a storage target may not point into the dsh-vault data folder', 400, 'BAD_CONFIG')
+      }
+    }
     const existing = this.registry.list().find((t) => t.id === config.id)
     const merged = mergeTargetSecrets(config, existing)
     this.registry.upsert(merged)
@@ -268,10 +343,30 @@ export class VaultService {
   }
 
   async backup(req: BackupRequest, onProgress?: ProgressCallback): Promise<BackupResult> {
-    const started = Date.now()
-    const out = await this.backupInner(req, onProgress)
-    out.durationMs = Date.now() - started
-    return out
+    return this.lock.run('backup', async () => {
+      const started = Date.now()
+      const out = await this.backupInner(req, onProgress)
+      out.durationMs = Date.now() - started
+      return out
+    })
+  }
+
+  /** Final archive path for an export request (extension added when missing). */
+  exportPathFor(exportFile: string, encrypted: boolean): string {
+    const f = expandUserPath(exportFile.trim())
+    const lower = f.toLowerCase()
+    if (lower.endsWith('.tar.gz') || lower.endsWith('.dshvault')) return f
+    return `${f}${encrypted ? ENCRYPTED_EXTENSION : ARCHIVE_EXTENSION}`
+  }
+
+  /** 409 EXPORT_EXISTS unless the request explicitly allows replacing the file (C-02). */
+  async assertExportWritable(req: BackupRequest): Promise<void> {
+    if (!req.exportFile?.trim()) return
+    const out = this.exportPathFor(req.exportFile, Boolean(req.encrypt))
+    const st = await lstat(out).catch(() => null)
+    if (!st) return
+    if (!st.isFile()) throw new VaultUserError(`export target exists and is not a regular file: ${out}`, 409, 'EXPORT_NOT_FILE')
+    if (!req.overwrite) throw new VaultUserError(`export file already exists: ${out} (confirm to overwrite)`, 409, 'EXPORT_EXISTS')
   }
 
   private async backupInner(req: BackupRequest, onProgress?: ProgressCallback): Promise<BackupResult> {
@@ -295,13 +390,14 @@ export class VaultService {
       throw new VaultUserError('secrets may only be included when encryption is enabled', 400, 'SECRETS_REQUIRE_ENCRYPT')
     }
     onProgress?.({ phase: 'collect', message: 'Collecting dsh setup', percent: 5 })
-    const { files, plugins } = await collectBackupFiles({
+    const { files, plugins, redactedFiles } = await collectBackupFiles({
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
       includeSecrets,
       categories: req.categories,
       bundleLocalPlugins: req.bundleLocalPlugins,
       pluginCopyExclude: this.copyExcludeFor(req),
+      excludeAbs: [this.dataDir],
       onProgress,
     })
     // Mark copies whose exact version the registry no longer has: restore installs those from the copy directly.
@@ -335,12 +431,25 @@ export class VaultService {
     let exportPath: string | undefined
 
     if (exportFile) {
-      const ext = packed.encrypted ? ENCRYPTED_EXTENSION : ARCHIVE_EXTENSION
-      const out = exportFile.toLowerCase().endsWith('.tar.gz') || exportFile.toLowerCase().endsWith('.dshvault')
-        ? exportFile
-        : `${exportFile}${ext}`
+      const out = this.exportPathFor(exportFile, packed.encrypted)
       await mkdir(dirname(out), { recursive: true })
-      await writeFile(out, packed.bytes, { mode: 0o600 })
+      // C-02: exclusive create unless the caller explicitly confirmed overwriting a regular file.
+      const existing = await lstat(out).catch(() => null)
+      if (existing && (!existing.isFile() || !req.overwrite)) {
+        throw new VaultUserError(
+          existing.isFile() ? `export file already exists: ${out} (confirm to overwrite)` : `export target exists and is not a regular file: ${out}`,
+          409,
+          existing.isFile() ? 'EXPORT_EXISTS' : 'EXPORT_NOT_FILE',
+        )
+      }
+      try {
+        await writeFile(out, packed.bytes, { mode: 0o600, flag: req.overwrite ? 'w' : 'wx' })
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new VaultUserError(`export file already exists: ${out} (confirm to overwrite)`, 409, 'EXPORT_EXISTS')
+        }
+        throw err
+      }
       remoteKey = basename(out)
       exportPath = out
       targetId = 'export-file'
@@ -374,6 +483,7 @@ export class VaultService {
       includeSecrets,
       manifest: packed.manifest,
       exportPath,
+      ...(redactedFiles.length ? { redactedFiles } : {}),
     }
   }
 
@@ -408,7 +518,7 @@ export class VaultService {
   }
 
   async deleteSnapshot(targetId: string, snapshotId: string): Promise<void> {
-    await this.adapterFor(targetId).delete(snapshotId)
+    await this.lock.run('delete-snapshot', () => this.adapterFor(targetId).delete(snapshotId))
   }
 
   async verify(targetId: string, snapshotId: string, password?: string): Promise<{ ok: true; manifestId: string }> {
@@ -425,13 +535,15 @@ export class VaultService {
     const { bytes } = await this.resolveSnapshotBytes(req)
     const unpacked = await unpackSnapshot(bytes, req.password)
     const conflicts = normalizeConflicts(req.conflicts)
+    const secretsAvailable = unpacked.encrypted && unpacked.manifest.includeSecrets === true
     const { files: liveFiles } = await collectBackupFiles({
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
-      includeSecrets: unpacked.manifest.includeSecrets,
+      includeSecrets: secretsAvailable,
       bundleLocalPlugins: false,
+      excludeAbs: [this.dataDir],
     })
-    return previewRestoreDiff({
+    const preview = await previewRestoreDiff({
       manifest: unpacked.manifest,
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
@@ -439,13 +551,19 @@ export class VaultService {
       conflict: req.conflict,
       conflicts,
     })
+    preview.secretsAvailable = secretsAvailable
+    const remote = remotePluginSources(unpacked.manifest.plugins, this.activeProfile)
+    if (remote.length) preview.remotePluginSources = remote
+    return preview
   }
 
   async restore(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
-    const started = Date.now()
-    const out = await this.restoreInner(req, onProgress)
-    out.durationMs = Date.now() - started
-    return out
+    return this.lock.run('restore', async () => {
+      const started = Date.now()
+      const out = await this.restoreInner(req, onProgress)
+      out.durationMs = Date.now() - started
+      return out
+    })
   }
 
   private async restoreInner(req: RestoreRequest, onProgress?: ProgressCallback): Promise<RestoreResult> {
@@ -462,8 +580,15 @@ export class VaultService {
         }
       : undefined
     const conflicts = normalizeConflicts(req.conflicts)
-    const includeSecrets = req.includeSecrets ?? unpacked.manifest.includeSecrets
+    // H-02: credentials are written only when the caller asked for them AND the manifest
+    // says the snapshot carries them AND the bytes really were an encrypted envelope.
+    const includeSecrets = req.includeSecrets === true && unpacked.manifest.includeSecrets === true && unpacked.encrypted
     const snapshotId = unpacked.manifest.id
+    // M-01: only a private rollback snapshot may delete files (those its restore added).
+    const removePaths = resolved.targetId === ROLLBACK_TARGET_ID && Array.isArray(unpacked.manifest.rollbackRemoves)
+      ? unpacked.manifest.rollbackRemoves.filter((p): p is string => typeof p === 'string')
+      : undefined
+    const plannedAdds = await this.plannedAdds(unpacked.manifest, req.conflict, conflicts, includeSecrets)
 
     let rollbackSnapshotId: string | undefined
     let rollbackTargetId: string | undefined
@@ -475,7 +600,8 @@ export class VaultService {
         includeSecrets,
       )
       onProgress?.({ phase: 'rollback', message: 'Creating pre-restore rollback snapshot', fraction: 0 })
-      if (willTouchSecrets) {
+      const touchesSecretsByDelete = (removePaths ?? []).some((p) => isSecretEntry(unpacked.manifest, p)) && includeSecrets
+      if (willTouchSecrets || touchesSecretsByDelete) {
         if (!req.password) {
           throw new VaultUserError(
             'password required to create an encrypted pre-restore rollback that includes credentials (reuse the restore password)',
@@ -488,6 +614,7 @@ export class VaultService {
           encrypt: true,
           password: req.password,
           notes: `pre-restore rollback for ${snapshotId}`,
+          rollbackRemoves: plannedAdds,
           onProgress: rollbackProgress,
         })
       } else {
@@ -495,6 +622,7 @@ export class VaultService {
           includeSecrets: false,
           encrypt: false,
           notes: `pre-restore rollback for ${snapshotId}`,
+          rollbackRemoves: plannedAdds,
           onProgress: rollbackProgress,
         })
       }
@@ -509,7 +637,8 @@ export class VaultService {
       agentsHome: this.agentsHome,
       conflict: req.conflict,
       conflicts,
-      includeSecrets,
+      allowSecrets: includeSecrets,
+      removePaths,
       rollbackSnapshotId,
       onProgress,
     })
@@ -522,7 +651,8 @@ export class VaultService {
       const records = req.pluginProfiles?.length
         ? unpacked.manifest.plugins.filter((p) => req.pluginProfiles!.includes(p.profile ?? this.activeProfile))
         : unpacked.manifest.plugins
-      await this.installPlugins(records, result, undefined, req.pluginRestoreOrder, onProgress)
+      const approved = new Set((req.approvedPluginSources ?? []).filter((k) => typeof k === 'string'))
+      await this.installPlugins(records, result, undefined, req.pluginRestoreOrder, onProgress, approved)
       await this.saveLastRestore({ snapshotId, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
     }
     onProgress?.({ phase: 'verify', message: 'Verifying', fraction: 1 })
@@ -557,9 +687,16 @@ export class VaultService {
     only?: Set<string>,
     order?: VaultSettings['pluginRestoreOrder'],
     onProgress?: ProgressCallback,
+    approvedSources?: Set<string>,
   ): Promise<void> {
     const restoreOrder = order ?? this.settings.pluginRestoreOrder ?? 'source-first'
-    const { results, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only, restoreOrder, onProgress })
+    // H-06: a git / tarball / URL source is fetched only when the user approved that plugin.
+    const blockedSources = new Set<string>()
+    for (const r of remotePluginSources(records, this.activeProfile)) {
+      if (!approvedSources?.has(r.key) && !approvedSources?.has('*')) blockedSources.add(r.key)
+    }
+    const { results: raw, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only, restoreOrder, onProgress, blockedSources })
+    const results = raw.map((r) => ({ ...r, ...(r.detail ? { detail: redactText(r.detail) } : {}), ...(r.log ? { log: redactText(r.log) } : {}), ...(r.source ? { source: redactText(r.source) } : {}) }))
     result.pluginResults = results
     result.pluginsReinstalled = results.filter((r) => r.status === 'installed' || r.status === 'installed-from-backup').map((r) => r.name)
     result.pluginsFailed = results.filter((r) => r.status === 'failed').map((r) => r.name)
@@ -623,6 +760,10 @@ export class VaultService {
    * from the profile manifests on disk.
    */
   async retryFailedPlugins(req: { plugins?: Array<{ name: string; profile: string }> } = {}, onProgress?: ProgressCallback): Promise<RestoreResult> {
+    return this.lock.run('retry-plugins', () => this.retryInner(req, onProgress))
+  }
+
+  private async retryInner(req: { plugins?: Array<{ name: string; profile: string }> }, onProgress?: ProgressCallback): Promise<RestoreResult> {
     const last = await this.loadLastRestore()
     const records: VaultManifest['plugins'] = [...(last?.plugins ?? [])]
     if (!records.length) {
@@ -648,7 +789,8 @@ export class VaultService {
       pluginsFailed: [],
       manualActions: [],
     }
-    await this.installPlugins(records, result, only, undefined, onProgress)
+    // Retrying a named plugin is an explicit, per-plugin user action: it approves its source.
+    await this.installPlugins(records, result, only, undefined, onProgress, req.plugins?.length ? only : undefined)
     if (last) {
       // Merge into the saved results so a second retry still knows what is left.
       const rows = new Map(last.pluginResults.map((r) => [`${r.profile}:${r.name}`, r]))
@@ -676,6 +818,9 @@ export class VaultService {
       if (info.isFile()) {
         if (!isSnapshotArchiveName(path)) {
           throw new VaultUserError('import file must be a .tar.gz or .dshvault archive', 400, 'BAD_CONFIG')
+        }
+        if (info.size > MAX_IMPORT_BYTES) {
+          throw new VaultUserError(`import file is larger than ${MAX_IMPORT_BYTES} bytes`, 413, 'ARCHIVE_LIMIT')
         }
         const bytes = await readFile(path)
         return { bytes, targetId: 'import-file', snapshotId: req.snapshotId ?? basename(path).replace(/\.(tar\.gz|dshvault)$/i, '') }
@@ -721,6 +866,7 @@ export class VaultService {
   async runScheduledBackup(onProgress?: ProgressCallback): Promise<BackupResult | null> {
     const schedule = this.settings.schedule
     if (!schedule.enabled) return null
+    const generation = this.scheduleGeneration
     const result = await this.backup(
       {
         targetId: schedule.targetId,
@@ -731,19 +877,54 @@ export class VaultService {
       onProgress,
     )
     const next = new Date(Date.now() + effectiveIntervalMs(schedule.intervalMinutes)).toISOString()
+    // M-03: stopSchedule() during the backup must not be undone by persisting nextRunAt.
+    if (this.scheduleStopped || generation !== this.scheduleGeneration) {
+      this.settings = { ...this.settings, schedule: { ...this.settings.schedule, lastRunAt: new Date().toISOString(), nextRunAt: next } }
+      await saveSettings(this.dataDir, this.settings).catch(() => {})
+      return result
+    }
     await this.updateSchedule({ lastRunAt: new Date().toISOString(), nextRunAt: next })
     return result
   }
 
+  /** Stop the timer for good (plugin disposal / tests); re-armed only by init(). */
   stopSchedule(): void {
+    this.scheduleStopped = true
+    this.clearScheduleTimer()
+  }
+
+  private clearScheduleTimer(): void {
+    this.scheduleGeneration++
     if (this.scheduleTimer) {
       clearTimeout(this.scheduleTimer)
       this.scheduleTimer = null
     }
   }
 
+  /** Whether a schedule timer is armed (tests). */
+  hasScheduleTimer(): boolean {
+    return this.scheduleTimer !== null
+  }
+
+  /** Sleep until `dueAt` in chunks ≤ 2^31-1 ms (M-04: larger delays overflow to 1 ms). */
+  private armAt(dueAt: number, generation: number, fire: () => void): void {
+    const remaining = dueAt - Date.now()
+    if (remaining <= 0) {
+      fire()
+      return
+    }
+    this.scheduleTimer = setTimeout(() => {
+      this.scheduleTimer = null
+      if (generation !== this.scheduleGeneration || this.scheduleStopped) return
+      this.armAt(dueAt, generation, fire)
+    }, Math.min(remaining, MAX_TIMER_MS))
+    // unref so CLI/tests can exit
+    this.scheduleTimer.unref?.()
+  }
+
   private armSchedule(): void {
-    this.stopSchedule()
+    this.clearScheduleTimer()
+    if (this.scheduleStopped) return
     const schedule = this.settings.schedule
     if (!schedule.enabled) return
     // Honor a persisted nextRunAt so restarts don't keep pushing the run out;
@@ -754,24 +935,19 @@ export class VaultService {
     const delay = Number.isFinite(due)
       ? Math.min(Math.max(due - Date.now(), SCHEDULE_CATCHUP_DELAY_MS), intervalMs)
       : intervalMs
-    this.scheduleTimer = setTimeout(() => {
-      this.scheduleTimer = null
+    const generation = this.scheduleGeneration
+    this.armAt(Date.now() + delay, generation, () => {
       void this.runScheduledBackup().catch(() => {
         // never log secrets; retry on the next interval
         this.armScheduleAfterFailure(intervalMs)
       })
-    }, delay)
-    // unref so CLI/tests can exit
-    this.scheduleTimer.unref?.()
+    })
   }
 
   private armScheduleAfterFailure(intervalMs: number): void {
-    if (this.scheduleTimer || !this.settings.schedule.enabled) return
-    this.scheduleTimer = setTimeout(() => {
-      this.scheduleTimer = null
-      this.armSchedule()
-    }, intervalMs)
-    this.scheduleTimer.unref?.()
+    if (this.scheduleTimer || this.scheduleStopped || !this.settings.schedule.enabled) return
+    const generation = this.scheduleGeneration
+    this.armAt(Date.now() + intervalMs, generation, () => this.armSchedule())
   }
 
   private async applyRetention(targetId: string): Promise<void> {
@@ -867,6 +1043,7 @@ export class VaultService {
     encrypt: boolean
     password?: string
     notes: string
+    rollbackRemoves?: string[]
     onProgress?: ProgressCallback
   }): Promise<string> {
     await this.ensureRollbackDir()
@@ -881,6 +1058,7 @@ export class VaultService {
       agentsHome: this.agentsHome,
       includeSecrets: input.includeSecrets,
       bundleLocalPlugins: false,
+      excludeAbs: [this.dataDir],
       onProgress: input.onProgress,
     })
     const packed = await packSnapshot({
@@ -892,21 +1070,34 @@ export class VaultService {
       kdf: this.settings.preferredKdf,
       dshVersion: this.dshVersion,
       notes: input.notes,
+      rollbackRemoves: input.rollbackRemoves,
       onProgress: input.onProgress,
     })
     await this.ensureRollbackAdapter().put(packed.snapshotId, packed.bytes)
     return packed.snapshotId
   }
 
+  /** Paths the restore will create (not overwrite); a rollback of it deletes them again (M-01). */
+  private async plannedAdds(
+    manifest: VaultManifest,
+    conflict: ConflictStrategy,
+    conflicts: ReturnType<typeof normalizeConflicts>,
+    allowSecrets: boolean,
+  ): Promise<string[]> {
+    const preview = await previewRestoreDiff({ manifest, dshHome: this.dshHome, agentsHome: this.agentsHome, conflict, conflicts })
+    return preview.items
+      .filter((i) => i.change === 'add' && (allowSecrets || !isSecretEntry(manifest, i.path)))
+      .map((i) => i.path)
+  }
+
+  /** M-07: per-path, with the shared classifier — the request/manifest flags alone never decide. */
   private async restoreWillApplySecrets(
     manifest: VaultManifest,
     conflict: ConflictStrategy,
     conflicts: ReturnType<typeof normalizeConflicts>,
     includeSecrets: boolean,
   ): Promise<boolean> {
-    if (!includeSecrets && !manifest.includeSecrets) return false
-    const allowSecrets = includeSecrets || manifest.includeSecrets
-    if (!allowSecrets) return false
+    if (!includeSecrets) return false
     const preview = await previewRestoreDiff({
       manifest,
       dshHome: this.dshHome,
@@ -915,9 +1106,7 @@ export class VaultService {
       conflicts,
     })
     for (const item of preview.items) {
-      const meta = manifest.files.find((f) => f.path === item.path)
-      const secret = Boolean(meta?.secret) || isSecretRelPath(item.path)
-      if (!secret) continue
+      if (!isSecretEntry(manifest, item.path)) continue
       const strategy = item.resolution ?? resolveItemConflict(item.path, conflict, conflicts)
       if (shouldApplyChange(item.change, strategy)) return true
     }
@@ -929,8 +1118,44 @@ export class VaultService {
 export const MIN_SCHEDULE_MINUTES = 15
 const SCHEDULE_CATCHUP_DELAY_MS = 5_000
 
+/** Longest supported interval (M-04): one year. */
+export const MAX_SCHEDULE_MINUTES = 365 * 24 * 60
+/** setTimeout's ceiling; longer delays are chained. */
+export const MAX_TIMER_MS = 2 ** 31 - 1
+/** Largest import file read into memory. */
+export const MAX_IMPORT_BYTES = 2 * 1024 * 1024 * 1024 - 1
+
+export function clampIntervalMinutes(intervalMinutes: number): number {
+  const n = Number(intervalMinutes)
+  if (!Number.isFinite(n)) return MIN_SCHEDULE_MINUTES
+  return Math.min(MAX_SCHEDULE_MINUTES, Math.max(MIN_SCHEDULE_MINUTES, n))
+}
+
 export function effectiveIntervalMs(intervalMinutes: number): number {
-  return Math.max(MIN_SCHEDULE_MINUTES, Number(intervalMinutes) || 0) * 60_000
+  return clampIntervalMinutes(intervalMinutes) * 60_000
+}
+
+function isInside(root: string, p: string): boolean {
+  const r = root.replace(/[\\/]+$/, '')
+  const a = process.platform === 'win32' ? p.toLowerCase() : p
+  const b = process.platform === 'win32' ? r.toLowerCase() : r
+  return a === b || a.startsWith(b + '/') || a.startsWith(b + '\\')
+}
+
+/** Plugins whose install would fetch a git / tarball / URL source (H-06), credentials stripped for display. */
+export function remotePluginSources(records: VaultManifest['plugins'], activeProfile: string): Array<{ key: string; name: string; profile: string; source: string }> {
+  const out: Array<{ key: string; name: string; profile: string; source: string }> = []
+  const seen = new Set<string>()
+  for (const p of records) {
+    const profile = p.profile ?? activeProfile
+    const key = `${profile}:${p.name}`
+    if (seen.has(key)) continue
+    const spec = [p.source, p.version, p.lockedTarball].find((s) => typeof s === 'string' && isRemoteNonRegistrySpec(s))
+    if (!spec || p.bundledSource) continue
+    seen.add(key)
+    out.push({ key, name: p.name, profile, source: redactText(spec) })
+  }
+  return out
 }
 
 /** Id of the private local rollback folder (not a user-editable storage target). */

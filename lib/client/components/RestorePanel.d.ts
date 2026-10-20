@@ -26,6 +26,10 @@ export interface RestorePanelProps {
         conflicts?: Record<string, ConflictStrategy>;
         createRollbackSnapshot?: boolean;
         reinstallPlugins?: boolean;
+        /** Write credential files from an encrypted snapshot that carries them (explicit opt-in). */
+        includeSecrets?: boolean;
+        /** `profile:name` of git / tarball / URL plugin sources the user allowed to be fetched. */
+        approvedPluginSources?: string[];
     }) => void;
     loading?: boolean;
     /** Re-attempt only the failed plugins of the shown result (no config rewrite). */

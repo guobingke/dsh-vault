@@ -106,6 +106,11 @@ export interface VaultManifest {
   /** SHA-256 of the concatenated sorted "path:sha256" lines (integrity of the file table). */
   manifestSha256: string
   notes?: string
+  /**
+   * Private rollback snapshots only: paths the restore it guards ADDED. Restoring the
+   * rollback deletes them again (M-01). Ignored for any other snapshot source.
+   */
+  rollbackRemoves?: string[]
 }
 
 export interface CollectedFile {
@@ -129,6 +134,8 @@ export interface CollectOptions {
   bundleLocalPlugins?: boolean
   /** `profile:name` keys that get no saved copy (neither local source nor installed fallback). */
   pluginCopyExclude?: string[]
+  /** Absolute dirs never collected, matched after realpath (the vault data dir; H-07). */
+  excludeAbs?: string[]
   onProgress?: ProgressCallback
 }
 
@@ -142,6 +149,8 @@ export interface BackupRequest {
   directory?: string
   /** Write a single portable archive to this file path (.tar.gz / .dshvault). */
   exportFile?: string
+  /** Replace an existing export file. Without it an existing file is never overwritten (C-02). */
+  overwrite?: boolean
   encrypt?: boolean
   password?: string
   kdf?: KdfAlgorithm
@@ -168,6 +177,8 @@ export interface BackupResult {
   /** Absolute path when exportFile/directory was used. */
   exportPath?: string
   durationMs?: number
+  /** Plaintext backup: files whose URL credentials / tokens were redacted (H-05). */
+  redactedFiles?: string[]
 }
 
 export interface DiffItem {
@@ -197,6 +208,13 @@ export interface RestorePreview {
   conflict?: ConflictStrategy
   /** Per-path overrides that were applied when computing resolutions. */
   conflicts?: Record<string, ConflictStrategy>
+  /** True when the snapshot is really encrypted AND carries credentials (restore may opt in). */
+  secretsAvailable?: boolean
+  /**
+   * Plugins whose install would fetch a git / tarball / URL source (H-06). Each needs an
+   * explicit approval (`RestoreRequest.approvedPluginSources`); `source` has credentials stripped.
+   */
+  remotePluginSources?: Array<{ key: string; name: string; profile: string; source: string }>
 }
 
 export interface RestoreRequest {
@@ -224,9 +242,18 @@ export interface RestoreRequest {
   reinstallPlugins?: boolean
   /** Only install plugins of these profiles (files are still restored in full). */
   pluginProfiles?: string[]
+  /**
+   * Write credential files. Honored only when the snapshot really was encrypted and its
+   * manifest says it carries secrets (all three must hold; H-02).
+   */
   includeSecrets?: boolean
   /** Plugins with a saved copy: try the copy first, or the source first (default: settings). */
   pluginRestoreOrder?: PluginRestoreOrder
+  /**
+   * `profile:name` keys whose git / tarball / URL source may be fetched (H-06). Others
+   * install from the snapshot's saved copy when there is one, else are skipped.
+   */
+  approvedPluginSources?: string[]
 }
 
 /** 优先从源安装，失败再用副本 (`source-first`) / 优先使用备份副本 (`copy-first`). */
@@ -252,6 +279,8 @@ export type PluginFailureReasonCode =
   | 'no-recorded-source'
   | 'integrity-mismatch'
   | 'self'
+  | 'source-not-approved'
+  | 'invalid-spec'
   | 'unknown'
 
 export interface PluginInstallResultRow {
@@ -286,6 +315,10 @@ export interface RestoreResult {
   manualActions: string[]
   /** Wall time of the restore (or retry), for the completion summary. */
   durationMs?: number
+  /** Credential files this restore wrote (empty when credentials were left untouched; M-07). */
+  credentialsWritten?: string[]
+  /** Files the restore added that a later rollback of this restore deletes again (M-01). */
+  addedFiles?: string[]
 }
 
 export interface SnapshotInfo {

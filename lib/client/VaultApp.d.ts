@@ -6,6 +6,7 @@ export interface BackupInput {
     targetId?: string;
     directory?: string;
     exportFile?: string;
+    overwrite?: boolean;
     encrypt: boolean;
     password?: string;
     includeSecrets: boolean;

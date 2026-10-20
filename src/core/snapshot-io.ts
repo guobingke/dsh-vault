@@ -21,6 +21,7 @@ export async function packSnapshot(input: {
   kdf?: KdfAlgorithm
   dshVersion?: string
   notes?: string
+  rollbackRemoves?: string[]
   onProgress?: ProgressCallback
 }): Promise<PackedSnapshot> {
   const snapshotId = makeSnapshotId()
@@ -34,6 +35,7 @@ export async function packSnapshot(input: {
     kdf: input.kdf ?? 'scrypt',
     dshVersion: input.dshVersion,
     notes: input.notes,
+    rollbackRemoves: input.rollbackRemoves,
   })
   const entries = [
     { path: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') },
@@ -56,6 +58,8 @@ export async function packSnapshot(input: {
 export interface UnpackedSnapshot {
   manifest: VaultManifest
   files: Map<string, Buffer>
+  /** True only when the bytes really were an encrypted envelope that decrypted (never taken from the manifest). */
+  encrypted: boolean
 }
 
 /** Decode archive or encrypted envelope into manifest + file map. */
@@ -65,11 +69,13 @@ export async function unpackSnapshot(
   onProgress?: ProgressCallback,
 ): Promise<UnpackedSnapshot> {
   let archive = bytes
+  let encrypted = false
   const head = bytes.toString('utf8', 0, Math.min(bytes.length, 80))
   if (head.includes('dsh-vault-encrypted')) {
     onProgress?.({ phase: 'decrypt', message: 'Decrypting snapshot', percent: 20 })
     if (!password) throw new VaultDecryptError('password required to decrypt snapshot', 'PASSWORD_REQUIRED')
     archive = await decryptBytes(parseEnvelope(bytes), password)
+    encrypted = true
   }
   onProgress?.({ phase: 'download', message: 'Unpacking archive', percent: 50 })
   const entries = unpackTarGz(archive)
@@ -95,5 +101,5 @@ export async function unpackSnapshot(
     if (data.length !== meta.size) throw new Error(`size mismatch for ${meta.path}`)
   }
   onProgress?.({ phase: 'done', message: 'Snapshot verified', percent: 100 })
-  return { manifest, files }
+  return { manifest, files, encrypted }
 }

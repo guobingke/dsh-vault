@@ -73,6 +73,13 @@ export function RestoreSummary({
         </details>
       ) : null}
       {result.rollbackSnapshotId ? <div className="dv-hint">{tr('restore.rollbackCreated', { id: result.rollbackSnapshotId })}</div> : null}
+      {result.credentialsWritten ? (
+        <div className="dv-hint">
+          {result.credentialsWritten.length
+            ? tr('restore.credentialsWritten', { files: result.credentialsWritten.join(', ') })
+            : tr('restore.credentialsUntouched')}
+        </div>
+      ) : null}
       {notice ? <p className="dv-restart-notice">{tr(notice.key, notice.vars)}</p> : null}
       {detail ? <div className="dv-hint">{detail}</div> : null}
     </Banner>

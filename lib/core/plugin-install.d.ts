@@ -116,6 +116,13 @@ export declare function installBundledSourceDeps(dir: string, deps: PluginInstal
     ok: boolean;
     detail: string;
 }>;
+/** Characters cmd.exe treats specially (L-04). */
+export declare function isShellSafeArg(arg: string): boolean;
+/**
+ * H-06: a plugin record from a snapshot must look like a package, and its spec must not be
+ * an option (`--foo`) or carry whitespace / control characters.
+ */
+export declare function invalidPluginRecord(p: PluginRecord): string | null;
 /**
  * Same lookup dsh-app-boot uses for `dsh.profile.bundles` (resolveBundleDir, profile anchor):
  * Node's node_modules search paths from <profile>/package.json, a directory holding package.json.
@@ -151,6 +158,11 @@ export interface ReinstallOptions {
     only?: Set<string>;
     /** Plugins with a saved copy: `copy-first` installs the copy before trying the source. Default `source-first`. */
     restoreOrder?: 'source-first' | 'copy-first';
+    /**
+     * `profile:name` keys whose git / tarball / URL source must NOT be fetched (H-06): they
+     * install from the snapshot's saved copy when there is one, else are skipped.
+     */
+    blockedSources?: Set<string>;
     /** Per-plugin progress (k/K, current plugin name). */
     onProgress?: (ev: {
         phase: 'reinstall' | 'verify';

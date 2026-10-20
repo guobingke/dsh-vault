@@ -143,9 +143,20 @@ function defaultRunCommand(
   return new Promise((resolvePromise) => {
     const win = process.platform === 'win32'
     const needsShell = win && (/\.(cmd|bat)$/i.test(command) || !/[\\/]/.test(command))
+    // L-04: cmd.exe re-parses the joined command line. Refuse metacharacters outright and
+    // quote arguments with spaces, so a snapshot-supplied spec can never inject commands.
+    if (needsShell) {
+      const bad = [command, ...args].find((a) => !isShellSafeArg(a))
+      if (bad !== undefined) {
+        resolvePromise({ ok: false, detail: `refusing to run through cmd.exe: unsafe argument ${JSON.stringify(bad)}`, code: null })
+        return
+      }
+    }
+    const spawnCommand = needsShell ? quoteForCmd(command) : command
+    const spawnArgs = needsShell ? args.map(quoteForCmd) : args
     let child
     try {
-      child = spawn(command, args, {
+      child = spawn(spawnCommand, spawnArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: opts.cwd,
         env: opts.env ?? process.env,
@@ -396,7 +407,7 @@ export async function findGitDir(env: NodeJS.ProcessEnv = process.env, platform:
 export async function installBundledSourceDeps(dir: string, deps: PluginInstallDeps): Promise<{ ok: boolean; detail: string }> {
   if ((await missingRuntimeDependencies(dir)).length === 0) return { ok: true, detail: 'dependencies present' }
   const pnpm = await resolvePnpm(deps)
-  const args = ['install', '--prod', '--ignore-workspace', '--config.auto-install-peers=false', '--config.node-linker=hoisted']
+  const args = ['install', '--prod', '--ignore-workspace', '--ignore-scripts', '--config.auto-install-peers=false', '--config.node-linker=hoisted']
   if (deps.preferredRegistry) args.push(`--config.registry=${deps.preferredRegistry}`)
   let result = await runPnpm(deps, pnpm, args, dir)
   if (!result.ok && deps.preferredRegistry) {
@@ -405,6 +416,33 @@ export async function installBundledSourceDeps(dir: string, deps: PluginInstallD
   const still = await missingRuntimeDependencies(dir)
   if (still.length) return { ok: false, detail: `dependencies not installed in ${dir}: ${still.join(', ')}\n${result.detail}` }
   return { ok: true, detail: 'installed bundled source dependencies' }
+}
+
+/** Characters cmd.exe treats specially (L-04). */
+export function isShellSafeArg(arg: string): boolean {
+  return !/[&|<>^%!"`\r\n\0]/.test(arg)
+}
+
+function quoteForCmd(arg: string): string {
+  return /[\s()]/.test(arg) ? `"${arg}"` : arg
+}
+
+const NPM_NAME = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i
+
+/**
+ * H-06: a plugin record from a snapshot must look like a package, and its spec must not be
+ * an option (`--foo`) or carry whitespace / control characters.
+ */
+export function invalidPluginRecord(p: PluginRecord): string | null {
+  if (typeof p.name !== 'string' || p.name.length > 214 || !NPM_NAME.test(p.name)) return `invalid package name ${JSON.stringify(p.name)}`
+  for (const field of [p.source, p.version, p.lockedTarball, p.installedVersion, p.profile]) {
+    if (field === undefined || field === null) continue
+    if (typeof field !== 'string' || field.startsWith('-') || /[\s\0]/.test(field) || field.length > 2048) {
+      return `invalid spec ${JSON.stringify(field)}`
+    }
+  }
+  if (p.profile !== undefined && !/^[\w.-]+$/.test(p.profile)) return `invalid profile ${JSON.stringify(p.profile)}`
+  return null
 }
 
 /* --------------------------------------------------------------------------
@@ -593,9 +631,9 @@ async function materializeProfile(
 ): Promise<{ ok: boolean; detail: string }> {
   const pnpm = await resolvePnpm(deps)
   const hasLock = opts.frozen !== false && (await pathExists(join(profileDir, 'pnpm-lock.yaml')))
-  const args = hasLock ? ['install', '--frozen-lockfile'] : ['install']
+  const args = hasLock ? ['install', '--frozen-lockfile', '--ignore-scripts'] : ['install', '--ignore-scripts']
   let result = await runPnpm(deps, pnpm, args, profileDir)
-  if (!result.ok && hasLock) result = await runPnpm(deps, pnpm, ['install'], profileDir)
+  if (!result.ok && hasLock) result = await runPnpm(deps, pnpm, ['install', '--ignore-scripts'], profileDir)
   return { ok: result.ok, detail: result.detail }
 }
 
@@ -638,7 +676,7 @@ async function installViaPnpm(
   deps: PluginInstallDeps,
 ): Promise<{ ok: boolean; detail: string }> {
   const pnpm = await resolvePnpm(deps)
-  const args = ['add', spec, ...(kind === 'npm' ? ['--save-exact'] : [])]
+  const args = ['add', spec, '--ignore-scripts', ...(kind === 'npm' ? ['--save-exact'] : [])]
   const registry = deps.preferredRegistry === undefined ? NPMMIRROR : deps.preferredRegistry
   let result = await runPnpm(deps, pnpm, registry && kind === 'npm' ? [...args, `--config.registry=${registry}`] : args, profileDir)
   if (!result.ok && registry && kind === 'npm') result = await runPnpm(deps, pnpm, args, profileDir)
@@ -757,7 +795,7 @@ async function installFromBackupFallback(
   const logs: string[] = []
   const pnpm = await resolvePnpm(deps)
   if (plugin.lockedTarball) {
-    const r = await runPnpm(deps, pnpm, ['add', `${plugin.name}@${plugin.lockedTarball}`], profileDir)
+    const r = await runPnpm(deps, pnpm, ['add', `${plugin.name}@${plugin.lockedTarball}`, '--ignore-scripts'], profileDir)
     if (r.ok || (await pluginPackagePresent(deps.dshHome, plugin.profile ?? 'web', plugin.name))) {
       await ensureBundleListed(profileDir, plugin.name)
       return { ok: true, detail: `installed machine 1's locked tarball ${plugin.lockedTarball}${plugin.installedVersion ? ` @${plugin.installedVersion}` : ''}`, fromBackup: true }
@@ -767,7 +805,7 @@ async function installFromBackupFallback(
   if (plugin.fallbackBundle) {
     const abs = join(deps.dshHome, ...plugin.fallbackBundle.split('/'))
     if (await pathExists(join(abs, 'package.json'))) {
-      const r = await runPnpm(deps, pnpm, ['add', `link:${specPath(abs)}`], profileDir)
+      const r = await runPnpm(deps, pnpm, ['add', `link:${specPath(abs)}`, '--ignore-scripts'], profileDir)
       const present = await pluginPackagePresent(deps.dshHome, plugin.profile ?? 'web', plugin.name)
       if (r.ok || present) {
         await ensureBundleListed(profileDir, plugin.name)
@@ -876,6 +914,10 @@ function reasonLine(reason: PluginFailureReason, subject?: string): string {
       return `the backup has no recorded install source for ${subject ?? 'this plugin'} and no saved copy; skipped (installing by name could pull an unrelated npm package with the same name)`
     case 'integrity-mismatch':
       return `the registry's ${subject ?? 'package'} is a different package than the one backed up (integrity differs), and this backup has no copy of it`
+    case 'source-not-approved':
+      return `${subject ?? 'this plugin'} would be fetched from a git / tarball / URL source named in the snapshot; it was not approved, and the snapshot has no saved copy — approve it in the restore dialog (or pass --allow-plugin-source) to install it`
+    case 'invalid-spec':
+      return `refused a malformed plugin record: ${subject ?? ''}`
     case 'self':
       return 'dsh-vault itself is never reinstalled by a restore; this machine keeps its own installation'
     case 'no-backup-copy':
@@ -901,6 +943,11 @@ export interface ReinstallOptions {
   only?: Set<string>
   /** Plugins with a saved copy: `copy-first` installs the copy before trying the source. Default `source-first`. */
   restoreOrder?: 'source-first' | 'copy-first'
+  /**
+   * `profile:name` keys whose git / tarball / URL source must NOT be fetched (H-06): they
+   * install from the snapshot's saved copy when there is one, else are skipped.
+   */
+  blockedSources?: Set<string>
   /** Per-plugin progress (k/K, current plugin name). */
   onProgress?: (ev: { phase: 'reinstall' | 'verify'; message: string; current?: number; total?: number; item?: string; fraction?: number }) => void
 }
@@ -952,8 +999,38 @@ export async function reinstallMissingPlugins(
     results.unshift({ name: p.name, profile: profileOf(p), status: 'skipped', reason: 'self', detail: reasonLine('self'), source: p.originalSource ?? p.source })
   }
 
+  // H-06: malformed records never reach pnpm / dsh.
+  for (let i = actionable.length - 1; i >= 0; i--) {
+    const p = actionable[i]!
+    const bad = invalidPluginRecord(p)
+    if (!bad) continue
+    actionable.splice(i, 1)
+    results.push({ name: String(p.name), profile: profileOf(p), status: 'failed', reason: 'invalid-spec', subject: bad, detail: `refused: ${bad}`, source: String(p.source ?? '') })
+  }
+
   // Only the bundle/cordis name was recorded: copy only, never the registry by name.
   const copyOnly = new Map<string, string>()
+
+  // H-06: unapproved git / tarball / URL sources: saved copy only, or skip.
+  const blockedNoCopy: PluginRecord[] = []
+  for (let i = actionable.length - 1; i >= 0; i--) {
+    const p = actionable[i]!
+    const k = key(profileOf(p), p.name)
+    if (!options.blockedSources?.has(k)) continue
+    if (await pluginPackagePresent(deps.dshHome, profileOf(p), p.name)) continue
+    if (p.fallbackBundle) {
+      p.lockedTarball = undefined
+      copyOnly.set(k, 'remote plugin source not approved; installed the saved copy from the snapshot instead')
+      continue
+    }
+    actionable.splice(i, 1)
+    blockedNoCopy.push(p)
+    results.push({ name: p.name, profile: profileOf(p), status: 'skipped', reason: 'source-not-approved', subject: p.name, detail: reasonLine('source-not-approved', p.name), source: p.source })
+  }
+  // Their entries must not stay in the restored profile manifests either, or `pnpm install` would fetch them.
+  for (const profile of new Set(blockedNoCopy.map(profileOf))) {
+    await removeFromManifest(join(deps.dshHome, 'profiles', profile), blockedNoCopy.filter((p) => profileOf(p) === profile).map((p) => p.name))
+  }
   for (let i = actionable.length - 1; i >= 0; i--) {
     const p = actionable[i]!
     if (!hasNoRecordedSource(p)) continue

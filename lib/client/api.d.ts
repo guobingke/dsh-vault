@@ -4,7 +4,8 @@ import type { FsListingView } from './components/PathPicker.js';
 export type RestoreConflicts = Record<string, ConflictStrategy>;
 export declare class VaultApiError extends Error {
     readonly status: number;
-    constructor(message: string, status: number);
+    readonly code?: string | undefined;
+    constructor(message: string, status: number, code?: string | undefined);
 }
 export interface VaultStatusResponse {
     dshHome: string;
@@ -87,6 +88,8 @@ export declare class VaultApi {
         targetId?: string;
         directory?: string;
         exportFile?: string;
+        /** Replace an existing export file (asked for explicitly after a 409 EXPORT_EXISTS). */
+        overwrite?: boolean;
         encrypt?: boolean;
         password?: string;
         includeSecrets?: boolean;

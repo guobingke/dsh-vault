@@ -1,3 +1,4 @@
+import { allowAll, vaultFetch } from './api-client.js'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -9,7 +10,7 @@ async function withServer(
   service: VaultService,
   fn: (base: string) => Promise<void>,
 ): Promise<void> {
-  const routes = buildVaultRoutes(service)
+  const routes = buildVaultRoutes(service, allowAll)
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const route = routes.find((r) => r.path === url.pathname)
@@ -41,7 +42,7 @@ describe('HTTP API routes', () => {
       })
       await service.init()
       await withServer(service, async (base) => {
-        const statusRes = await fetch(`${base}/api/dsh-vault/status`)
+        const statusRes = await vaultFetch(`${base}/api/dsh-vault/status`)
         assert.equal(statusRes.status, 200)
         const status = await statusRes.json() as {
           targets: unknown[]
@@ -54,7 +55,7 @@ describe('HTTP API routes', () => {
         assert.ok(['web', 'desktop', 'other'].includes(status.surface))
         assert.ok(status.installPlan.some((p) => p.profile === 'desktop'))
 
-        const backupRes = await fetch(`${base}/api/dsh-vault/backup`, {
+        const backupRes = await vaultFetch(`${base}/api/dsh-vault/backup`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ targetId: 'local-default' }),
@@ -63,7 +64,7 @@ describe('HTTP API routes', () => {
         const backup = await backupRes.json() as { snapshotId: string }
         assert.match(backup.snapshotId, /^vault-/)
 
-        const listRes = await fetch(`${base}/api/dsh-vault/snapshots`)
+        const listRes = await vaultFetch(`${base}/api/dsh-vault/snapshots`)
         const list = await listRes.json() as { snapshots: unknown[] }
         assert.ok(list.snapshots.length >= 1)
       })

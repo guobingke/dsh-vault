@@ -16,6 +16,10 @@ export declare function assertInside(root: string, absPath: string): string;
 export declare function joinRel(root: string, rel: string): string;
 /** Paths that must never be packed unless explicitly opted into secrets mode. */
 export declare const SECRET_BASENAMES: Set<string>;
+/**
+ * The single credential classifier used by backup, preview and restore (M-06).
+ * Matches on the basename, case-insensitively, plus any `.credentials.yaml` component.
+ */
 export declare function isSecretRelPath(rel: string): boolean;
 /** Directories skipped while collecting (reinstallable artifacts). */
 export declare const SKIP_DIR_NAMES: Set<string>;

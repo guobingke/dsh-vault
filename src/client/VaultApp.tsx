@@ -21,6 +21,7 @@ export interface BackupInput {
   targetId?: string
   directory?: string
   exportFile?: string
+  overwrite?: boolean
   encrypt: boolean
   password?: string
   includeSecrets: boolean
@@ -283,10 +284,16 @@ export function VaultApp({ api: apiProp, hostLocale, initialTab = 'overview' }: 
     void api.startBackupJob(input)
       .then((j) => followJob(j, finishBackup))
       .catch((err: unknown) => {
+        // C-02: an existing export file is never replaced silently.
+        if (err instanceof VaultApiError && err.code === 'EXPORT_EXISTS' && !input.overwrite
+          && typeof window !== 'undefined' && window.confirm(t('backup.overwriteConfirm'))) {
+          backupTo({ ...input, overwrite: true })
+          return
+        }
         setBusy(false)
         setError(errorText(err))
       })
-  }, [api, followJob, finishBackup])
+  }, [api, followJob, finishBackup, t])
 
   const i18nValue = useMemo(() => ({ locale, t }), [locale, t])
 

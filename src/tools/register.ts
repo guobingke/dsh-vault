@@ -1,3 +1,4 @@
+import { redactDeep } from '../core/redact.js'
 import type { VaultService } from '../core/vault-service.js'
 import { redactForLog } from '../core/encryption.js'
 
@@ -144,8 +145,11 @@ export function buildVaultTools(service: VaultService): VaultToolDef[] {
             : undefined,
           password: typeof args.password === 'string' ? args.password : undefined,
           reinstallPlugins: args.reinstallPlugins !== false,
+          // A model can never approve credentials or git/URL plugin sources on the user's behalf.
+          includeSecrets: false,
+          approvedPluginSources: [],
         })
-        return result
+        return redactDeep(result)
       },
     },
   ]

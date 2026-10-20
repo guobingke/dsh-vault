@@ -100,6 +100,8 @@ export type PluginFailureReason =
   | 'no-recorded-source'
   | 'integrity-mismatch'
   | 'self'
+  | 'source-not-approved'
+  | 'invalid-spec'
   | 'unknown'
 
 export interface ClassifiedFailure {

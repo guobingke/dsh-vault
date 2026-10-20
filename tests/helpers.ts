@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -44,3 +44,16 @@ export async function makeTempHome(prefix = 'dsh-vault-test-'): Promise<{
     },
   }
 }
+
+/** Directory symlink (junction on Windows). False when the OS refuses (EPERM/EACCES). */
+export async function linkDir(target: string, path: string): Promise<boolean> {
+  try {
+    await symlink(target, path, process.platform === 'win32' ? 'junction' : 'dir')
+    return true
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'EPERM' || code === 'EACCES') return false
+    throw err
+  }
+}
+

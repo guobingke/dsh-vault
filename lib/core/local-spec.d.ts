@@ -30,7 +30,7 @@ export declare function resolveLocalSpecPath(specPath: string, profileDir: strin
 }): string;
 /** Path string for a spec written into package.json (pnpm accepts forward slashes everywhere). */
 export declare function specPath(abs: string): string;
-export type PluginFailureReason = 'local-source-missing' | 'tarball-missing' | 'unsupported-spec' | 'blocked-by-other' | 'registry-not-found' | 'network' | 'installer-missing' | 'missing-deps' | 'version-mismatch' | 'incompatible' | 'git-missing' | 'git-unavailable' | 'no-backup-copy' | 'not-resolvable' | 'no-recorded-source' | 'integrity-mismatch' | 'self' | 'unknown';
+export type PluginFailureReason = 'local-source-missing' | 'tarball-missing' | 'unsupported-spec' | 'blocked-by-other' | 'registry-not-found' | 'network' | 'installer-missing' | 'missing-deps' | 'version-mismatch' | 'incompatible' | 'git-missing' | 'git-unavailable' | 'no-backup-copy' | 'not-resolvable' | 'no-recorded-source' | 'integrity-mismatch' | 'self' | 'source-not-approved' | 'invalid-spec' | 'unknown';
 export interface ClassifiedFailure {
     reason: PluginFailureReason;
     /** Path / spec / package named by the failure, when there is one. */

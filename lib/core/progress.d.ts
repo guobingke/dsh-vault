@@ -50,6 +50,7 @@ export declare class JobRegistry {
     get(id: string): JobState | null;
     start<R>(kind: JobKind, run: (onProgress: (ev: ProgressEvent) => void) => Promise<R>): JobState<R>;
     private view;
+    /** H-04: finished jobs (and their results) expire `keepMs` after they finished. */
     private prune;
 }
 //# sourceMappingURL=progress.d.ts.map

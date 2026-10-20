@@ -22,6 +22,7 @@ export class VaultApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message)
     this.name = 'VaultApiError'
@@ -32,8 +33,10 @@ async function request<T>(path: string, init?: RequestInit & { acceptConflictBod
   const { acceptConflictBody, ...fetchInit } = init ?? {}
   const res = await fetch(`${BASE}${path}`, {
     ...fetchInit,
+    credentials: 'same-origin',
     headers: {
       accept: 'application/json',
+      'x-dsh-vault-request': '1',
       ...(fetchInit.body ? { 'content-type': 'application/json' } : {}),
       ...fetchInit.headers,
     },
@@ -53,7 +56,8 @@ async function request<T>(path: string, init?: RequestInit & { acceptConflictBod
     const msg = body && typeof body === 'object' && 'error' in body
       ? String((body as { error: unknown }).error)
       : `HTTP ${res.status}`
-    throw new VaultApiError(msg, res.status)
+    const code = body && typeof body === 'object' && 'code' in body ? String((body as { code: unknown }).code) : undefined
+    throw new VaultApiError(msg, res.status, code)
   }
   return body as T
 }
@@ -158,6 +162,8 @@ export class VaultApi {
     targetId?: string
     directory?: string
     exportFile?: string
+    /** Replace an existing export file (asked for explicitly after a 409 EXPORT_EXISTS). */
+    overwrite?: boolean
     encrypt?: boolean
     password?: string
     includeSecrets?: boolean

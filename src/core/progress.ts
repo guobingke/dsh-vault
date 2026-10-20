@@ -117,6 +117,7 @@ export class JobRegistry {
 
   /** The running job, else the most recent one. */
   latest(): JobState | null {
+    this.prune()
     const a = this.active()
     if (a) return a
     let best: (JobState & { started: number }) | null = null
@@ -125,6 +126,7 @@ export class JobRegistry {
   }
 
   get(id: string): JobState | null {
+    this.prune()
     const j = this.jobs.get(id)
     return j ? this.view(j) : null
   }
@@ -171,8 +173,13 @@ export class JobRegistry {
     return { ...rest, elapsedMs: j.status === 'running' ? Date.now() - started : j.elapsedMs }
   }
 
+  /** H-04: finished jobs (and their results) expire `keepMs` after they finished. */
   private prune(): void {
     const now = Date.now()
-    for (const [id, j] of this.jobs) if (j.status !== 'running' && now - j.started > this.keepMs) this.jobs.delete(id)
+    for (const [id, j] of this.jobs) {
+      if (j.status === 'running') continue
+      const finished = j.finishedAt ? Date.parse(j.finishedAt) : j.started
+      if (now - finished > this.keepMs) this.jobs.delete(id)
+    }
   }
 }

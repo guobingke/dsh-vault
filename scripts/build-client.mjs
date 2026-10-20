@@ -14,7 +14,8 @@ const cssAsStyleTag = {
   setup(b) {
     b.onLoad({ filter: /\.css$/ }, (args) => {
       const css = readFileSync(args.path, 'utf8')
-      const tagId = `${pkg.name}/${args.path.split('/').pop()}`
+      // L-01: a fixed relative id (basename only) — never the builder's absolute path (Windows uses `\\`).
+      const tagId = `${pkg.name}/${args.path.split(/[\\/]/).pop()}`
       return {
         loader: 'js',
         contents: `const css = ${JSON.stringify(css)};

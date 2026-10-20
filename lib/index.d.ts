@@ -1,5 +1,10 @@
 import type { PluginManagerLike } from './core/plugin-install.js';
 import type { VaultPluginConfig } from './core/types.js';
+import type { IncomingMessage } from 'node:http';
+/** dsh-client-connection's HostConnectionService (only the part we use). */
+export interface ConnectionLike {
+    requestRejection: (request: IncomingMessage) => number | undefined;
+}
 export declare const name = "dsh-vault";
 /**
  * No hard inject list: webServer/tools/commands/credentials/pluginManager are

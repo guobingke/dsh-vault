@@ -1,9 +1,12 @@
 import { isWorkspaceStatePath } from './home-scope.js'
-import { mkdir, writeFile, unlink } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { unlink } from 'node:fs/promises'
 import type { ConflictMap } from './conflict.js'
 import { resolveItemConflict, shouldApplyChange } from './conflict.js'
 import { previewRestoreDiff, resolveLivePath } from './diff.js'
+import { VaultUserError } from './errors.js'
+import { isSecretRelPath } from './paths.js'
+import { isWithin } from './path-policy.js'
+import { checkTarget, WriteJournal } from './safe-fs.js'
 import type {
   ConflictStrategy,
   ProgressCallback,
@@ -12,6 +15,18 @@ import type {
   VaultManifest,
 } from './types.js'
 
+/** One shared rule (H-02/M-06/M-07): a path is a credential if the manifest OR the classifier says so. */
+export function isSecretEntry(manifest: VaultManifest, path: string): boolean {
+  return isSecretRelPath(path) || Boolean(manifest.files.find((f) => f.path === path)?.secret)
+}
+
+/**
+ * Apply a snapshot to the live homes, all-or-nothing (H-03):
+ *  1. plan every write (and, for private rollbacks, every delete),
+ *  2. pre-check every target for links / junctions / type conflicts before touching anything (H-01),
+ *  3. write through an undo journal; on any failure every change is reverted and the
+ *     error says so.
+ */
 export async function applyRestore(input: {
   manifest: VaultManifest
   files: Map<string, Buffer>
@@ -20,7 +35,13 @@ export async function applyRestore(input: {
   conflict: ConflictStrategy
   /** Optional per-path overrides; unspecified paths use `conflict`. */
   conflicts?: ConflictMap
-  includeSecrets?: boolean
+  /**
+   * Whether credential files may be written. The caller decides (request AND manifest AND
+   * really-encrypted); the manifest's own flag is never consulted here.
+   */
+  allowSecrets?: boolean
+  /** Snapshot-relative paths to delete (only from a private rollback's `rollbackRemoves`; M-01). */
+  removePaths?: string[]
   rollbackSnapshotId?: string
   onProgress?: ProgressCallback
 }): Promise<RestoreResult> {
@@ -31,23 +52,19 @@ export async function applyRestore(input: {
     conflict: input.conflict,
     conflicts: input.conflicts,
   })
-  input.onProgress?.({ phase: 'apply', message: 'Applying files', percent: 10, total: preview.items.length })
+  input.onProgress?.({ phase: 'apply', message: 'Checking target paths', percent: 5, total: preview.items.length })
 
-  const applied: string[] = []
   const skipped: string[] = []
-  let i = 0
+  const writes: Array<{ path: string; abs: string; data: Buffer; secret: boolean; add: boolean }> = []
   for (const item of preview.items) {
-    i++
     const strategy = item.resolution
       ?? resolveItemConflict(item.path, input.conflict, input.conflicts)
     if (!shouldApplyChange(item.change, strategy)) {
-      // remove / unchanged always skipped; change+keep-current skipped.
-      // (Prune-on-remove is intentionally not implemented.)
       skipped.push(item.path)
       continue
     }
-    const meta = input.manifest.files.find((f) => f.path === item.path)
-    if (meta?.secret && !input.includeSecrets && !input.manifest.includeSecrets) {
+    const secret = isSecretEntry(input.manifest, item.path)
+    if (secret && !input.allowSecrets) {
       skipped.push(item.path)
       continue
     }
@@ -60,17 +77,68 @@ export async function applyRestore(input: {
       skipped.push(item.path)
       continue
     }
-    const abs = resolveLivePath(item.path, input.dshHome, input.agentsHome)
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, data, { mode: meta?.secret ? 0o600 : 0o644 })
-    applied.push(item.path)
-    input.onProgress?.({
-      phase: 'apply',
-      message: `Wrote ${item.path}`,
-      current: i,
-      total: preview.items.length,
-      percent: Math.round((i / Math.max(preview.items.length, 1)) * 80),
-    })
+    writes.push({ path: item.path, abs: resolveLivePath(item.path, input.dshHome, input.agentsHome), data, secret, add: item.change === 'add' })
+  }
+  const writing = new Set(writes.map((w) => w.path))
+  const removes: Array<{ path: string; abs: string }> = []
+  for (const path of input.removePaths ?? []) {
+    if (writing.has(path) || isWorkspaceStatePath(path)) continue
+    if (isSecretRelPath(path) && !input.allowSecrets) continue
+    removes.push({ path, abs: resolveLivePath(path, input.dshHome, input.agentsHome) })
+  }
+
+  const rootOf = (abs: string) => (isWithin(input.agentsHome, abs) && !isWithin(input.dshHome, abs) ? input.agentsHome : input.dshHome)
+  const problems: string[] = []
+  for (const w of [...writes, ...removes]) {
+    try {
+      await checkTarget(rootOf(w.abs), w.abs)
+    } catch (err) {
+      problems.push(`${w.path}: ${(err as Error).message}`)
+    }
+  }
+  if (problems.length) {
+    throw new VaultUserError(
+      `restore refused before any change (${problems.length} unsafe path${problems.length === 1 ? '' : 's'}): ${problems.slice(0, 5).join('; ')}`,
+      409,
+      'RESTORE_UNSAFE_PATH',
+    )
+  }
+
+  const journal = new WriteJournal([input.dshHome, input.agentsHome])
+  const applied: string[] = []
+  const credentialsWritten: string[] = []
+  const addedFiles: string[] = []
+  const total = writes.length + removes.length
+  let i = 0
+  try {
+    for (const w of writes) {
+      i++
+      await journal.write(w.abs, w.data, w.secret ? 0o600 : 0o644)
+      applied.push(w.path)
+      if (w.secret) credentialsWritten.push(w.path)
+      if (w.add) addedFiles.push(w.path)
+      input.onProgress?.({
+        phase: 'apply',
+        message: `Wrote ${w.path}`,
+        current: i,
+        total,
+        percent: Math.round((i / Math.max(total, 1)) * 80),
+      })
+    }
+    for (const r of removes) {
+      i++
+      if (await journal.remove(r.abs)) applied.push(r.path)
+    }
+  } catch (err) {
+    const notReverted = await journal.rollback()
+    const why = err instanceof Error ? err.message : String(err)
+    throw new VaultUserError(
+      notReverted.length
+        ? `restore failed (${why}); rolled back, but ${notReverted.length} file(s) could not be reverted: ${notReverted.slice(0, 5).join(', ')} — restore the pre-restore rollback snapshot`
+        : `restore failed (${why}); every change was rolled back, nothing was modified`,
+      500,
+      'RESTORE_ROLLED_BACK',
+    )
   }
 
   return {
@@ -81,6 +149,8 @@ export async function applyRestore(input: {
     pluginsReinstalled: [],
     pluginsFailed: [],
     manualActions: preview.manualActions,
+    credentialsWritten,
+    addedFiles,
   }
 }
 
