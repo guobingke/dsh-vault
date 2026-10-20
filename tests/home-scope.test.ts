@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { VaultService } from '../src/core/vault-service.js'
 import { homeExcludeReason, listPluginDataEntries } from '../src/core/home-scope.js'
 import { diffHomes } from '../src/core/home-diff.js'
@@ -159,7 +159,10 @@ describe('pax / UTF-8 tar names', () => {
       if (probe.error) continue // not installed here (e.g. no bsdtar on ubuntu-latest)
       const out = join(tmpdir(), `pax-out-${tool}-${Date.now()}`)
       mkdirSync(out)
-      execFileSync(tool, ['xzf', tmp, '-C', out])
+      // Git Bash can put GNU tar before Windows' bsdtar on PATH. Passing a
+      // drive-letter path (C:\...) makes GNU tar treat it as a remote host.
+      // Both tools work when invoked from the temp directory with relative paths.
+      execFileSync(tool, ['xzf', basename(tmp), '-C', basename(out)], { cwd: tmpdir() })
       assert.ok(existsSync(join(out, 'files', 'agents-home', 'skills', '\u5199\u4f5c\u52a9\u624b', 'SKILL.md')), tool)
       assert.ok(existsSync(join(out, 'files', 'redteam', 'engagements', '\u6f14\u7ec3-01', '\u62a5\u544a v2.md')), tool)
       assert.ok(existsSync(join(out, 'files', 'a'.repeat(80), 'b'.repeat(80), 'long.txt')), tool)
