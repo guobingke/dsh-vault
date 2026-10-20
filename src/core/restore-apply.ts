@@ -5,6 +5,7 @@ import { resolveItemConflict, shouldApplyChange } from './conflict.js'
 import { previewRestoreDiff, resolveLivePath } from './diff.js'
 import { VaultUserError } from './errors.js'
 import { isSecretRelPath } from './paths.js'
+import { dropForeignLocalDeps } from './plugin-install.js'
 import { isWithin } from './path-policy.js'
 import { checkTarget, WriteJournal } from './safe-fs.js'
 import type {
@@ -43,6 +44,10 @@ export async function applyRestore(input: {
   /** Snapshot-relative paths to delete (only from a private rollback's `rollbackRemoves`; M-01). */
   removePaths?: string[]
   rollbackSnapshotId?: string
+  /** Platform recorded by the snapshot. */
+  sourcePlatform?: string
+  /** Platform this restore is running on. */
+  targetPlatform?: NodeJS.Platform
   /** Caller-owned journal, so a later phase (plugin install) can still undo the files. */
   journal?: WriteJournal
   onProgress?: ProgressCallback
@@ -53,6 +58,8 @@ export async function applyRestore(input: {
     agentsHome: input.agentsHome,
     conflict: input.conflict,
     conflicts: input.conflicts,
+    ...(input.sourcePlatform ? { sourcePlatform: input.sourcePlatform } : {}),
+    ...(input.targetPlatform ? { targetPlatform: input.targetPlatform } : {}),
   })
   input.onProgress?.({ phase: 'apply', message: 'Checking target paths', percent: 5, total: preview.items.length })
 
@@ -143,6 +150,25 @@ export async function applyRestore(input: {
     )
   }
 
+  // A manifest from another OS keeps that machine's local plugin paths unless the plugin
+  // phase rewrites them. Do it here as well, so `pnpm install` works even when the user
+  // turned plugin restore off; anything left behind is reported rather than hidden.
+  const manualActions = [...preview.manualActions]
+  if (input.sourcePlatform && applied.some((path) => path.endsWith('/package.json'))) {
+    const dropped = await dropForeignLocalDeps(input.dshHome, {
+      sourcePlatform: input.sourcePlatform,
+      ...(input.targetPlatform ? { targetPlatform: input.targetPlatform } : {}),
+    })
+    if (dropped.length) {
+      // Say it out loud: these plugins are no longer in the profile, so they will not load.
+      manualActions.push(
+        `Removed ${dropped.length} plugin ${dropped.length === 1 ? 'entry' : 'entries'} that pointed at the other computer's local files: ${dropped
+          .map((d) => `${d.name} (${d.spec})`)
+          .join(', ')}. Install them on this machine if you still need them.`,
+      )
+    }
+  }
+
   return {
     snapshotId: input.manifest.id,
     applied,
@@ -150,7 +176,7 @@ export async function applyRestore(input: {
     rollbackSnapshotId: input.rollbackSnapshotId,
     pluginsReinstalled: [],
     pluginsFailed: [],
-    manualActions: preview.manualActions,
+    manualActions,
     credentialsWritten,
     addedFiles,
   }

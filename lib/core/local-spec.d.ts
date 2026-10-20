@@ -19,6 +19,17 @@ export type LocalSpec = {
 export declare function isTarballPath(p: string): boolean;
 /** `C:\x`, `C:/x`, `\\server\share`. */
 export declare function isWindowsAbsPath(p: string): boolean;
+/** `/x` but not `//server/share` (which is Windows UNC, not POSIX). */
+export declare function isPosixAbsPath(p: string): boolean;
+/** Normalize the platform names written by older snapshots and Node. */
+export declare function normalizePlatformName(value: string | undefined | null): NodeJS.Platform | undefined;
+/** True when both platforms are known and differ after normalization. */
+export declare function platformsDiffer(sourcePlatform: string | undefined | null, targetPlatform: string | undefined | null): boolean;
+/**
+ * A local path that belongs to another operating system and cannot be opened here.
+ * Relative paths and `~/...` stay portable and are deliberately excluded.
+ */
+export declare function isForeignLocalPath(p: string, sourcePlatform: string | undefined, targetPlatform?: NodeJS.Platform): boolean;
 export declare function parseLocalSpec(spec: string | undefined | null): LocalSpec | null;
 /**
  * Absolute path a local spec refers to, as pnpm would resolve it from `profileDir`.
@@ -30,7 +41,7 @@ export declare function resolveLocalSpecPath(specPath: string, profileDir: strin
 }): string;
 /** Path string for a spec written into package.json (pnpm accepts forward slashes everywhere). */
 export declare function specPath(abs: string): string;
-export type PluginFailureReason = 'local-source-missing' | 'tarball-missing' | 'unsupported-spec' | 'blocked-by-other' | 'registry-not-found' | 'network' | 'installer-missing' | 'missing-deps' | 'version-mismatch' | 'incompatible' | 'git-missing' | 'git-unavailable' | 'no-backup-copy' | 'not-resolvable' | 'no-recorded-source' | 'integrity-mismatch' | 'self' | 'source-not-approved' | 'invalid-spec' | 'unknown';
+export type PluginFailureReason = 'foreign-local-source' | 'local-source-missing' | 'tarball-missing' | 'unsupported-spec' | 'blocked-by-other' | 'registry-not-found' | 'network' | 'installer-missing' | 'missing-deps' | 'version-mismatch' | 'incompatible' | 'git-missing' | 'git-unavailable' | 'no-backup-copy' | 'not-resolvable' | 'no-recorded-source' | 'integrity-mismatch' | 'self' | 'source-not-approved' | 'invalid-spec' | 'unknown';
 export interface ClassifiedFailure {
     reason: PluginFailureReason;
     /** Path / spec / package named by the failure, when there is one. */

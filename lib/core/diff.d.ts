@@ -11,6 +11,10 @@ export declare function previewRestoreDiff(input: {
     conflict?: ConflictStrategy;
     /** Optional per-path overrides for `conflict`. */
     conflicts?: ConflictMap;
+    /** Platform recorded by the snapshot manifest. */
+    sourcePlatform?: string;
+    /** Platform this restore is running on. */
+    targetPlatform?: NodeJS.Platform;
 }): Promise<RestorePreview>;
 export declare function resolveLivePath(rel: string, dshHome: string, agentsHome: string): string;
 /** dsh ships its own bundles under the @deepseek-ai/dsh-* scope; they are never reinstalled. */

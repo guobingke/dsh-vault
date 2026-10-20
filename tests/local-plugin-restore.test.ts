@@ -120,7 +120,7 @@ describe('local plugins (file: tarballs, link: dirs, workspace:) machine 1 → m
       await rm(m1.root, { recursive: true, force: true })
       const calls: Array<{ cmd: string; args: string[]; cwd?: string }> = []
       await writePkg(join(m2.dshHome, 'profiles', 'desktop'), { name: 'dsh-profile-desktop', dependencies: {} })
-      const s2 = new VaultService({ dshHome: m2.dshHome, agentsHome: m2.agentsHome, activeProfile: 'desktop', runPluginInstall: fakePnpm(calls) })
+      const s2 = new VaultService({ dshHome: m2.dshHome, agentsHome: m2.agentsHome, activeProfile: 'desktop', pnpm: { command: 'pnpm' }, runPluginInstall: fakePnpm(calls) })
       await s2.init()
       const result = await s2.restore({ importPath: exportFile, conflict: 'use-backup', createRollbackSnapshot: false })
       s2.stopSchedule()
@@ -164,6 +164,7 @@ describe('local plugins (file: tarballs, link: dirs, workspace:) machine 1 → m
         dshHome: m2.dshHome,
         agentsHome: m2.agentsHome,
         activeProfile: 'desktop',
+        pnpm: { command: 'pnpm' },
         runPluginInstall: fakePnpm(calls),
         pluginManager: {
           profile: { name: 'desktop' },

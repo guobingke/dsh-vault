@@ -124,6 +124,7 @@ describe('registry fallback (unpublished version)', () => {
         dshHome: dsh2,
         agentsHome: agents2,
         activeProfile: 'web',
+        pnpm: { command: 'pnpm' },
         runPluginInstall: fakePnpmUnpublished(unpublished, calls),
       })
       await s2.init()

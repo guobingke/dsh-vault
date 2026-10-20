@@ -197,6 +197,12 @@ export interface DiffItem {
 
 export interface RestorePreview {
   snapshotId: string
+  /** Platform recorded by the snapshot manifest (e.g. win32, linux, darwin). */
+  sourcePlatform?: string
+  /** Platform this restore is running on. */
+  targetPlatform?: string
+  /** True when snapshot and target platforms differ (local paths may not be portable). */
+  crossPlatform?: boolean
   items: DiffItem[]
   added: number
   changed: number
@@ -277,6 +283,7 @@ export type PluginRestoreOrder = 'source-first' | 'copy-first'
 export type PluginInstallStatus = 'installed' | 'installed-from-backup' | 'already-present' | 'failed' | 'skipped'
 
 export type PluginFailureReasonCode =
+  | 'foreign-local-source'
   | 'local-source-missing'
   | 'tarball-missing'
   | 'unsupported-spec'

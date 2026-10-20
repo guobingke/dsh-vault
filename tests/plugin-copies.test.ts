@@ -51,7 +51,7 @@ async function scenario(opts: {
   await mkdir(join(dsh2, 'profiles', 'web'), { recursive: true })
   await mkdir(agents2, { recursive: true })
   const calls: string[] = []
-  const s2 = new VaultService({ dshHome: dsh2, agentsHome: agents2, activeProfile: 'web', registryLookup: null, runPluginInstall: fakePnpmUnpublished(new Set(['dsh-vscode-bridge@0.3.1']), calls) })
+  const s2 = new VaultService({ dshHome: dsh2, agentsHome: agents2, activeProfile: 'web', registryLookup: null, pnpm: { command: 'pnpm' }, runPluginInstall: fakePnpmUnpublished(new Set(['dsh-vscode-bridge@0.3.1']), calls) })
   await s2.init()
   const result = await s2.restore({ importPath: exportFile, conflict: 'use-backup', createRollbackSnapshot: false, pluginProfiles: ['web'], ...opts.restore })
   s2.stopSchedule()

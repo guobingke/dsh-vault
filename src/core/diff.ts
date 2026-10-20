@@ -1,4 +1,5 @@
 import { isWorkspaceStatePath } from './home-scope.js'
+import { normalizePlatformName, parseLocalSpec, platformsDiffer } from './local-spec.js'
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import type { ConflictMap } from './conflict.js'
@@ -29,6 +30,10 @@ export async function previewRestoreDiff(input: {
   conflict?: ConflictStrategy
   /** Optional per-path overrides for `conflict`. */
   conflicts?: ConflictMap
+  /** Platform recorded by the snapshot manifest. */
+  sourcePlatform?: string
+  /** Platform this restore is running on. */
+  targetPlatform?: NodeJS.Platform
 }): Promise<RestorePreview> {
   const items: DiffItem[] = []
   const backupPaths = new Set(input.manifest.files.map((f) => f.path))
@@ -78,16 +83,30 @@ export async function previewRestoreDiff(input: {
   // dsh's own shipped bundles (e.g. @deepseek-ai/dsh-base) are profile layers, not reinstallable plugins.
   const pluginsToReinstall = (await findMissingPlugins(input.manifest.plugins, input.dshHome)).filter((p) => !isBuiltinDshBundle(p.name))
   const manualActions: string[] = []
+  const rawSourcePlatform = input.sourcePlatform ?? input.manifest.platform
+  const sourcePlatform = normalizePlatformName(rawSourcePlatform) ?? rawSourcePlatform
+  const targetPlatform = normalizePlatformName(input.targetPlatform ?? process.platform)!
+  const crossPlatform = platformsDiffer(sourcePlatform, targetPlatform)
+  if (crossPlatform) {
+    manualActions.push('This snapshot was made on ' + sourcePlatform + '; this machine runs ' + targetPlatform + '. Local plugin paths from the snapshot cannot be opened here, and plugins without a saved copy will be listed as failed. Other plugins and configuration still restore.')
+  }
   if (!input.manifest.includeSecrets) {
     manualActions.push('Re-enter API keys and other secrets in Settings → Models (credentials were excluded from this snapshot).')
   }
   // Bundled link: sources are restored from the snapshot and re-linked automatically.
-  if (pluginsToReinstall.some((p) => !p.bundledSource && (p.source.startsWith('link:') || p.source.startsWith('file:')))) {
+  if (pluginsToReinstall.some((p) => {
+    if (p.bundledSource) return false
+    const local = parseLocalSpec(p.source) ?? parseLocalSpec(p.version)
+    return local?.kind === 'path'
+  })) {
     manualActions.push('Some plugins used local link:/file: sources; reinstall or re-link them on this machine.')
   }
 
   return {
     snapshotId: input.manifest.id,
+    ...(sourcePlatform ? { sourcePlatform } : {}),
+    targetPlatform,
+    crossPlatform,
     items,
     added,
     changed,

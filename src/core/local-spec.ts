@@ -23,6 +23,47 @@ export function isWindowsAbsPath(p: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(p) || /^\\\\[^\\]/.test(p)
 }
 
+/** `/x` but not `//server/share` (which is Windows UNC, not POSIX). */
+export function isPosixAbsPath(p: string): boolean {
+  return p.startsWith('/') && !p.startsWith('//')
+}
+
+/** Normalize the platform names written by older snapshots and Node. */
+export function normalizePlatformName(value: string | undefined | null): NodeJS.Platform | undefined {
+  const v = value?.trim().toLowerCase()
+  if (!v) return undefined
+  if (v === 'windows' || v === 'win' || v === 'win32') return 'win32'
+  if (v === 'mac' || v === 'macos' || v === 'osx' || v === 'darwin') return 'darwin'
+  if (v === 'linux') return 'linux'
+  return v as NodeJS.Platform
+}
+
+/** True when both platforms are known and differ after normalization. */
+export function platformsDiffer(
+  sourcePlatform: string | undefined | null,
+  targetPlatform: string | undefined | null,
+): boolean {
+  const source = normalizePlatformName(sourcePlatform)
+  const target = normalizePlatformName(targetPlatform)
+  return Boolean(source && target && source !== target)
+}
+
+/**
+ * A local path that belongs to another operating system and cannot be opened here.
+ * Relative paths and `~/...` stay portable and are deliberately excluded.
+ */
+export function isForeignLocalPath(
+  p: string,
+  sourcePlatform: string | undefined,
+  targetPlatform: NodeJS.Platform = process.platform,
+): boolean {
+  const source = normalizePlatformName(sourcePlatform)
+  const target = normalizePlatformName(targetPlatform)
+  if (!source || !target) return false
+  if (source === target) return false
+  return source === 'win32' ? isWindowsAbsPath(p) : isPosixAbsPath(p)
+}
+
 export function parseLocalSpec(spec: string | undefined | null): LocalSpec | null {
   if (!spec) return null
   const raw = spec.trim()
@@ -83,6 +124,7 @@ export function specPath(abs: string): string {
  * ------------------------------------------------------------------------ */
 
 export type PluginFailureReason =
+  | 'foreign-local-source'
   | 'local-source-missing'
   | 'tarball-missing'
   | 'unsupported-spec'

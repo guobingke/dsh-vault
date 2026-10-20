@@ -71,7 +71,7 @@ async function profile(dshHome: string, name: string, pkg: Record<string, unknow
 }
 
 function service(home: { dshHome: string; agentsHome: string }, calls: string[], extra: Partial<ConstructorParameters<typeof VaultService>[0]> = {}) {
-  return new VaultService({ dshHome: home.dshHome, agentsHome: home.agentsHome, activeProfile: 'web', runPluginInstall: fakePnpm(calls), registryIntegrity: null, ...extra })
+  return new VaultService({ dshHome: home.dshHome, agentsHome: home.agentsHome, activeProfile: 'web', pnpm: { command: 'pnpm' }, runPluginInstall: fakePnpm(calls), registryIntegrity: null, ...extra })
 }
 
 describe('plugins are only installed from a recorded source', () => {

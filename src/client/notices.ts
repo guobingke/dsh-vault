@@ -7,6 +7,8 @@ const PATTERNS: Array<[RegExp, MessageKey]> = [
   [/^Some plugins used local link:\/file: sources/i, 'notice.localSources'],
   [/^Restart DeepSeek Harness Desktop/i, 'notice.restartDesktop'],
   [/^Restart dsh web/i, 'notice.restartWeb'],
+  [/^This snapshot was made on /i, 'notice.crossPlatformLocalSources'],
+  [/^Removed \d+ plugin entr/i, 'notice.removedForeignDeps'],
   [/^Restore finished with plugin failures/i, 'notice.partialRestore'],
   [/^Launch DeepSeek Harness Desktop once/i, 'notice.launchDesktopOnce'],
   [/^Run the command with Desktop's bundled/i, 'notice.useBundledDsh'],

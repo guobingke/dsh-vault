@@ -39,7 +39,7 @@ describe('profile bundles stay resolvable during restore (包不可用)', () => 
           { name: 'dsh-skin', version: '2.0.0', source: 'npm:dsh-skin@2.0.0', profile: 'desktop' },
           { name: 'dsh-gone', version: '9.9.9', source: 'npm:dsh-gone@9.9.9', profile: 'desktop' },
         ],
-        { dshHome, activeProfile: 'desktop', runCommand: run },
+        { dshHome, activeProfile: 'desktop', pnpm: { command: 'pnpm' }, runCommand: run },
       )
       // While installing, Desktop would never see an unresolvable plugin bundle.
       assert.ok(seenDuringInstall.length > 0)

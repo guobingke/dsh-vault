@@ -35,6 +35,8 @@ export interface VaultServiceOptions {
     apiHome?: string;
     /** How long a backup/restore waits for another one to finish (default 30 min). */
     lockTimeoutMs?: number;
+    /** Restore target platform (tests); defaults to process.platform. Never accepted from HTTP input. */
+    targetPlatform?: NodeJS.Platform;
 }
 export declare class VaultService {
     private readonly options;
@@ -61,6 +63,7 @@ export declare class VaultService {
     private readonly lock;
     private scheduleGeneration;
     private scheduleStopped;
+    private readonly targetPlatform;
     constructor(options?: VaultServiceOptions);
     /** Validate a path that came from the HTTP API (CLI/tools are not restricted). */
     checkApiPath(path: string, use: ApiPathUse): Promise<string>;

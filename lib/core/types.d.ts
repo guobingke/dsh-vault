@@ -175,6 +175,12 @@ export interface DiffItem {
 }
 export interface RestorePreview {
     snapshotId: string;
+    /** Platform recorded by the snapshot manifest (e.g. win32, linux, darwin). */
+    sourcePlatform?: string;
+    /** Platform this restore is running on. */
+    targetPlatform?: string;
+    /** True when snapshot and target platforms differ (local paths may not be portable). */
+    crossPlatform?: boolean;
     items: DiffItem[];
     added: number;
     changed: number;
@@ -249,7 +255,7 @@ export interface RestoreRequest {
 /** 优先从源安装，失败再用副本 (`source-first`) / 优先使用备份副本 (`copy-first`). */
 export type PluginRestoreOrder = 'source-first' | 'copy-first';
 export type PluginInstallStatus = 'installed' | 'installed-from-backup' | 'already-present' | 'failed' | 'skipped';
-export type PluginFailureReasonCode = 'local-source-missing' | 'tarball-missing' | 'unsupported-spec' | 'blocked-by-other' | 'registry-not-found' | 'network' | 'installer-missing' | 'missing-deps' | 'version-mismatch' | 'incompatible' | 'git-missing' | 'git-unavailable' | 'no-backup-copy' | 'not-resolvable' | 'no-recorded-source' | 'integrity-mismatch' | 'self' | 'source-not-approved' | 'invalid-spec' | 'unknown';
+export type PluginFailureReasonCode = 'foreign-local-source' | 'local-source-missing' | 'tarball-missing' | 'unsupported-spec' | 'blocked-by-other' | 'registry-not-found' | 'network' | 'installer-missing' | 'missing-deps' | 'version-mismatch' | 'incompatible' | 'git-missing' | 'git-unavailable' | 'no-backup-copy' | 'not-resolvable' | 'no-recorded-source' | 'integrity-mismatch' | 'self' | 'source-not-approved' | 'invalid-spec' | 'unknown';
 export interface PluginInstallResultRow {
     name: string;
     profile: string;

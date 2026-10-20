@@ -228,6 +228,9 @@ declare const zh: {
     'restore.willApply': string;
     'restore.willSkip': string;
     'restore.noChange': string;
+    'restore.crossPlatformTitle': string;
+    'restore.crossPlatformDesc': string;
+    'restore.crossPlatformLocalSources': string;
     'restore.pluginsTitle': string;
     'restore.pluginsDesc': string;
     'restore.manualTitle': string;
@@ -312,6 +315,7 @@ declare const zh: {
     'restore.status.already-present': string;
     'restore.status.failed': string;
     'restore.status.skipped': string;
+    'restore.reason.foreign-local-source': string;
     'restore.reason.local-source-missing': string;
     'restore.reason.tarball-missing': string;
     'restore.reason.unsupported-spec': string;
@@ -381,6 +385,8 @@ declare const zh: {
     'notice.localSources': string;
     'notice.restartDesktop': string;
     'notice.restartWeb': string;
+    'notice.crossPlatformLocalSources': string;
+    'notice.removedForeignDeps': string;
     'notice.partialRestore': string;
     'notice.launchDesktopOnce': string;
     'notice.useBundledDsh': string;

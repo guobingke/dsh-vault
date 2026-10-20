@@ -58,6 +58,10 @@ export interface PluginInstallDeps {
     preferredRegistry?: string | null;
     /** Environment used for installer discovery (tests). */
     env?: NodeJS.ProcessEnv;
+    /** Platform recorded in the snapshot that supplied these records. */
+    sourcePlatform?: string;
+    /** Platform to install onto (tests); defaults to process.platform. */
+    targetPlatform?: NodeJS.Platform;
     /** Directory holding git for github:/git specs (null = none; undefined = discover). */
     gitDir?: string | null;
     /**
@@ -100,11 +104,20 @@ type Exists = (p: string) => Promise<boolean>;
 /** Desktop's bundled node + pnpm (resources/runtime/primary-runtime/dependencies). */
 export declare function findBundledPnpm(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, exists?: Exists): Promise<PnpmInvocationLike | null>;
 /**
+ * A globally installed pnpm that is not on PATH (common with nvm on Ubuntu, or
+ * npm's global prefix on Windows). Run its JS entry with this Node executable,
+ * so no shell shim or PATH entry is required.
+ */
+export declare function findGlobalPnpm(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, exists?: Exists, nodeExecutable?: string): Promise<PnpmInvocationLike | null>;
+/**
  * Where a bundled local plugin should point on this machine: the original path when
  * it exists here (same layout as machine 1), else the copy restored under
  * $DSH_HOME/plugin-sources.
  */
-export declare function resolveLinkTarget(plugin: PluginRecord, dshHome: string): Promise<{
+export declare function resolveLinkTarget(plugin: PluginRecord, dshHome: string, opts?: {
+    sourcePlatform?: string;
+    targetPlatform?: NodeJS.Platform;
+}): Promise<{
     abs: string;
     bundled: boolean;
     kind: 'dir' | 'tarball';
@@ -144,11 +157,14 @@ export declare function invalidPluginRecord(p: PluginRecord): string | null;
  */
 export declare function bundleResolvesFromProfile(profileDir: string, name: string): boolean;
 /** Rewrite local deps to the restored bundled sources (or the original path when it exists here). */
-export declare function rewriteBundledLinkDeps(dshHome: string, plugins: PluginRecord[]): Promise<string[]>;
+export declare function rewriteBundledLinkDeps(dshHome: string, plugins: PluginRecord[], opts?: {
+    sourcePlatform?: string;
+    targetPlatform?: NodeJS.Platform;
+}): Promise<string[]>;
 export interface InvalidSpec {
     name: string;
     spec: string;
-    reason: Extract<PluginFailureReason, 'local-source-missing' | 'tarball-missing' | 'unsupported-spec'>;
+    reason: Extract<PluginFailureReason, 'foreign-local-source' | 'local-source-missing' | 'tarball-missing' | 'unsupported-spec'>;
     /** The path that does not exist here (machine 1's), or the spec itself. */
     subject: string;
 }
@@ -157,7 +173,24 @@ export interface InvalidSpec {
  * (missing file:/link:/portal: path with no bundled copy, workspace:/catalog:).
  * One such spec makes `pnpm install` fail for the whole profile.
  */
-export declare function findUnresolvableSpecs(profileDir: string): Promise<InvalidSpec[]>;
+export declare function findUnresolvableSpecs(profileDir: string, opts?: {
+    sourcePlatform?: string;
+    targetPlatform?: NodeJS.Platform;
+}): Promise<InvalidSpec[]>;
+/**
+ * A manifest restored from another OS can still list that machine's local plugins when the
+ * user turned plugin restore off, or when no plugin record survived. pnpm then fails the
+ * whole profile on the first missing drive path, so those entries are removed here too.
+ * Only paths that belong to the other platform AND are absent here are touched.
+ */
+export declare function dropForeignLocalDeps(dshHome: string, opts?: {
+    sourcePlatform?: string;
+    targetPlatform?: NodeJS.Platform;
+}): Promise<Array<{
+    profile: string;
+    name: string;
+    spec: string;
+}>>;
 /** Candidate Desktop-bundled `dsh` carriers (npm-global `dsh` refuses --profile desktop). */
 export declare function bundledDshCandidates(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string[];
 /** Locate the dsh CLI package (`@deepseek-ai/dsh/lib/bin.js`) shipped inside Desktop's resources. */

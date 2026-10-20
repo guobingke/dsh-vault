@@ -103,6 +103,8 @@ export interface VaultServiceOptions {
   apiHome?: string
   /** How long a backup/restore waits for another one to finish (default 30 min). */
   lockTimeoutMs?: number
+  /** Restore target platform (tests); defaults to process.platform. Never accepted from HTTP input. */
+  targetPlatform?: NodeJS.Platform
 }
 
 export class VaultService {
@@ -129,6 +131,7 @@ export class VaultService {
   private readonly lock: OperationLock
   private scheduleGeneration = 0
   private scheduleStopped = false
+  private readonly targetPlatform: NodeJS.Platform
 
   constructor(private readonly options: VaultServiceOptions = {}) {
     this.dshHome = options.dshHome ?? resolveDshHome()
@@ -136,6 +139,7 @@ export class VaultService {
     this.dataDir = vaultDataDir(this.dshHome, options.dataDir)
     this.activeProfile = options.activeProfile ?? resolveActiveProfile()
     this.dshVersion = options.dshVersion
+    this.targetPlatform = options.targetPlatform ?? process.platform
     this.registry = new StorageRegistry([], { resolveSecret: options.resolveSecret })
     this.pluginManager = options.pluginManager ?? null
     this.pnpmCommand = options.pnpmCommand
@@ -594,6 +598,8 @@ export class VaultService {
       currentScopedPaths: liveFiles.map((f) => f.relPath),
       conflict: req.conflict,
       conflicts,
+      sourcePlatform: unpacked.manifest.platform,
+      targetPlatform: this.targetPlatform,
     })
     preview.secretsAvailable = secretsAvailable
     const remote = remotePluginSources(unpacked.manifest.plugins, this.activeProfile)
@@ -735,6 +741,8 @@ export class VaultService {
       allowSecrets: includeSecrets,
       removePaths,
       rollbackSnapshotId,
+      sourcePlatform: unpacked.manifest.platform,
+      targetPlatform: this.targetPlatform,
       onProgress,
     })
     result.rollbackTargetId = rollbackTargetId
@@ -751,8 +759,8 @@ export class VaultService {
           ? unpacked.manifest.plugins.filter((p) => req.pluginProfiles!.includes(p.profile ?? this.activeProfile))
           : unpacked.manifest.plugins
         const approved = new Set((req.approvedPluginSources ?? []).filter((k) => typeof k === 'string'))
-        await this.installPlugins(records, result, undefined, req.pluginRestoreOrder, onProgress, approved)
-        await this.saveLastRestore({ snapshotId, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
+        await this.installPlugins(records, result, undefined, req.pluginRestoreOrder, onProgress, approved, unpacked.manifest.platform)
+        await this.saveLastRestore({ snapshotId, sourcePlatform: unpacked.manifest.platform, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
       }
     } catch (err) {
       const notReverted = await journal.rollback()
@@ -782,6 +790,7 @@ export class VaultService {
       preferredRegistry: this.preferredRegistry,
       registryIntegrity: this.registryIntegrity(),
       runCommand: this.runCommand,
+      targetPlatform: this.targetPlatform,
     }
   }
 
@@ -798,6 +807,7 @@ export class VaultService {
     order?: VaultSettings['pluginRestoreOrder'],
     onProgress?: ProgressCallback,
     approvedSources?: Set<string>,
+    sourcePlatform?: string,
   ): Promise<void> {
     const restoreOrder = order ?? this.settings.pluginRestoreOrder ?? 'source-first'
     // H-06: a git / tarball / URL source is fetched only when the user approved that plugin.
@@ -811,7 +821,8 @@ export class VaultService {
     if (untrustedApproved.length) {
       result.manualActions.push(`Plugins fetched from sources outside npm / github.com (approved by you): ${untrustedApproved.join(', ')}`)
     }
-    const { results: raw, restartRequired } = await reinstallMissingPlugins(records, this.installDeps(), { only, restoreOrder, onProgress, blockedSources })
+    const deps = { ...this.installDeps(), ...(sourcePlatform ? { sourcePlatform } : {}) }
+    const { results: raw, restartRequired } = await reinstallMissingPlugins(records, deps, { only, restoreOrder, onProgress, blockedSources })
     const results = raw.map((r) => ({ ...r, ...(r.detail ? { detail: redactText(r.detail) } : {}), ...(r.log ? { log: redactText(r.log) } : {}), ...(r.source ? { source: redactText(r.source) } : {}) }))
     result.pluginResults = results
     result.pluginsReinstalled = results.filter((r) => r.status === 'installed' || r.status === 'installed-from-backup').map((r) => r.name)
@@ -841,6 +852,7 @@ export class VaultService {
 
   private async saveLastRestore(data: {
     snapshotId: string
+    sourcePlatform?: string
     plugins: VaultManifest['plugins']
     pluginResults: NonNullable<RestoreResult['pluginResults']>
   }): Promise<void> {
@@ -860,6 +872,7 @@ export class VaultService {
 
   private async loadLastRestore(): Promise<{
     snapshotId?: string
+    sourcePlatform?: string
     plugins: VaultManifest['plugins']
     pluginResults: NonNullable<RestoreResult['pluginResults']>
   } | null> {
@@ -906,12 +919,12 @@ export class VaultService {
       manualActions: [],
     }
     // Retrying a named plugin is an explicit, per-plugin user action: it approves its source.
-    await this.installPlugins(records, result, only, undefined, onProgress, req.plugins?.length ? only : undefined)
+    await this.installPlugins(records, result, only, undefined, onProgress, req.plugins?.length ? only : undefined, last?.sourcePlatform)
     if (last) {
       // Merge into the saved results so a second retry still knows what is left.
       const rows = new Map(last.pluginResults.map((r) => [`${r.profile}:${r.name}`, r]))
       for (const r of result.pluginResults ?? []) rows.set(`${r.profile}:${r.name}`, r)
-      await this.saveLastRestore({ snapshotId: last.snapshotId ?? '', plugins: last.plugins, pluginResults: [...rows.values()] })
+      await this.saveLastRestore({ snapshotId: last.snapshotId ?? '', ...(last.sourcePlatform ? { sourcePlatform: last.sourcePlatform } : {}), plugins: last.plugins, pluginResults: [...rows.values()] })
     }
     this.finishPluginSummary(result)
     return result

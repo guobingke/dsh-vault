@@ -441,6 +441,13 @@ export function RestorePanel({
         </div>
       </Card>
 
+      {preview?.crossPlatform ? (
+        <Banner tone="warn" title={tr('restore.crossPlatformTitle')}>
+          <div>{tr('restore.crossPlatformDesc', { source: preview.sourcePlatform ?? '?', target: preview.targetPlatform ?? '?' })}</div>
+          <div className="dv-hint" style={{ marginTop: 6 }}>{tr('restore.crossPlatformLocalSources')}</div>
+        </Banner>
+      ) : null}
+
       {preview ? (
         <Card>
           <CardHead

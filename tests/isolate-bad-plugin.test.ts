@@ -29,6 +29,7 @@ describe('one unresolvable npm plugin', () => {
         {
           dshHome: home.dshHome,
           activeProfile: 'web',
+          pnpm: { command: 'pnpm' },
           // Like pnpm/dsh: any install fails while the manifest still lists "bad".
           runCommand: async (cmd, args) => {
             const pkg = await readPkg()

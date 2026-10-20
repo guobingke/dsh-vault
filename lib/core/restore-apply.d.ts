@@ -26,6 +26,10 @@ export declare function applyRestore(input: {
     /** Snapshot-relative paths to delete (only from a private rollback's `rollbackRemoves`; M-01). */
     removePaths?: string[];
     rollbackSnapshotId?: string;
+    /** Platform recorded by the snapshot. */
+    sourcePlatform?: string;
+    /** Platform this restore is running on. */
+    targetPlatform?: NodeJS.Platform;
     /** Caller-owned journal, so a later phase (plugin install) can still undo the files. */
     journal?: WriteJournal;
     onProgress?: ProgressCallback;

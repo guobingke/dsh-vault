@@ -1,4 +1,5 @@
 import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import { constants, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path, { dirname, join } from 'node:path'
@@ -10,7 +11,10 @@ import {
   classifyInstallFailure,
   decodeConsoleOutput,
   isWindowsAbsPath,
+  isForeignLocalPath,
+  normalizePlatformName,
   parseLocalSpec,
+  platformsDiffer,
   resolveLocalSpecPath,
   specPath,
   type PluginFailureReason,
@@ -70,6 +74,10 @@ export interface PluginInstallDeps {
   preferredRegistry?: string | null
   /** Environment used for installer discovery (tests). */
   env?: NodeJS.ProcessEnv
+  /** Platform recorded in the snapshot that supplied these records. */
+  sourcePlatform?: string
+  /** Platform to install onto (tests); defaults to process.platform. */
+  targetPlatform?: NodeJS.Platform
   /** Directory holding git for github:/git specs (null = none; undefined = discover). */
   gitDir?: string | null
   /**
@@ -210,6 +218,61 @@ export function desktopResourceRoots(env: NodeJS.ProcessEnv = process.env, platf
 
 type Exists = (p: string) => Promise<boolean>
 
+/**
+ * Resolve the JavaScript entry that a pnpm package actually ships. Global installs
+ * differ by release and package manager: v10/v11 use `bin/pnpm.mjs`, some earlier
+ * builds used `bin/pnpm.cjs`, and a few distributions only declare `main` or
+ * `exports`. Reading package.json is more reliable than guessing filenames.
+ */
+async function pnpmPackageEntry(
+  dir: string,
+  P: typeof path.win32 | typeof path.posix,
+  exists: Exists,
+): Promise<string | null> {
+  const candidates: string[] = []
+  try {
+    const pkg = JSON.parse(await readFile(P.join(dir, 'package.json'), 'utf8')) as {
+      bin?: string | Record<string, unknown>
+      main?: string
+      exports?: unknown
+    }
+    if (typeof pkg.bin === 'string') candidates.push(pkg.bin)
+    else if (pkg.bin && typeof pkg.bin === 'object' && typeof pkg.bin.pnpm === 'string') candidates.push(pkg.bin.pnpm)
+    if (typeof pkg.main === 'string') candidates.push(pkg.main)
+    const addExport = (value: unknown) => {
+      if (typeof value === 'string') {
+        candidates.push(value)
+        return
+      }
+      if (!value || typeof value !== 'object') return
+      const obj = value as Record<string, unknown>
+      for (const key of ['default', 'import', 'require', 'node']) {
+        if (typeof obj[key] === 'string') candidates.push(obj[key] as string)
+      }
+    }
+    addExport(pkg.exports)
+    if (pkg.exports && typeof pkg.exports === 'object') addExport((pkg.exports as Record<string, unknown>)['.'])
+  } catch {
+    // Keep the fixed-name fallbacks for incomplete or unavailable package metadata.
+  }
+  candidates.push('bin/pnpm.mjs', 'dist/pnpm.mjs', 'bin/pnpm.cjs', 'dist/pnpm.cjs')
+  const seen = new Set<string>()
+  for (const raw of candidates) {
+    const rel = raw.replace(/^\.\//, '')
+    if (!rel || rel.startsWith('/') || rel.startsWith('\\') || /^[a-zA-Z]:[\\/]/.test(rel)) continue
+    if (seen.has(rel)) continue
+    seen.add(rel)
+    // `bin.pnpm` is not always JavaScript: pnpm 11/12 declare a shebang-less `sh`
+    // placeholder (later replaced by a native binary), and running that with `node`
+    // fails on the first line. Only a JS entry can be handed to the node executable.
+    if (!/\.(?:c|m)?js$/i.test(rel)) continue
+    const script = P.join(dir, ...rel.split('/'))
+    if (!(await exists(script))) continue
+    return script
+  }
+  return null
+}
+
 /** Desktop's bundled node + pnpm (resources/runtime/primary-runtime/dependencies). */
 export async function findBundledPnpm(
   env: NodeJS.ProcessEnv = process.env,
@@ -225,12 +288,10 @@ export async function findBundledPnpm(
       if (await exists(c)) { node = c; break }
     }
     if (!node) continue
-    for (const c of ['bin/pnpm.mjs', 'dist/pnpm.mjs', 'bin/pnpm.cjs', 'dist/pnpm.cjs']) {
-      const script = P.join(deps, 'pnpm', ...c.split('/'))
-      if (await exists(script)) {
-        const delim = platform === 'win32' ? ';' : ':'
-        return { command: node, args: [script], env: { PATH: `${P.dirname(node)}${delim}${env.PATH ?? env.Path ?? ''}` } }
-      }
+    const script = await pnpmPackageEntry(P.join(deps, 'pnpm'), P, exists)
+    if (script) {
+      const delim = platform === 'win32' ? ';' : ':'
+      return { command: node, args: [script], env: { PATH: `${P.dirname(node)}${delim}${env.PATH ?? env.Path ?? ''}` } }
     }
   }
   return null
@@ -238,9 +299,77 @@ export async function findBundledPnpm(
 
 function pnpmFromManager(manager: PluginManagerLike | null | undefined): PnpmInvocationLike | undefined {
   const pm = manager?.profile?.packageManager
-  if (pm?.command) return pm
-  if (manager?.pnpmCommand && manager.pnpmCommand !== 'pnpm') return { command: manager.pnpmCommand }
+  // A bare "pnpm" only works when it is on PATH. Prefer a concrete bundled/global
+  // installation before falling back to the shell command.
+  if (pm?.command && ((pm.args?.length ?? 0) > 0 || /[\\/]/.test(pm.command))) return pm
+  if (manager?.pnpmCommand && /[\\/]/.test(manager.pnpmCommand)) return { command: manager.pnpmCommand }
   return undefined
+}
+
+/**
+ * A globally installed pnpm that is not on PATH (common with nvm on Ubuntu, or
+ * npm's global prefix on Windows). Run its JS entry with this Node executable,
+ * so no shell shim or PATH entry is required.
+ */
+export async function findGlobalPnpm(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  exists: Exists = isFile,
+  nodeExecutable: string = process.execPath,
+): Promise<PnpmInvocationLike | null> {
+  const P = platform === 'win32' ? path.win32 : path.posix
+  const dirs: string[] = []
+  const add = (dir: string | undefined | null) => {
+    if (dir && !dirs.includes(dir)) dirs.push(dir)
+  }
+  const addPrefix = (prefix: string | undefined | null) => {
+    if (!prefix) return
+    add(platform === 'win32' ? P.join(prefix, 'node_modules', 'pnpm') : P.join(prefix, 'lib', 'node_modules', 'pnpm'))
+    add(P.join(prefix, 'node_modules', 'pnpm'))
+  }
+  const addNodeRoot = (node: string | undefined | null) => {
+    if (!node) return
+    const dir = P.dirname(node)
+    const root = /(^|[\\/])bin$/i.test(dir) ? P.dirname(dir) : dir
+    add(platform === 'win32' ? P.join(root, 'node_modules', 'pnpm') : P.join(root, 'lib', 'node_modules', 'pnpm'))
+  }
+
+  addNodeRoot(nodeExecutable)
+  addNodeRoot(env.NODE_EXE)
+  if (env.NVM_BIN) addNodeRoot(P.join(env.NVM_BIN, platform === 'win32' ? 'node.exe' : 'node'))
+  addPrefix(env.npm_config_prefix)
+  addPrefix(env.NPM_CONFIG_PREFIX)
+  if (env.PNPM_HOME) {
+    const home = P.dirname(env.PNPM_HOME)
+    addNodeRoot(P.join(env.PNPM_HOME, platform === 'win32' ? 'node.exe' : 'node'))
+    addPrefix(home)
+  }
+  if (platform === 'win32') {
+    if (env.APPDATA) add(P.join(env.APPDATA, 'npm', 'node_modules', 'pnpm'))
+    if (env.LOCALAPPDATA) add(P.join(env.LOCALAPPDATA, 'npm', 'node_modules', 'pnpm'))
+    addPrefix(env.ProgramFiles ? P.join(env.ProgramFiles, 'nodejs') : undefined)
+  } else {
+    add('/usr/local/lib/node_modules/pnpm')
+    add('/usr/lib/node_modules/pnpm')
+    add('/opt/homebrew/lib/node_modules/pnpm')
+  }
+
+  for (const dir of dirs) {
+    const script = await pnpmPackageEntry(dir, P, exists)
+    if (!script) continue
+    const delim = platform === 'win32' ? ';' : ':'
+    const pathValue = env.PATH ?? env.Path ?? ""
+    const nodeEnv = P.dirname(nodeExecutable)
+    return {
+      command: nodeExecutable,
+      args: [script],
+      env: {
+        PATH: nodeEnv ? nodeEnv + delim + pathValue : pathValue,
+        ...(process.versions.electron && nodeExecutable === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+      },
+    }
+  }
+  return null
 }
 
 async function resolvePnpm(deps: PluginInstallDeps): Promise<PnpmInvocationLike> {
@@ -248,7 +377,13 @@ async function resolvePnpm(deps: PluginInstallDeps): Promise<PnpmInvocationLike>
   if (deps.pnpmCommand) return { command: deps.pnpmCommand }
   const fromMgr = pnpmFromManager(deps.pluginManager)
   if (fromMgr) return fromMgr
-  return (await findBundledPnpm(deps.env ?? process.env)) ?? { command: 'pnpm' }
+  const platform = deps.targetPlatform ?? process.platform
+  const env = deps.env ?? process.env
+  const bundled = await findBundledPnpm(env, platform)
+  if (bundled) return bundled
+  const global = await findGlobalPnpm(env, platform)
+  if (global) return global
+  return { command: 'pnpm' }
 }
 
 /* --------------------------------------------------------------------------
@@ -263,12 +398,16 @@ async function resolvePnpm(deps: PluginInstallDeps): Promise<PnpmInvocationLike>
 export async function resolveLinkTarget(
   plugin: PluginRecord,
   dshHome: string,
+  opts: { sourcePlatform?: string; targetPlatform?: NodeJS.Platform } = {},
 ): Promise<{ abs: string; bundled: boolean; kind: 'dir' | 'tarball' } | null> {
   const profileDir = join(dshHome, 'profiles', plugin.profile ?? 'web')
   const original = parseLocalSpec(plugin.originalSource)
   if (original?.kind === 'path' && plugin.bundledFrom !== 'installed') {
     const abs = resolveLocalSpecPath(original.path, profileDir)
-    if (original.tarball ? await isFile(abs) : await pathExists(join(abs, 'package.json'))) {
+    const present = original.tarball ? await isFile(abs) : await pathExists(join(abs, 'package.json'))
+    // Existence first: a path that is here is usable whatever syntax it uses. Only an
+    // absent path from the other OS falls through to the bundled copy.
+    if (present && !isForeignLocalPath(original.path, opts.sourcePlatform, opts.targetPlatform)) {
       return { abs, bundled: false, kind: original.tarball ? 'tarball' : 'dir' }
     }
   }
@@ -500,6 +639,31 @@ async function removeFromManifest(profileDir: string, names: string[]): Promise<
   if (changed) await writeManifest(profileDir, pkg)
 }
 
+/**
+ * Drop bundle entries that are themselves absolute paths from another OS. Some older
+ * Windows snapshots wrote `file:C:/...` / `link:C:/...` into dsh.profile.bundles;
+ * keeping one makes dsh try to resolve it on Linux after the restore.
+ */
+async function removeForeignBundleEntries(
+  profileDir: string,
+  opts: { sourcePlatform?: string; targetPlatform?: NodeJS.Platform } = {},
+): Promise<boolean> {
+  const pkg = await readManifest(profileDir)
+  const bundles = pkg?.dsh?.profile?.bundles
+  if (!pkg || !bundles?.length) return false
+  const kept = bundles.filter((b) => {
+    const name = bundleName(b)
+    if (!name) return true
+    const local = parseLocalSpec(name)
+    const localPath = local?.kind === 'path' ? local.path : name
+    return !isForeignLocalPath(localPath, opts.sourcePlatform, opts.targetPlatform)
+  })
+  if (kept.length === bundles.length) return false
+  pkg.dsh!.profile!.bundles = kept
+  await writeManifest(profileDir, pkg)
+  return true
+}
+
 /** Make sure an installed plugin is listed as a profile bundle (pnpm add only writes dependencies). */
 async function ensureBundleListed(profileDir: string, name: string): Promise<void> {
   const pkg = await readManifest(profileDir)
@@ -569,7 +733,11 @@ async function restoreBundleOrder(profileDir: string, original: string[]): Promi
 }
 
 /** Rewrite local deps to the restored bundled sources (or the original path when it exists here). */
-export async function rewriteBundledLinkDeps(dshHome: string, plugins: PluginRecord[]): Promise<string[]> {
+export async function rewriteBundledLinkDeps(
+  dshHome: string,
+  plugins: PluginRecord[],
+  opts: { sourcePlatform?: string; targetPlatform?: NodeJS.Platform } = {},
+): Promise<string[]> {
   const touched: string[] = []
   const byProfile = new Map<string, PluginRecord[]>()
   for (const p of plugins) {
@@ -585,7 +753,7 @@ export async function rewriteBundledLinkDeps(dshHome: string, plugins: PluginRec
     let changed = false
     for (const plugin of list) {
       if (!(plugin.name in pkg.dependencies)) continue
-      const target = await resolveLinkTarget(plugin, dshHome)
+      const target = await resolveLinkTarget(plugin, dshHome, opts)
       if (!target) continue
       const spec = specForTarget(target)
       if (pkg.dependencies[plugin.name] !== spec) {
@@ -604,7 +772,7 @@ export async function rewriteBundledLinkDeps(dshHome: string, plugins: PluginRec
 export interface InvalidSpec {
   name: string
   spec: string
-  reason: Extract<PluginFailureReason, 'local-source-missing' | 'tarball-missing' | 'unsupported-spec'>
+  reason: Extract<PluginFailureReason, 'foreign-local-source' | 'local-source-missing' | 'tarball-missing' | 'unsupported-spec'>
   /** The path that does not exist here (machine 1's), or the spec itself. */
   subject: string
 }
@@ -614,9 +782,13 @@ export interface InvalidSpec {
  * (missing file:/link:/portal: path with no bundled copy, workspace:/catalog:).
  * One such spec makes `pnpm install` fail for the whole profile.
  */
-export async function findUnresolvableSpecs(profileDir: string): Promise<InvalidSpec[]> {
+export async function findUnresolvableSpecs(
+  profileDir: string,
+  opts: { sourcePlatform?: string; targetPlatform?: NodeJS.Platform } = {},
+): Promise<InvalidSpec[]> {
   const pkg = await readManifest(profileDir)
   const out: InvalidSpec[] = []
+  const targetPlatform = opts.targetPlatform ?? process.platform
   for (const [name, value] of Object.entries(pkg?.dependencies ?? {})) {
     const spec = parseLocalSpec(value)
     if (!spec) continue
@@ -626,11 +798,59 @@ export async function findUnresolvableSpecs(profileDir: string): Promise<Invalid
     }
     const abs = resolveLocalSpecPath(spec.path, profileDir)
     const ok = spec.tarball ? await isFile(abs) : await pathExists(abs)
+    if (ok) continue
+    // Only a path that is also absent here counts as the other machine's. A copy that was
+    // rewritten to this machine's dsh home can still carry the other system's path syntax
+    // (restoring Windows -> Linux inside a Windows-shaped test root, or a drive letter that
+    // exists in both), and refusing it would break a plugin that is sitting right there.
+    if (isForeignLocalPath(spec.path, opts.sourcePlatform, targetPlatform)) {
+      out.push({ name, spec: value, reason: 'foreign-local-source', subject: spec.path })
+      continue
+    }
     // Absolute specs name machine 1's path as is; relative ones are shown as written.
     const absolute = isWindowsAbsPath(spec.path) || spec.path.startsWith('/') || spec.path.startsWith('~')
-    if (!ok) out.push({ name, spec: value, reason: spec.tarball ? 'tarball-missing' : 'local-source-missing', subject: absolute ? abs : spec.path })
+    out.push({ name, spec: value, reason: spec.tarball ? 'tarball-missing' : 'local-source-missing', subject: absolute ? abs : spec.path })
   }
   return out
+}
+
+/**
+ * A manifest restored from another OS can still list that machine's local plugins when the
+ * user turned plugin restore off, or when no plugin record survived. pnpm then fails the
+ * whole profile on the first missing drive path, so those entries are removed here too.
+ * Only paths that belong to the other platform AND are absent here are touched.
+ */
+export async function dropForeignLocalDeps(
+  dshHome: string,
+  opts: { sourcePlatform?: string; targetPlatform?: NodeJS.Platform } = {},
+): Promise<Array<{ profile: string; name: string; spec: string }>> {
+  const profilesDir = join(dshHome, 'profiles')
+  let entries: Dirent[] = []
+  try {
+    entries = await readdir(profilesDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const dropped: Array<{ profile: string; name: string; spec: string }> = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const profileDir = join(profilesDir, entry.name)
+    const pkg = await readManifest(profileDir)
+    if (!pkg?.dependencies) continue
+    const gone: string[] = []
+    for (const [name, value] of Object.entries(pkg.dependencies)) {
+      const spec = parseLocalSpec(value)
+      if (spec?.kind !== 'path') continue
+      if (!isForeignLocalPath(spec.path, opts.sourcePlatform, opts.targetPlatform)) continue
+      const abs = resolveLocalSpecPath(spec.path, profileDir)
+      const present = spec.tarball ? await isFile(abs) : await pathExists(join(abs, 'package.json'))
+      if (present) continue
+      gone.push(name)
+      dropped.push({ profile: entry.name, name, spec: value })
+    }
+    if (gone.length) await removeFromManifest(profileDir, gone)
+  }
+  return dropped
 }
 
 async function materializeProfile(
@@ -808,9 +1028,13 @@ function registryOrGitUnavailable(detail: string): boolean {
   return /ERR_PNPM_NO_MATCHING_VERSION|No matching version found|ERR_PNPM_FETCH_404|E404|is not in the npm registry|404 Not Found|Not Found - 404|spawn git ENOENT|git-missing|Command failed with ENOENT: git|不是内部或外部命令.*git|Repository not found|could not read Username|fatal:.*repository/i.test(detail)
 }
 
-async function installSpecFor(plugin: PluginRecord, dshHome: string): Promise<{ spec: string; kind: 'npm' | 'link' | 'git' | 'other' }> {
+async function installSpecFor(
+  plugin: PluginRecord,
+  dshHome: string,
+  opts: { sourcePlatform?: string; targetPlatform?: NodeJS.Platform } = {},
+): Promise<{ spec: string; kind: 'npm' | 'link' | 'git' | 'other' }> {
   if (plugin.bundledSource) {
-    const target = await resolveLinkTarget(plugin, dshHome)
+    const target = await resolveLinkTarget(plugin, dshHome, opts)
     if (target) return { spec: specForTarget(target), kind: 'link' }
     const kind = plugin.bundledKind ?? 'dir'
     return { spec: specForTarget({ abs: join(dshHome, ...plugin.bundledSource.split('/')), kind }), kind: 'link' }
@@ -844,12 +1068,17 @@ async function unusableLocalSpec(
   plugin: PluginRecord,
   spec: string,
   kind: string,
+  deps: PluginInstallDeps,
 ): Promise<{ reason: PluginFailureReason; subject: string } | null> {
   const parsed = parseLocalSpec(spec)
   if (parsed?.kind === 'unsupported') return { reason: 'unsupported-spec', subject: parsed.raw }
   if (kind !== 'link' || parsed?.kind !== 'path') return null
   const present = parsed.tarball ? await isFile(parsed.path) : await pathExists(join(parsed.path, 'package.json'))
   if (present) return null
+  if (isForeignLocalPath(parsed.path, deps.sourcePlatform, deps.targetPlatform)) {
+    const original = parseLocalSpec(plugin.originalSource) ?? parseLocalSpec(plugin.source) ?? parsed
+    return { reason: 'foreign-local-source', subject: original.kind === 'path' ? original.path : parsed.path }
+  }
   // Name the path as machine 1 wrote it, so the owner can find it there.
   const original = parseLocalSpec(plugin.originalSource) ?? parseLocalSpec(plugin.source) ?? parsed
   const subject = original.kind === 'path' ? original.path : parsed.path
@@ -871,6 +1100,8 @@ function ownPathsOf(plugin: PluginRecord, dshHome: string): string[] {
 /** Short English line for a reason (UI localizes by `reason`). */
 function reasonLine(reason: PluginFailureReason, subject?: string): string {
   switch (reason) {
+    case 'foreign-local-source':
+      return `local source belongs to another operating system and cannot be opened on this machine: ${subject}; this snapshot has no saved copy of that plugin — install it here, or back up again on the original machine with the current dsh-vault`
     case 'tarball-missing':
       return `local package file not found on this machine: ${subject}; re-run the backup on the original machine with the current dsh-vault`
     case 'local-source-missing':
@@ -1045,7 +1276,16 @@ export async function reinstallMissingPlugins(
     }
   }
 
-  await rewriteBundledLinkDeps(deps.dshHome, actionable)
+  const targetPlatform = normalizePlatformName(deps.targetPlatform ?? process.platform)!
+  const sourcePlatform = normalizePlatformName(deps.sourcePlatform)
+  const crossPlatform = platformsDiffer(sourcePlatform, targetPlatform)
+  // One option object for every nested installer step: the recorded source platform
+  // matters even when the target happens to use the same path syntax.
+  const platformOpts = {
+    ...(sourcePlatform ? { sourcePlatform } : {}),
+    targetPlatform,
+  }
+  const rewrittenProfiles = new Set(await rewriteBundledLinkDeps(deps.dshHome, actionable, platformOpts))
 
   const presentBefore = new Set<string>()
   for (const p of actionable) {
@@ -1055,8 +1295,12 @@ export async function reinstallMissingPlugins(
   const profiles = [...new Set(actionable.map(profileOf))]
   const oursIn = (profile: string) => new Set(actionable.filter((p) => profileOf(p) === profile).map((p) => p.name))
   const originalBundles = new Map<string, string[]>()
+  const foreignBundleProfiles = new Set<string>()
   for (const profile of profiles) {
     const profileDir = join(deps.dshHome, 'profiles', profile)
+    if (await removeForeignBundleEntries(profileDir, platformOpts)) {
+      foreignBundleProfiles.add(profile)
+    }
     const pkg = await readManifest(profileDir)
     if (!pkg) continue
     originalBundles.set(profile, (pkg.dsh?.profile?.bundles ?? []).map(bundleName))
@@ -1071,7 +1315,7 @@ export async function reinstallMissingPlugins(
     }
 
     // 2) Pre-validate. Unresolvable specs come out of this install run.
-    const invalid = await findUnresolvableSpecs(profileDir)
+    const invalid = await findUnresolvableSpecs(profileDir, platformOpts)
     if (invalid.length) {
       await removeFromManifest(profileDir, invalid.map((i) => i.name))
       for (const bad of invalid) {
@@ -1092,7 +1336,13 @@ export async function reinstallMissingPlugins(
 
     // 3) Materialize.
     options.onProgress?.({ phase: 'reinstall', message: 'Installing profile dependencies', current: 0, total: actionable.length, item: `pnpm install (${profile})` })
-    const mat = await materializeProfile(profileDir, deps, { frozen: invalid.length === 0 })
+    const mat = await materializeProfile(profileDir, deps, {
+      frozen:
+        invalid.length === 0 &&
+        !crossPlatform &&
+        !rewrittenProfiles.has(profile) &&
+        !foreignBundleProfiles.has(profile),
+    })
     if (!mat.ok) {
       const isolate: string[] = []
       const current = await readManifest(profileDir)
@@ -1100,7 +1350,7 @@ export async function reinstallMissingPlugins(
         if (profileOf(p) !== profile || done.has(key(profile, p.name))) continue
         if (presentBefore.has(key(profile, p.name))) continue
         // Anything resolved from the network can fail alone; isolate it (npm and git/GitHub).
-        const k = (await installSpecFor(p, deps.dshHome)).kind
+        const k = (await installSpecFor(p, deps.dshHome, platformOpts)).kind
         if (k !== 'npm' && k !== 'git') continue
         if (current?.dependencies && p.name in current.dependencies) isolate.push(p.name)
       }
@@ -1115,7 +1365,7 @@ export async function reinstallMissingPlugins(
   const bundledDeps = new Map<string, { ok: boolean; detail: string }>()
   for (const plugin of actionable) {
     if (done.has(key(profileOf(plugin), plugin.name))) continue
-    const target = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome) : null
+    const target = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome, platformOpts) : null
     if (!target?.bundled || target.kind !== 'dir' || bundledDeps.has(target.abs)) continue
     bundledDeps.set(target.abs, await installBundledSourceDeps(target.abs, deps))
   }
@@ -1136,7 +1386,7 @@ export async function reinstallMissingPlugins(
       const pkgDir = join(profileDir, 'node_modules', ...plugin.name.split('/'))
       const missing = await missingRuntimeDependencies(pkgDir)
       if (missing.length) {
-        const target = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome) : null
+        const target = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome, platformOpts) : null
         const bundledDetail = target ? bundledDeps.get(target.abs)?.detail : undefined
         fail({
           name: plugin.name,
@@ -1152,7 +1402,7 @@ export async function reinstallMissingPlugins(
       }
       const version = await installedPackageVersion(pkgDir)
       if (!(plugin.installedVersion && version && version !== plugin.installedVersion)) {
-        const linked = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome) : null
+        const linked = plugin.bundledSource ? await resolveLinkTarget(plugin, deps.dshHome, platformOpts) : null
         const isNew = !presentBefore.has(key(profile, plugin.name))
         if (isNew) restartRequired = true
         results.push({
@@ -1187,7 +1437,7 @@ export async function reinstallMissingPlugins(
       continue
     }
 
-    const { spec, kind } = await installSpecFor(plugin, deps.dshHome)
+    const { spec, kind } = await installSpecFor(plugin, deps.dshHome, platformOpts)
     // A bare name is a guess: never resolve it against the registry.
     if (kind === 'other' && spec === plugin.name) {
       results.push({ name: plugin.name, profile, status: 'skipped', reason: 'no-recorded-source', subject: plugin.name, detail: reasonLine('no-recorded-source', plugin.name), source: plugin.source })
@@ -1195,7 +1445,7 @@ export async function reinstallMissingPlugins(
       continue
     }
     // Never hand pnpm a local path that isn't here: it would fail (or link a dangling dir).
-    const unusable = await unusableLocalSpec(plugin, spec, kind)
+    const unusable = await unusableLocalSpec(plugin, spec, kind, deps)
     if (unusable) {
       fail({
         name: plugin.name,

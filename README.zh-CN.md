@@ -206,6 +206,31 @@ rmdir "%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-vault"
 
 如果有插件安装失败（离线、源被墙），结果会写明失败个数；可以先重启加载其余内容，网络恢复后再点 **重试失败的插件**。
 
+### Windows 与 Linux / macOS 之间迁移
+
+快照可以跨系统恢复：Windows 备份拿到 Ubuntu 上、macOS 备份拿到 Windows 上都行。配置、skills、presets、MCP 服务，以及来自 npm 或 GitHub 的插件都会还原。本地路径的插件不行，`C:\Users\you\plugins\x` 在 Linux 上没有意义。
+
+新电脑上会这样处理：
+
+- 预览页会写明快照来自哪个系统，并提示本地路径会被跳过。
+- 快照里带副本的本地插件，会重新链接到 `$DSH_HOME/plugin-sources/` 下的副本。
+- 没有副本的本地插件单独失败并给出原因，其余内容照常恢复，配置档案不会因此装不上。
+- 指向另一系统盘符的条目会从 `package.json` 和 `dsh.profile.bundles` 里删除；即使你关掉「恢复插件」也会删。
+- 另一台机器的 `pnpm-lock.yaml` 不会被当作 `--frozen-lockfile` 使用，里面含有对不上的平台包。
+
+`pnpm` 不需要出现在 `PATH` 里。只要它是全局安装的（nvm、npm 前缀、Desktop 自带运行时），dsh-vault 会用当前的 `node` 直接运行它的 `bin/pnpm.mjs`。
+
+Ubuntu 上用 nvm 装 Node 时，`sudo npm install -g pnpm` 会失败——`sudo` 拿不到 nvm 的路径，报 `sudo: 'npm': command not found`。去掉 `sudo` 重装即可：
+
+```bash
+npm install -g pnpm
+hash -r
+```
+
+装完 `pnpm -v` 仍然可能提示「找不到命令」，因为 nvm 的 bin 目录有时没有被每个 shell 重新加载。这不影响恢复：找不到 `pnpm` 命令时，dsh-vault 会自己去 `<node 前缀>/lib/node_modules/pnpm` 里找它。
+
+**改动之前做的快照里没有插件副本。** 那些只存在于旧机器上的本地插件，没有任何文件可还原。请回原机用当前版本重新备份一次（这样才会带上 `plugin-sources/`），再拿新快照恢复。
+
 命令行等价操作：
 
 ```bash

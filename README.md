@@ -206,6 +206,31 @@ When filing an issue, include the source you entered and the last part of `pnpm.
 
 If some plugins failed (offline, registry blocked), the summary says how many. You can still restart to load everything else, and click **重试失败的插件** once the network is fixed.
 
+### Moving between Windows and Linux/macOS
+
+A snapshot can cross operating systems: Windows to Ubuntu, macOS to Windows, and so on. Configuration, skills, presets, MCP servers and plugins that come from npm or GitHub come across. Local plugin paths do not, because `C:\Users\you\plugins\x` has no meaning on Linux.
+
+What happens on the new machine:
+
+- The preview says which system made the snapshot and warns that local paths will be skipped.
+- Local plugins that were copied into the snapshot are re-linked from the copy under `$DSH_HOME/plugin-sources/`.
+- Local plugins with no copy fail individually and are listed with a reason. Everything else still restores; the profile stays installable.
+- Entries pointing at the other system's drive paths are removed from the profile `package.json` and from `dsh.profile.bundles`. This happens even if you turn plugin restore off.
+- `pnpm-lock.yaml` from the other machine is not used with `--frozen-lockfile`, since the platform-specific packages in it would not match.
+
+`pnpm` does not need to be on `PATH`. If it is installed globally (nvm, npm prefix, Desktop's bundled runtime), dsh-vault runs its `bin/pnpm.mjs` with the current `node`.
+
+On Ubuntu with nvm, `sudo npm install -g pnpm` fails with `sudo: 'npm': command not found`, because `sudo` does not see nvm's path. Install without `sudo`:
+
+```bash
+npm install -g pnpm
+hash -r
+```
+
+`pnpm -v` can still say command not found afterwards, if the nvm bin folder was not reloaded in that shell. That does not block a restore: when the `pnpm` command is missing, dsh-vault looks for the package under `<node prefix>/lib/node_modules/pnpm` itself.
+
+**Snapshots made before this change have no plugin copies.** There is nothing to restore for a local plugin that only existed on the old machine. Back up again on the original machine with the current version so `plugin-sources/` is included, then restore that snapshot.
+
 CLI equivalent:
 
 ```bash

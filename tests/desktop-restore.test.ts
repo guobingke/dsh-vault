@@ -40,6 +40,7 @@ describe('desktop profile backup / restore', () => {
         dshHome: home.dshHome,
         agentsHome: home.agentsHome,
         activeProfile: 'desktop',
+        pnpm: { command: 'pnpm' },
         pluginManager: {
           async installBundle(spec) {
             installs.push(spec)
@@ -132,6 +133,7 @@ describe('desktop profile backup / restore', () => {
           dshHome: home2.dshHome,
           agentsHome: home2.agentsHome,
           activeProfile: 'desktop',
+          pnpm: { command: 'pnpm' },
           runPluginInstall: async (command, args, opts) => {
             if (command === 'pnpm' && opts.cwd) {
               const pkg = join(opts.cwd, 'node_modules', 'left-pad')
