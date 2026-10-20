@@ -59,23 +59,25 @@ In DeepSeek Harness Desktop (or `dsh web`), open **Plugins → 添加插件** an
 github:guobingke/dsh-vault
 ```
 
-Restart Desktop when it finishes, then open **Settings → 大肥鱼备份**. No build step is needed: the built files are committed to the repo.
+The full repository URL also works: `https://github.com/guobingke/dsh-vault` (with or without `.git`). Use the repository root; don't add a trailing `/` or a path such as `/tree/main`.
 
-The full repository URL works too: `https://github.com/guobingke/dsh-vault` (with or without `.git`). Don't add a trailing `/` or a `/tree/...` path, because the plugin page rejects those.
+`github:` and repository URLs need **git** on the machine, because pnpm calls `git ls-remote` to resolve the commit. On Windows, install [Git for Windows](https://git-scm.com/download/win) first.
 
-These forms need **git** on the machine, because pnpm asks git which commit to fetch. On Windows, install [Git for Windows](https://git-scm.com/download/win) first. Without git, enter a tarball URL for one commit instead. It installs with no git at all:
+If git isn't available, use a tarball for one commit. This path uses HTTPS only:
 
 ```
 https://github.com/guobingke/dsh-vault/archive/<commit>.tar.gz
 ```
 
-Replace `<commit>` with a commit hash from the repo's commit list. To update, uninstall and add the URL of a newer commit. Avoid `archive/refs/heads/main.tar.gz`: it installs once, but adding it again after main changes fails with an integrity error.
+Replace `<commit>` with a hash from the commit list. To update, uninstall the plugin and add the tarball for a newer commit. Avoid `archive/refs/heads/main.tar.gz`: it works once, but adding it again after main changes fails the integrity check.
 
-Don't enter just `dsh-vault`. That name on npm belongs to an unrelated package.
+Restart Desktop when installation finishes, then open **Settings → 大肥鱼备份**. There is no build step; the built files are in the repository.
 
-On networks in mainland China, GitHub may be unreachable. Set a system proxy (or `HTTPS_PROXY`) before starting Desktop.
+Don't enter just `dsh-vault`. The npm package with that name is unrelated.
 
-**Updating.** dsh's plugin page doesn't update plugins in place. To get the latest version, uninstall 大肥鱼备份 on the plugin page, add `github:guobingke/dsh-vault` again, and restart Desktop. Your targets, settings and snapshots live in `$DSH_HOME/dsh-vault` and are kept. To pin a version, add a branch, tag or commit, e.g. `github:guobingke/dsh-vault#main`.
+On networks in mainland China, GitHub may be unreachable. Set a system proxy or `HTTPS_PROXY` before starting Desktop.
+
+If installation fails, see [Installation troubleshooting](#installation-troubleshooting).
 
 ### From the command line
 
@@ -109,6 +111,81 @@ Then add `link:/absolute/path/to/dsh-vault` on the plugin page, or with `dsh plu
 ### CLI only
 
 The CLI is `node lib/cli/index.js` inside the installed package or a clone (`npm link` puts `dsh-vault` on your PATH). It reads `$DSH_HOME` directly and doesn't need dsh to be running.
+
+### Updating
+
+The plugin page doesn't update in place. Uninstall 大肥鱼备份, add `github:guobingke/dsh-vault` again, and restart Desktop. Targets, settings and snapshots are kept in `$DSH_HOME/dsh-vault`.
+
+To pin a branch, tag or commit, append it to the source, for example `github:guobingke/dsh-vault#main`.
+
+### Installation troubleshooting
+
+The plugin page sometimes reports **“没有写入权限，无法安装”** or **“安装过程中出错，原因见安装详情”**. Those messages hide the pnpm error. Open the newest log:
+
+```
+%USERPROFILE%\.dsh\profiles\desktop\.plugin-manager\logs\operation-*\pnpm.log
+```
+
+If Desktop uses another `$DSH_HOME` or runs as a different Windows user, use that account's path instead. For `dsh web`, replace `desktop` with `web`.
+
+#### `a URL must point at a git repository or a tarball`
+
+The address points at a GitHub page, not at the repository root or a tarball. This happens with `/tree/main`, `/blob/...` and similar links.
+
+Use one of:
+
+```
+github:guobingke/dsh-vault
+https://github.com/guobingke/dsh-vault
+https://github.com/guobingke/dsh-vault.git
+```
+
+Remove the trailing `/` and anything after the repository name.
+
+#### `ERR_PNPM_GIT_RESOLVE_FAILED` / `'git' is not recognized`
+
+The DSH process can't find `git`. On Windows this often means Desktop is running under a different account (for example, `Administrator`) whose `PATH` doesn't include Git, or that Desktop was started before Git was installed.
+
+Check from the same Windows account that runs DSH:
+
+```
+where.exe git
+```
+
+If nothing is printed, install Git for Windows and make sure its `cmd` directory is on `PATH`. Then quit DSH completely, including the tray process, and start it again. A running process doesn't pick up environment changes.
+
+Git installed for your normal user isn't added to `Administrator`'s `PATH`. If a new terminal finds git but DSH still doesn't, sign out and back in, or reboot once.
+
+pnpm may suggest `git config --global url."git@github.com:".insteadOf ...`. That switches HTTPS to SSH; it does not fix a missing `git` command. If `where.exe git` finds Git but GitHub's HTTPS endpoint is blocked, then that SSH setup can help, provided the account also has a GitHub SSH key.
+
+Without Git, use the commit tarball URL above.
+
+#### `ERR_PNPM_EPERM` on `node_modules\dsh-vault`
+
+Windows reports `EPERM: operation not permitted, rename` when pnpm tries to replace the existing `node_modules\dsh-vault` entry. This usually means dsh-vault was previously installed with `link:` and the entry is a junction or symlink to a local source folder. The folder ACL is often fine; the plugin page simply reports it as "no write permission".
+
+1. If dsh-vault is listed on the plugin page, uninstall it first. If that fails, quit DSH completely, including the tray process.
+2. Open Command Prompt (`cmd`), then check for a link:
+
+```
+dir /AL "%USERPROFILE%\.dsh\profiles\desktop\node_modules"
+```
+
+Look for a line containing `dsh-vault` and `<JUNCTION>` or `<SYMLINKD>`.
+
+3. In the same window, remove only the link. Don't add `/S`:
+
+```
+rmdir "%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-vault"
+```
+
+`rmdir` without `/S` removes the junction or symlink itself, not the folder it points to. If the entry is a normal non-empty folder, the command fails instead of emptying it.
+
+4. Start DSH and install again.
+
+Don't delete the source folder or the whole `node_modules`. If the entry isn't a link, check the pnpm log again; a locked file or an ACL problem will be named there.
+
+When filing an issue, include the source you entered and the last part of `pnpm.log`.
 
 ## Moving to a new machine
 

@@ -59,23 +59,25 @@ dsh-vault 把这件事变成三步：旧电脑上备份，新电脑上恢复，�
 github:guobingke/dsh-vault
 ```
 
-安装完成后重启 Desktop，打开 **设置 → 大肥鱼备份**。不需要构建：构建产物已提交在仓库里。
+也可以填完整仓库地址 `https://github.com/guobingke/dsh-vault`（带不带 `.git` 都行）。地址要指向仓库根目录，末尾不要加 `/`，也不要带 `/tree/main` 这类路径。
 
-也可以直接填完整仓库地址 `https://github.com/guobingke/dsh-vault`（带不带 `.git` 都行）。末尾不要加 `/`，也不要带 `/tree/...`，插件页会拒绝。
+`github:` 和完整仓库地址都要求本机装有 **git**，因为 pnpm 要先执行 `git ls-remote` 查提交。Windows 请先安装 [Git for Windows](https://git-scm.com/download/win)。
 
-这几种写法都需要本机装有 **git**：pnpm 要用 git 查出该拉哪个提交。Windows 请先安装 [Git for Windows](https://git-scm.com/download/win)。没有 git 的话，改填某个提交的压缩包地址，完全不需要 git：
+没有 git 时，可以改用某个提交的压缩包，只走 HTTPS：
 
 ```
 https://github.com/guobingke/dsh-vault/archive/<提交>.tar.gz
 ```
 
-把 `<提交>` 换成仓库提交列表里的提交哈希。更新时卸载后填较新提交的地址。不要用 `archive/refs/heads/main.tar.gz`：第一次能装上，但 main 更新后再添加会报校验错误。
+把 `<提交>` 换成仓库提交列表里的提交哈希。更新时卸载插件，再填较新提交的压缩包地址。不要用 `archive/refs/heads/main.tar.gz`：第一次能装上，main 更新后再添加会报校验错误。
 
-不要只填 `dsh-vault`，npm 上这个名字是另一个无关的包。
+安装完成后重启 Desktop，打开 **设置 → 大肥鱼备份**。不需要构建，构建产物已提交在仓库里。
 
-国内网络可能连不上 GitHub，请先开系统代理（或设置 `HTTPS_PROXY`）再启动 Desktop。
+不要只填 `dsh-vault`，npm 上这个名字属于另一个无关的包。
 
-**更新。** dsh 的插件页目前不支持原地更新。要升级到最新版：在插件页卸载大肥鱼备份，再添加一次 `github:guobingke/dsh-vault`，然后重启 Desktop。存储位置、设置和快照保存在 `$DSH_HOME/dsh-vault`，卸载不会丢。想固定版本，可以在后面加分支、标签或提交，例如 `github:guobingke/dsh-vault#main`。
+国内网络可能连不上 GitHub，请先开系统代理或设置 `HTTPS_PROXY`，再启动 Desktop。
+
+安装失败时见[安装失败排查](#安装失败排查)。
 
 ### 命令行安装
 
@@ -109,6 +111,81 @@ npm run build
 ### 只用命令行
 
 命令行是已安装包或克隆目录里的 `node lib/cli/index.js`（执行 `npm link` 后可直接用 `dsh-vault`）。它直接读取 `$DSH_HOME`，不需要 dsh 在运行。
+
+### 更新
+
+插件页不支持原地更新。卸载大肥鱼备份，再添加一次 `github:guobingke/dsh-vault`，然后重启 Desktop。存储位置、设置和快照保存在 `$DSH_HOME/dsh-vault`，不会丢。
+
+想固定分支、标签或提交，可以在来源后面追加，例如 `github:guobingke/dsh-vault#main`。
+
+### 安装失败排查
+
+插件页有时只显示 **「没有写入权限，无法安装」** 或 **「安装过程中出错，原因见安装详情」**。具体错误要看最新的 pnpm 日志：
+
+```
+%USERPROFILE%\.dsh\profiles\desktop\.plugin-manager\logs\operation-*\pnpm.log
+```
+
+如果 Desktop 使用了别的 `$DSH_HOME`，或用另一个 Windows 账户运行，就去看那个账户下的路径。用 `dsh web` 时，把路径里的 `desktop` 换成 `web`。
+
+#### 提示 `a URL must point at a git repository or a tarball`
+
+填的是 GitHub 网页地址，不是仓库根地址或压缩包。常见于粘贴了 `/tree/main`、`/blob/...` 这类链接。
+
+改成下面任意一种：
+
+```
+github:guobingke/dsh-vault
+https://github.com/guobingke/dsh-vault
+https://github.com/guobingke/dsh-vault.git
+```
+
+去掉末尾的 `/`，也去掉仓库名后面的路径。
+
+#### 提示 `ERR_PNPM_GIT_RESOLVE_FAILED` / `'git' 不是内部或外部命令`
+
+DSH 进程找不到 `git`。Windows 上常见的原因是 Desktop 跑在另一个账户下（例如 `Administrator`），那个账户的 `PATH` 里没有 Git；也可能是在装 Git 之前就已经启动了 Desktop。
+
+在运行 DSH 的同一个 Windows 账户里检查：
+
+```
+where.exe git
+```
+
+没有输出就先安装 Git for Windows，并确认 Git 的 `cmd` 目录在 `PATH` 里。然后完全退出 DSH（包括托盘进程）再重新打开。已经运行的进程不会重新读取环境变量。
+
+普通账户里装的 Git 不会自动加进 `Administrator` 的 `PATH`。如果新开的终端能找到 git、DSH 还是找不到，注销后重新登录，或者重启一次。
+
+pnpm 可能会提示 `git config --global url."git@github.com:".insteadOf ...`。那是把 HTTPS 换成 SSH，不能解决 git 命令不存在的问题。如果 `where.exe git` 能找到 Git，只是 GitHub 的 HTTPS 连不上，再按这个提示改用 SSH，并先给该账户配好 GitHub SSH key。
+
+没有 Git 就用上面的提交压缩包地址。
+
+#### 提示 `ERR_PNPM_EPERM`，路径是 `node_modules\dsh-vault`
+
+pnpm 要替换已有的 `node_modules\dsh-vault` 时，Windows 报 `EPERM: operation not permitted, rename`。多数情况是以前用 `link:` 装过，这个位置是指向本地源码的 Junction 或符号链接。目录权限通常没问题，插件页只是把它概括成了「没有写入权限」。
+
+1. 如果插件页里还列着大肥鱼备份，先卸载。卸载也失败的话，完全退出 DSH，包括托盘进程。
+2. 打开命令提示符（`cmd`），检查是不是链接：
+
+```
+dir /AL "%USERPROFILE%\.dsh\profiles\desktop\node_modules"
+```
+
+输出里找包含 `dsh-vault` 的那一行，类型应为 `<JUNCTION>` 或 `<SYMLINKD>`。
+
+3. 在同一个窗口里只删这个链接，不要加 `/S`：
+
+```
+rmdir "%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-vault"
+```
+
+不带 `/S` 的 `rmdir` 删除的是 Junction 或符号链接本身，不会删掉它指向的目录。如果这个位置是普通的非空文件夹，命令会失败，不会清空里面的文件。
+
+4. 重新打开 DSH，再装一次。
+
+不要删除链接指向的源码目录，也不要删除整个 `node_modules`。如果那里不是链接，就回到 `pnpm.log` 看具体报错，通常会写明哪个文件被占用，或者哪条 ACL 不允许。
+
+提 issue 时附上你填的来源和 `pnpm.log` 的最后一段。
 
 ## 迁移到新电脑
 
