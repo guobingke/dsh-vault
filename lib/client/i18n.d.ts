@@ -306,6 +306,7 @@ declare const zh: {
     'restore.failedTitle': string;
     'restore.resultTitle': string;
     'restore.resultDesc': string;
+    'restore.resultDescWithSkipped': string;
     'restore.status.installed': string;
     'restore.status.installed-from-backup': string;
     'restore.status.already-present': string;

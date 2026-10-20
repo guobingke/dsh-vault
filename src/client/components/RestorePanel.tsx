@@ -9,7 +9,7 @@ const ROLLBACK_TARGET_ID = 'local-rollback'
 import { localizeNotice, pluginRawDetail, pluginReasonText } from '../notices.js'
 import { PathPicker, type FsBrowser } from './PathPicker.js'
 import { DiffGroups } from './DiffGroups.js'
-import { RestoreSummary } from './ResultSummary.js'
+import { RestoreSummary, pluginCounts } from './ResultSummary.js'
 import {
   Banner,
   Button,
@@ -644,12 +644,14 @@ function PluginResults({
   const tr = useT()
   const locale = useLocale()
   const rows = result.pluginResults ?? []
-  const failed = rows.filter((r) => r.status === 'failed').length
+  const { ok, failed, skipped } = pluginCounts(result)
   return (
     <Card>
       <CardHead
         title={tr('restore.resultTitle')}
-        sub={tr('restore.resultDesc', { ok: rows.length - failed, failed })}
+        sub={skipped
+          ? tr('restore.resultDescWithSkipped', { ok, failed, skipped })
+          : tr('restore.resultDesc', { ok, failed })}
         actions={failed && onRetry ? (
           <Button size="sm" onClick={onRetry} loading={retrying} disabled={retrying} title={tr('restore.retryDesc')}>
             {retrying ? tr('restore.retrying') : tr('restore.retryFailed')}

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import { packTarGz, unpackTarGz } from '../src/core/archive.js'
 import { collectBackupFiles } from '../src/core/collect.js'
 import { packSnapshot, unpackSnapshot } from '../src/core/snapshot-io.js'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { packExtractedSnapshot } from '../src/core/extracted-snapshot.js'
 import { makeTempHome } from './helpers.js'
 
 describe('archive + collect', () => {
@@ -85,6 +88,38 @@ describe('archive + collect', () => {
       const unpacked = await unpackSnapshot(packed.bytes, 'test-pass')
       assert.equal(unpacked.manifest.id, packed.snapshotId)
       assert.ok(unpacked.files.has('settings.yaml'))
+    } finally {
+      await home.cleanup()
+    }
+  })
+})
+
+describe('extracted snapshot limits', () => {
+  it('rejects a manifest larger than maxEntryBytes before re-packing it', async () => {
+    const home = await makeTempHome('dsh-vault-extracted-')
+    try {
+      const folder = join(home.root, 'snapshot')
+      await mkdir(folder, { recursive: true })
+      await writeFile(join(folder, 'manifest.json'), '0123456789A')
+      await assert.rejects(
+        () => packExtractedSnapshot(folder, { maxEntries: 10, maxEntryBytes: 10, maxTotalBytes: 1000 }),
+        (err: Error & { code?: string }) => err.code === 'ARCHIVE_LIMIT',
+      )
+    } finally {
+      await home.cleanup()
+    }
+  })
+
+  it('rejects a manifest that alone exceeds maxTotalBytes', async () => {
+    const home = await makeTempHome('dsh-vault-extracted-')
+    try {
+      const folder = join(home.root, 'snapshot')
+      await mkdir(folder, { recursive: true })
+      await writeFile(join(folder, 'manifest.json'), '012345678901234567890')
+      await assert.rejects(
+        () => packExtractedSnapshot(folder, { maxEntries: 10, maxEntryBytes: 100, maxTotalBytes: 20 }),
+        (err: Error & { code?: string }) => err.code === 'ARCHIVE_LIMIT',
+      )
     } finally {
       await home.cleanup()
     }

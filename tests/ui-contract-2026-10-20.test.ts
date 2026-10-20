@@ -15,8 +15,11 @@ import { VaultApi, type JobView } from '../src/client/api.js'
 import { buildRestoreRequest } from '../src/client/lib/requests.js'
 import { backupCounts, pluginCounts, restoreHeadline } from '../src/client/components/ResultSummary.js'
 import { localizeError, pluginReasonText } from '../src/client/notices.js'
-import { translate } from '../src/client/i18n.js'
+import { I18nContext, translate } from '../src/client/i18n.js'
 import { targetName } from '../src/client/lib/format.js'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { RestorePanel, type RestorePanelProps } from '../src/client/components/RestorePanel.js'
 import type { BackupResult, RestoreResult } from '../src/core/types.js'
 import { allowAll } from './api-client.js'
 import { makeTempHome } from './helpers.js'
@@ -217,6 +220,29 @@ describe('usability P2/P3: result wording, schedule, localization', () => {
     assert.match(line, /插件 2 跳过/)
     assert.match(line, /0\.4s/)
     assert.match(pluginReasonText(r.pluginResults![1]!, zh), /没有勾选允许/)
+  })
+
+  it('the expanded plugin card counts skipped rows separately', () => {
+    const result = {
+      snapshotId: 's', applied: [], skipped: [], pluginsReinstalled: [], pluginsFailed: [],
+      manualActions: [], durationMs: 420,
+      pluginResults: [
+        { name: 'ok', profile: 'web', status: 'installed', detail: 'installed ok@1.0.0' },
+        { name: 'skip-one', profile: 'web', status: 'skipped', reason: 'source-not-approved', detail: 'x' },
+        { name: 'skip-two', profile: 'web', status: 'skipped', reason: 'source-not-approved', detail: 'x' },
+      ],
+    } as unknown as RestoreResult
+    const props: RestorePanelProps = {
+      targets: [], snapshots: [], preview: null, busy: false, message: null, error: null,
+      onPreview() {}, onRestore() {}, result,
+    }
+    const html = renderToStaticMarkup(createElement(
+      I18nContext.Provider,
+      { value: { locale: 'zh', t: zh } },
+      createElement(RestorePanel, props),
+    ))
+    assert.match(html, /1 个就绪，0 个失败，2 个跳过/)
+    assert.doesNotMatch(html, /3 个就绪/)
   })
 
   it('disabling the schedule clears nextRunAt', async () => {
