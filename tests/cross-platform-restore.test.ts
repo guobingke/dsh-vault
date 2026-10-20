@@ -258,9 +258,13 @@ describe('a snapshot made on Windows restored on Linux', () => {
       assert.ok(!spec.includes('gbk'), `dependency still points at the source machine: ${spec}`)
       assert.ok(!spec.includes('plugins/dsh-local') && !spec.includes('plugins\\dsh-local'), `dependency still points at the source plugin: ${spec}`)
       // It must resolve inside THIS machine's dsh home, where the copy was restored.
-      const specAbs = spec.slice(spec.indexOf(':') + 1).replace(/\//g, '\\')
-      const expectedRoot = join(r.dshHome, 'plugin-sources', 'desktop', 'win-local-dir').toLowerCase()
-      assert.equal(specAbs.toLowerCase(), expectedRoot, `dependency should point at the restored copy: ${spec}`)
+      // Compare with forward slashes on both sides: the separator follows the host, and
+      // only Windows is case-insensitive.
+      const flat = (p: string) => p.replace(/\\/g, '/')
+      const ci = process.platform === 'win32' ? (p: string) => p.toLowerCase() : (p: string) => p
+      const specAbs = ci(flat(spec.slice(spec.indexOf(':') + 1)))
+      const expectedRoot = ci(flat(join(r.dshHome, 'plugin-sources', 'desktop', 'win-local-dir')))
+      assert.equal(specAbs, expectedRoot, `dependency should point at the restored copy: ${spec}`)
       assert.ok(existsSync(join(r.dshHome, 'plugin-sources', 'desktop', 'win-local-dir', 'index.js')))
       assert.equal(r.result.ok, true)
     } finally {

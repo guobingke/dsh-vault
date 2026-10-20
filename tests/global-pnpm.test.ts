@@ -83,7 +83,10 @@ describe('global pnpm discovery (pnpm not on PATH)', () => {
       const node = posix.join(root, 'bin', 'node')
       await mkdir(posix.dirname(node), { recursive: true })
       await writeFile(node, '')
-      const found = await findGlobalPnpm({ PATH: '' }, 'linux', exists, node)
+      // Look only inside the throwaway root: a CI image or a developer machine may well
+      // have pnpm in /usr/local/lib/node_modules, which is a correct hit, not a bug.
+      const onlyRoot = async (file: string) => file.startsWith(root) && existsSync(file)
+      const found = await findGlobalPnpm({ PATH: '' }, 'linux', onlyRoot, node)
       assert.equal(found, null)
     } finally {
       await rm(root, { recursive: true, force: true })
