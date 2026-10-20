@@ -43,6 +43,8 @@ export async function applyRestore(input: {
   /** Snapshot-relative paths to delete (only from a private rollback's `rollbackRemoves`; M-01). */
   removePaths?: string[]
   rollbackSnapshotId?: string
+  /** Caller-owned journal, so a later phase (plugin install) can still undo the files. */
+  journal?: WriteJournal
   onProgress?: ProgressCallback
 }): Promise<RestoreResult> {
   const preview = await previewRestoreDiff({
@@ -104,7 +106,7 @@ export async function applyRestore(input: {
     )
   }
 
-  const journal = new WriteJournal([input.dshHome, input.agentsHome])
+  const journal = input.journal ?? new WriteJournal([input.dshHome, input.agentsHome])
   const applied: string[] = []
   const credentialsWritten: string[] = []
   const addedFiles: string[] = []

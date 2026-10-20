@@ -22,7 +22,7 @@ export type ApiPathUse = 'list' | 'read' | 'mkdir' | 'write-dir' | 'write-file'
 
 const POSIX_SYSTEM = ['/etc', '/bin', '/sbin', '/usr', '/lib', '/lib32', '/lib64', '/libx32', '/boot', '/proc', '/sys', '/dev', '/run', '/var', '/opt', '/srv', '/snap', '/root', '/System', '/Library', '/private', '/Applications', '/cores']
 const POSIX_MOUNTS = ['/media', '/mnt', '/run/media', '/Volumes']
-const HOME_SENSITIVE = ['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config/gcloud', '.password-store']
+const HOME_SENSITIVE = ['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config/gcloud', '.config/gh', '.password-store', '.netrc', '.npmrc', '.pypirc', '.git-credentials']
 
 function key(p: string, platform: NodeJS.Platform): string {
   const n = resolve(p)
@@ -132,9 +132,10 @@ export class PathPolicy {
         if (isWithin(dir, real, this.platform) || isWithin(await realpathLoose(dir), real, this.platform)) throw deny(input, 'system folders are off limits')
       }
     }
-    if (use !== 'list' && use !== 'read') {
-      for (const s of HOME_SENSITIVE) {
-        if (isWithin(join(realHome, s), real, this.platform)) throw deny(input, 'credential folders are off limits')
+    // Credential folders are off limits for every use, listing and reading included.
+    for (const s of HOME_SENSITIVE) {
+      if (isWithin(join(realHome, s), real, this.platform) || isWithin(join(this.home, s), real, this.platform)) {
+        throw deny(input, 'credential folders are off limits')
       }
     }
     let rooted = false
@@ -142,6 +143,16 @@ export class PathPolicy {
       if (isWithin(root, real, this.platform) || isWithin(await realpathLoose(root), real, this.platform)) { rooted = true; break }
     }
     if (!rooted) throw deny(input, 'outside the approved folders (home, removable drives, or a folder picked in the system dialog)')
+    if (use === 'read') {
+      // Only snapshot archives (judged on the resolved file) or folders of them may be read.
+      const st = await lstat(real).catch(() => null)
+      if (st && !st.isDirectory()) {
+        const lower = real.toLowerCase()
+        if (!st.isFile() || !(lower.endsWith('.tar.gz') || lower.endsWith('.dshvault'))) {
+          throw deny(input, 'only .tar.gz / .dshvault snapshot files can be imported')
+        }
+      }
+    }
     if (use === 'write-file') {
       // An existing symlink/junction as the export file itself would redirect the write.
       const st = await lstat(expanded).catch(() => null)

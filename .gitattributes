@@ -1,2 +1,4 @@
+# Same bytes on every OS: sources check out with LF so a Windows rebuild matches lib/.
+* text=auto eol=lf
 # Built output is committed so `github:guobingke/dsh-vault` installs without a build step.
 lib/** text eol=lf linguist-generated=true

@@ -553,7 +553,7 @@ describe('M-02 one writer at a time', () => {
       const service = await newService(home, { lockTimeoutMs: 300 })
       const { hostname } = await import('node:os')
       const lockPath = join(service.dataDir, 'operation.lock')
-      await writeFile(lockPath, JSON.stringify({ pid: child.pid, host: hostname(), op: 'cli-restore', startedAt: new Date().toISOString() }))
+      await writeFile(lockPath, JSON.stringify({ pid: child.pid, host: hostname(), nonce: 'other', op: 'cli-restore', startedAt: new Date().toISOString(), heartbeatAt: Date.now() }))
       await assert.rejects(() => service.backup({ targetId: service.listTargets()[0]!.id }), (e: { code?: string }) => e.code === 'VAULT_BUSY')
       child.kill()
       await new Promise((r) => child.once('exit', r))

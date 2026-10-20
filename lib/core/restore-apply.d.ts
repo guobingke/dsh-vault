@@ -1,4 +1,5 @@
 import type { ConflictMap } from './conflict.js';
+import { WriteJournal } from './safe-fs.js';
 import type { ConflictStrategy, ProgressCallback, RestorePreview, RestoreResult, VaultManifest } from './types.js';
 /** One shared rule (H-02/M-06/M-07): a path is a credential if the manifest OR the classifier says so. */
 export declare function isSecretEntry(manifest: VaultManifest, path: string): boolean;
@@ -25,6 +26,8 @@ export declare function applyRestore(input: {
     /** Snapshot-relative paths to delete (only from a private rollback's `rollbackRemoves`; M-01). */
     removePaths?: string[];
     rollbackSnapshotId?: string;
+    /** Caller-owned journal, so a later phase (plugin install) can still undo the files. */
+    journal?: WriteJournal;
     onProgress?: ProgressCallback;
 }): Promise<RestoreResult>;
 export declare function deletePathSafe(abs: string): Promise<void>;

@@ -15,6 +15,7 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "newLine": "lf",
     "rootDir": "src",
     "outDir": "lib",
     "types": ["node"]

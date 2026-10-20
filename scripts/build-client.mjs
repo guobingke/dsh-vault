@@ -5,6 +5,7 @@ import { build } from 'esbuild'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { cssTagId, normalizeText } from './build-utils.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -13,9 +14,9 @@ const cssAsStyleTag = {
   name: 'css-style-tag',
   setup(b) {
     b.onLoad({ filter: /\.css$/ }, (args) => {
-      const css = readFileSync(args.path, 'utf8')
+      const css = normalizeText(readFileSync(args.path, 'utf8'))
       // L-01: a fixed relative id (basename only) — never the builder's absolute path (Windows uses `\\`).
-      const tagId = `${pkg.name}/${args.path.split(/[\\/]/).pop()}`
+      const tagId = cssTagId(pkg.name, args.path)
       return {
         loader: 'js',
         contents: `const css = ${JSON.stringify(css)};
@@ -45,7 +46,7 @@ const result = await build({
   plugins: [cssAsStyleTag],
   logLevel: 'warning',
 })
-const body = result.outputFiles[0].text
+const body = normalizeText(result.outputFiles[0].text)
 if (/require\("node:/.test(body)) throw new Error('client bundle must not require node:* modules')
 const out = `window.__ModuleLoader__.load({
 \tid: ${JSON.stringify(pkg.name)},
@@ -57,6 +58,9 @@ ${body}
 \t}
 });
 `
-mkdirSync(join(root, 'lib'), { recursive: true })
-writeFileSync(join(root, 'lib/client.js'), out)
+// `--out <file>` writes elsewhere (determinism test); default lib/client.js.
+const outIdx = process.argv.indexOf('--out')
+const outFile = outIdx > 0 ? process.argv[outIdx + 1] : join(root, 'lib/client.js')
+mkdirSync(dirname(outFile), { recursive: true })
+writeFileSync(outFile, out)
 console.log(`lib/client.js ${(out.length / 1024).toFixed(1)} KiB`)

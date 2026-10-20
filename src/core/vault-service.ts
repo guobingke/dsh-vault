@@ -45,6 +45,7 @@ import { redactText } from './redact.js'
 import { isRemoteNonRegistrySpec } from './local-spec.js'
 import { captureSelfEntries, reapplySelfEntries } from './self-entry.js'
 import { packSnapshot, unpackSnapshot } from './snapshot-io.js'
+import { WriteJournal } from './safe-fs.js'
 import { maskTargetSecrets, mergeTargetSecrets } from './target-secrets.js'
 import { expandUserPath } from './win-paths.js'
 import type {
@@ -633,7 +634,9 @@ export class VaultService {
     }
 
     const selfBefore = await captureSelfEntries(this.dshHome)
+    const journal = new WriteJournal([this.dshHome, this.agentsHome])
     const result = await applyRestore({
+      journal,
       manifest: unpacked.manifest,
       files: unpacked.files,
       dshHome: this.dshHome,
@@ -646,17 +649,32 @@ export class VaultService {
       onProgress,
     })
     result.rollbackTargetId = rollbackTargetId
-    // Keep this machine's own dsh-vault entry (its link: path), never machine 1's.
-    await reapplySelfEntries(this.dshHome, selfBefore)
+    // H-03: individual plugin failures are a partial success by design (config stays,
+    // failures are reported and can be retried). But if the plugin phase itself aborts
+    // (throws), the restored files are rolled back too, so nothing is left half-applied.
+    try {
+      // Keep this machine's own dsh-vault entry (its link: path), never machine 1's.
+      await reapplySelfEntries(this.dshHome, selfBefore)
 
-    if (req.reinstallPlugins !== false) {
-      onProgress?.({ phase: 'reinstall', message: 'Installing plugins into profile', fraction: 0 })
-      const records = req.pluginProfiles?.length
-        ? unpacked.manifest.plugins.filter((p) => req.pluginProfiles!.includes(p.profile ?? this.activeProfile))
-        : unpacked.manifest.plugins
-      const approved = new Set((req.approvedPluginSources ?? []).filter((k) => typeof k === 'string'))
-      await this.installPlugins(records, result, undefined, req.pluginRestoreOrder, onProgress, approved)
-      await this.saveLastRestore({ snapshotId, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
+      if (req.reinstallPlugins !== false) {
+        onProgress?.({ phase: 'reinstall', message: 'Installing plugins into profile', fraction: 0 })
+        const records = req.pluginProfiles?.length
+          ? unpacked.manifest.plugins.filter((p) => req.pluginProfiles!.includes(p.profile ?? this.activeProfile))
+          : unpacked.manifest.plugins
+        const approved = new Set((req.approvedPluginSources ?? []).filter((k) => typeof k === 'string'))
+        await this.installPlugins(records, result, undefined, req.pluginRestoreOrder, onProgress, approved)
+        await this.saveLastRestore({ snapshotId, plugins: unpacked.manifest.plugins, pluginResults: result.pluginResults ?? [] })
+      }
+    } catch (err) {
+      const notReverted = await journal.rollback()
+      const why = err instanceof Error ? err.message : String(err)
+      throw new VaultUserError(
+        notReverted.length
+          ? `restore aborted during plugin install (${why}); files rolled back except ${notReverted.slice(0, 5).join(', ')} — restore the pre-restore rollback snapshot`
+          : `restore aborted during plugin install (${why}); every restored file was rolled back`,
+        500,
+        'RESTORE_ROLLED_BACK',
+      )
     }
     onProgress?.({ phase: 'verify', message: 'Verifying', fraction: 1 })
     this.finishPluginSummary(result)
