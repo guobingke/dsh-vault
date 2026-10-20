@@ -172,8 +172,10 @@ export class VaultService {
 
   /** In-app browser listing for the HTTP API: approved roots only, realpath-checked. */
   async listFsApi(path: string) {
-    const real = await this.paths.check(path?.trim() ? path : '~', 'list')
-    const listing = await listDirectory(real)
+    const input = path?.trim() ? path : '~'
+    await this.paths.check(input, 'list')
+    // List the path as typed (Windows 8.3 names, links the policy already resolved and approved).
+    const listing = await listDirectory(input)
     // Probe in parallel with a short timeout so empty card readers can't stall the dialog.
     const candidates = await this.paths.roots()
     const present = await Promise.all(candidates.map((r) => Promise.race([
@@ -202,8 +204,9 @@ export class VaultService {
   }
 
   async createFsDirectoryApi(parent: string, name: string): Promise<string> {
-    const real = await this.paths.check(parent, 'mkdir')
-    return createDirectory(real, name)
+    await this.paths.check(parent, 'mkdir')
+    await this.paths.check(join(expandUserPath(parent), name), 'mkdir')
+    return createDirectory(parent, name)
   }
 
   /**
