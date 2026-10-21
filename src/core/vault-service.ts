@@ -403,7 +403,7 @@ export class VaultService {
       throw new VaultUserError('secrets may only be included when encryption is enabled', 400, 'SECRETS_REQUIRE_ENCRYPT')
     }
     onProgress?.({ phase: 'collect', message: 'Collecting dsh setup', percent: 5 })
-    const { files, plugins, redactedFiles } = await collectBackupFiles({
+    const { files, plugins, redactedFiles, unportablePlugins } = await collectBackupFiles({
       dshHome: this.dshHome,
       agentsHome: this.agentsHome,
       includeSecrets,
@@ -498,6 +498,7 @@ export class VaultService {
       manifest: packed.manifest,
       exportPath,
       ...(redactedFiles.length ? { redactedFiles } : {}),
+      ...(unportablePlugins.length ? { unportablePlugins } : {}),
     }
   }
 

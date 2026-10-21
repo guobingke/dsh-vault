@@ -25,6 +25,14 @@ export declare function backupCounts(result: BackupResult): {
     files: number;
     copies: number;
 };
+/**
+ * 「这些插件没打进快照」: a local link:/file: plugin without a saved copy, or a plugin
+ * whose install source was never recorded, cannot be restored on another machine.
+ * Saying so here is the only warning the user gets before they need it.
+ */
+export declare function UnportablePluginsWarning({ plugins }: {
+    plugins: NonNullable<BackupResult['unportablePlugins']>;
+}): import("react").JSX.Element;
 /** 「备份完成：xx 个文件 · xx MB · 插件副本 x 个，保存到 <location>」 */
 export declare function BackupSummary({ result, location }: {
     result: BackupResult;

@@ -15,7 +15,7 @@ import { bundledSourceRel } from './plugin-install.js'
 import { isSelfPlugin } from './self-entry.js'
 import { isRemoteNonRegistrySpec, parseLocalSpec, resolveLocalSpecPath } from './local-spec.js'
 import { homeExcludeReason, isPluginDataRoot, isSecretPath, walkHome } from './home-scope.js'
-import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord } from './types.js'
+import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord, UnportablePlugin } from './types.js'
 
 function isBuiltinDshBundle(name: string): boolean {
   return name.startsWith('@deepseek-ai/dsh-') || name === '@deepseek-ai/dsh'
@@ -146,6 +146,7 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
   dshHome: string
   agentsHome: string
   redactedFiles: string[]
+  unportablePlugins: UnportablePlugin[]
 }> {
   const dshHome = options.dshHome || resolveDshHome()
   const agentsHome = options.agentsHome || resolveAgentsHome()
@@ -418,7 +419,21 @@ export async function collectBackupFiles(options: CollectOptions): Promise<{
     }
   }
 
-  return { files: deduped, plugins, dshHome, agentsHome, redactedFiles }
+  // Plugins that would not survive a move to another machine: no copy was packed and the
+  // source only exists here (a local path) or was never recorded at all. The UI warns about
+  // these at the end of a backup instead of letting them disappear silently.
+  const unportablePlugins: UnportablePlugin[] = []
+  for (const p of plugins) {
+    if (!p.profile || isSelfPlugin(p.name) || isBuiltinDshBundle(p.name)) continue
+    if (p.bundledSource || p.fallbackBundle) continue
+    if (parseLocalSpec(p.source) ?? parseLocalSpec(p.version)) {
+      unportablePlugins.push({ name: p.name, profile: p.profile, reason: 'local-source' })
+    } else if (p.recordedFrom === 'name-only') {
+      unportablePlugins.push({ name: p.name, profile: p.profile, reason: 'no-source' })
+    }
+  }
+
+  return { files: deduped, plugins, dshHome, agentsHome, redactedFiles, unportablePlugins }
 }
 
 /** Strip URL userinfo / tokens from every string field of a plugin record (H-05). */

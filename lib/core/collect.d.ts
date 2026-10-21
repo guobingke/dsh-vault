@@ -1,4 +1,4 @@
-import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord } from './types.js';
+import type { BackupCategory, CollectedFile, CollectOptions, PluginRecord, UnportablePlugin } from './types.js';
 /** Extract plugin install records from a profile package.json / cordis patch. */
 export declare function extractPluginsFromProfilePackage(packageJsonText: string, profileName: string): PluginRecord[];
 export declare function extractPluginsFromPatchYaml(patchText: string, profileName: string): PluginRecord[];
@@ -9,6 +9,7 @@ export declare function collectBackupFiles(options: CollectOptions): Promise<{
     dshHome: string;
     agentsHome: string;
     redactedFiles: string[];
+    unportablePlugins: UnportablePlugin[];
 }>;
 /** Strip URL userinfo / tokens from every string field of a plugin record (H-05). */
 export declare function sanitizePluginRecord(p: PluginRecord): PluginRecord;

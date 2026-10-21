@@ -108,6 +108,27 @@ export function backupCounts(result: BackupResult): { files: number; copies: num
   return { files, copies }
 }
 
+/**
+ * 「这些插件没打进快照」: a local link:/file: plugin without a saved copy, or a plugin
+ * whose install source was never recorded, cannot be restored on another machine.
+ * Saying so here is the only warning the user gets before they need it.
+ */
+export function UnportablePluginsWarning({ plugins }: { plugins: NonNullable<BackupResult['unportablePlugins']> }) {
+  const tr = useT()
+  const label = (p: (typeof plugins)[number]) =>
+    `${p.name}（${p.profile}，${tr(p.reason === 'no-source' ? 'summary.backup.unportable.noSource' : 'summary.backup.unportable.side')}）`
+  return (
+    <Banner
+      tone="warn"
+      role="status"
+      title={tr('summary.backup.unportableTitle', { count: plugins.length })}
+    >
+      <div>{tr('summary.backup.unportableBody')}</div>
+      <div className="dv-hint">{tr('summary.backup.unportableList', { names: plugins.map(label).join('、') })}</div>
+    </Banner>
+  )
+}
+
 /** 「备份完成：xx 个文件 · xx MB · 插件副本 x 个，保存到 <location>」 */
 export function BackupSummary({ result, location }: { result: BackupResult; location: string }) {
   const tr = useT()
@@ -119,10 +140,14 @@ export function BackupSummary({ result, location }: { result: BackupResult; loca
   ]
   if (result.encrypted) parts.push(tr('common.encrypted'))
   const took = result.durationMs !== undefined ? `，${tr('summary.took', { time: formatDuration(result.durationMs) })}` : ''
+  const unportable = result.unportablePlugins ?? []
   return (
-    <Banner tone="ok" role="status" title={`${tr('summary.backup.ok')}：${parts.join(' · ')}${took}`}>
-      <div className="dv-hint">{tr('summary.backup.savedTo', { location })}</div>
-      <div className="dv-hint dv-mono">{result.snapshotId}</div>
-    </Banner>
+    <>
+      <Banner tone="ok" role="status" title={`${tr('summary.backup.ok')}：${parts.join(' · ')}${took}`}>
+        <div className="dv-hint">{tr('summary.backup.savedTo', { location })}</div>
+        <div className="dv-hint dv-mono">{result.snapshotId}</div>
+      </Banner>
+      {unportable.length ? <UnportablePluginsWarning plugins={unportable} /> : null}
+    </>
   )
 }

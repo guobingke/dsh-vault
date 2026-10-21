@@ -307,6 +307,12 @@ async function main(argv: string[]): Promise<number> {
         const c = copyFlags(args)
         await service.updateSettings({ pluginCopies: { enabled: c.bundlePluginCopies ?? true, exclude: c.pluginCopyExclude ?? [] } })
       }
+      // These plugins cannot be restored on another machine: say so before the user relies on it.
+      for (const p of result.unportablePlugins ?? []) {
+        process.stderr.write(
+          `warning: ${p.name} (${p.profile}) was not packed into the snapshot (${p.reason === 'no-source' ? 'no recorded install source' : 'local source, no copy'}); restoring on another machine cannot bring it back.\n`,
+        )
+      }
       process.stdout.write(JSON.stringify({
         dshHome: home,
         agentsHome,
@@ -317,6 +323,7 @@ async function main(argv: string[]): Promise<number> {
         bytes: result.bytes,
         encrypted: result.encrypted,
         includeSecrets: result.includeSecrets,
+        unportablePlugins: result.unportablePlugins ?? [],
       }, null, 2) + '\n')
       return 0
     }

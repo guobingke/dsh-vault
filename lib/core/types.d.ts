@@ -159,6 +159,19 @@ export interface BackupResult {
     durationMs?: number;
     /** Plaintext backup: files whose URL credentials / tokens were redacted (H-05). */
     redactedFiles?: string[];
+    /**
+     * Plugins in this snapshot that only exist on this machine: a local link:/file: source
+     * with no saved copy, or a name with no recorded install source. Restoring the snapshot
+     * on another machine cannot bring these back.
+     */
+    unportablePlugins?: UnportablePlugin[];
+}
+/** A plugin whose install source cannot travel inside a snapshot. */
+export interface UnportablePlugin {
+    name: string;
+    profile: string;
+    /** local-source: a link:/file:/workspace: path with no copy. no-source: only the name was known. */
+    reason: 'local-source' | 'no-source';
 }
 export interface DiffItem {
     path: string;

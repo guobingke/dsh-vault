@@ -289,6 +289,11 @@ declare const zh: {
     'summary.backup.files': string;
     'summary.backup.copies': string;
     'summary.backup.savedTo': string;
+    'summary.backup.unportableTitle': string;
+    'summary.backup.unportableBody': string;
+    'summary.backup.unportableList': string;
+    'summary.backup.unportable.side': string;
+    'summary.backup.unportable.noSource': string;
     'restore.group.other': string;
     'restore.diffNoMatch': string;
     'restore.diffSearch': string;

@@ -231,6 +231,8 @@ hash -r
 
 **Snapshots made before this change have no plugin copies.** There is nothing to restore for a local plugin that only existed on the old machine. Back up again on the original machine with the current version so `plugin-sources/` is included, then restore that snapshot.
 
+The current version tells you this at backup time: if the snapshot contains plugins that would not survive a move (a local path with no saved copy, or a name with no recorded install source), the result lists them separately and the CLI prints a warning. Turn on plugin copies and back up again then, rather than discovering it on the new machine.
+
 CLI equivalent:
 
 ```bash
